@@ -5,7 +5,7 @@ explore glowing, living fractal-flame structures — in full **VR**, or in **mix
 reality** where they float in your actual room. Built with a custom GPU chaos-game
 engine running a few-million-particle point cloud at headset framerate.
 
-**▶ Live: [fractalxr.brisflix.com](https://fractalxr.brisflix.com)** — open it in the Meta Quest 3 browser.
+**▶ Live: [fractalxr.uk](https://fractalxr.uk)** — open it in the Meta Quest 3 browser.
 
 > Put on a Quest 3, open the page, press **Enter VR** (void) or **Enter MR** (passthrough),
 > and reach out and grab a fractal.
