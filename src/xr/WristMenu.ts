@@ -45,6 +45,7 @@ export interface MenuActions {
   cycleMorph: () => void
   cycleAnimation: () => void
   togglePassthrough: () => void
+  showGuide: () => void
   exitVR: () => void
 }
 
@@ -175,14 +176,15 @@ export class WristMenu {
     const r3y = r2y + presetRowCount * r2h + (presetRowCount - 1) * cgap + gap
     const r3h = 104
     const sgap = 12
-    const sw = (W - 2 * m - 4 * sgap) / 5
+    const sw = (W - 2 * m - 5 * sgap) / 6
     const sx = (i: number): number => m + i * (sw + sgap)
     const settings: Cell[] = [
       { label: 'PARTICLES', kind: 'setting', valueKey: 'particles', run: a.cycleParticles, rect: [sx(0), r3y, sw, r3h] },
       { label: 'SIZE', kind: 'setting', valueKey: 'size', run: a.cycleSize, rect: [sx(1), r3y, sw, r3h] },
       { label: 'MORPH', kind: 'setting', valueKey: 'morph', run: a.cycleMorph, rect: [sx(2), r3y, sw, r3h] },
       { label: 'SPIN', kind: 'setting', valueKey: 'animation', run: a.cycleAnimation, rect: [sx(3), r3y, sw, r3h] },
-      { label: 'EXIT VR', kind: 'exit', run: a.exitVR, rect: [sx(4), r3y, sw, r3h] },
+      { label: 'HELP', sub: 'controls', kind: 'action', run: a.showGuide, rect: [sx(4), r3y, sw, r3h] },
+      { label: 'EXIT VR', kind: 'exit', run: a.exitVR, rect: [sx(5), r3y, sw, r3h] },
     ]
     this.h = r3y + r3h + 28 // panel height fits the actual content (1 or 2 preset rows)
     this.rows = [breeding, middle, ...presetRows, settings]
@@ -404,7 +406,7 @@ export class WristMenu {
 
     if (isExit) {
       ctx.fillStyle = '#ffb3b3'
-      ctx.font = '600 34px ui-sans-serif, system-ui, sans-serif'
+      ctx.font = '600 30px ui-sans-serif, system-ui, sans-serif'
       ctx.fillText('⎋ EXIT VR', cx, cy)
       return
     }

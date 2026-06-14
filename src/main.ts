@@ -31,6 +31,7 @@ import { Compositor } from './engine/Compositor'
 import { AdaptiveQuality } from './engine/AdaptiveQuality'
 import { WorldGrab } from './xr/WorldGrab'
 import { WristMenu } from './xr/WristMenu'
+import { ControlsGuide } from './xr/ControlsGuide'
 import { createMRButton } from './xr/MRButton'
 
 // --- renderer ---------------------------------------------------------------
@@ -276,6 +277,14 @@ const exitVR = (): void => {
 flamePoints.setActiveCount(activeCount)
 flamePoints.setPointSize(pointSize)
 
+// in-VR controls guide — a "what the buttons do" card that pops in front of you on
+// session start (and reopens from the menu's HELP cell); dismisses on first grab/press.
+const guide = new ControlsGuide(() => toGenome.palette[toGenome.palette.length - 1])
+overlayScene.add(guide.root)
+// show it every time someone enters (not first-run-only) — the same headset is handed
+// to a stream of newcomers; a quick grab/press makes it vanish for the experienced user.
+renderer.xr.addEventListener('sessionstart', () => window.setTimeout(() => guide.show(), 600))
+
 // in-VR wrist menu (left controller), driven by ray-point + trigger (and thumbstick)
 const menu = new WristMenu(
   controllers[0],
@@ -310,6 +319,7 @@ const menu = new WristMenu(
     cycleMorph,
     cycleAnimation,
     togglePassthrough,
+    showGuide: () => guide.show(),
     exitVR,
   },
   () => worldGrab.gripCount >= 2,
@@ -329,6 +339,7 @@ let pointerHand = 1
 // on the menu hand → mutate.
 controllers.forEach((c, i) => {
   ;(c as unknown as Evented).addEventListener('selectstart', () => {
+    guide.hide() // any trigger pull dismisses the controls card
     if (i === pointerHand) {
       if (menu.hovered) menu.click()
       else randomize()
@@ -389,6 +400,7 @@ function pollButtons(): void {
       if (i === 3 || i === 4 || i === 5 || i === 6) continue
       const pressed = menuPad.buttons[i]?.pressed === true
       if (pressed && !menuBtnPrev[i] && menuBtnInit) {
+        guide.hide() // ☰ also dismisses the controls card
         if (menu.isOpen) menu.collapse()
         else menu.expand()
       }
@@ -474,6 +486,8 @@ renderer.setAnimationLoop(() => {
   overlayScene.updateMatrixWorld(true)
   worldGrab.update()
   menu.update(dtMs / 1000)
+  guide.update(dtMs / 1000, renderer.xr.isPresenting ? renderer.xr.getCamera() : desktopCamera)
+  if (guide.visible && worldGrab.gripCount > 0) guide.hide() // grabbing the flame means "I've got it"
 
   // gentle auto-rotation gives life without per-frame particle flicker (paused while grabbing)
   if (!worldGrab.isGrabbing && rotationSpeed > 0) flameGroup.rotateY((dtMs / 1000) * rotationSpeed)
@@ -557,6 +571,7 @@ window.addEventListener('resize', () => {
   morphToPreset: (i: number) => startMorphTo(GALLERY[i]),
   gallery: GALLERY,
   menu,
+  guide,
   overlayScene,
   controllers,
   // tuning/dev helpers: read the live genome, and set morph speed (for fast candidate harvesting)
