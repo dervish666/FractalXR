@@ -99,7 +99,7 @@ function sampleColor(colors: Vec3[], s: number): Vec3 {
 }
 
 /** Blend two palettes by resampling both at a common resolution then lerping. */
-function blendPalettes(a: Vec3[], b: Vec3[], t: number): Vec3[] {
+export function blendPalettes(a: Vec3[], b: Vec3[], t: number): Vec3[] {
   const n = Math.max(a.length, b.length)
   const out: Vec3[] = []
   for (let i = 0; i < n; i++) {

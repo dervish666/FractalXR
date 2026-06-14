@@ -15,6 +15,7 @@ type Vec3 = [number, number, number]
 
 export interface MenuState {
   name: string
+  mode: string // 'FLAME' | 'BULB' — shown on the MODE cell
   morphing: boolean
   auto: boolean
   passthrough: boolean // MR/passthrough toggle state (room visible behind the flame)
@@ -34,6 +35,7 @@ export interface MenuActions {
   randomize: () => void
   mutateCurrent: () => void
   breed: () => void
+  toggleMode: () => void
   toggleAuto: () => void
   recolor: () => void
   morphToPreset: (i: number) => void
@@ -55,7 +57,7 @@ interface Cell {
   kind: 'action' | 'toggle' | 'stub' | 'preset' | 'setting' | 'exit'
   run: () => void
   presetIdx?: number
-  valueKey?: 'particles' | 'size' | 'morph' | 'animation' | 'saved' | 'faves' // dynamic value
+  valueKey?: 'particles' | 'size' | 'morph' | 'animation' | 'saved' | 'faves' | 'mode' // dynamic value
   toggleKey?: 'auto' | 'passthrough' // which MenuState bool drives the ON/OFF capsule
   rect: [number, number, number, number] // x,y,w,h in canvas px
 }
@@ -127,14 +129,16 @@ export class WristMenu {
     const m = 36
     const gap = 20
     const stripBottom = 150
-    const cw3 = (W - 2 * m - 2 * gap) / 3
-    // breeding row
+    // mode toggle + breeding row (4 cells)
     const r0y = stripBottom + 24
     const r0h = 130
+    const cwb = (W - 2 * m - 3 * gap) / 4
+    const bx = (i: number): number => m + i * (cwb + gap)
     const breeding: Cell[] = [
-      { label: 'RANDOMIZE', sub: 'R-trigger', kind: 'action', run: a.randomize, rect: [m, r0y, cw3, r0h] },
-      { label: 'MUTATE', sub: 'L-trigger', kind: 'action', run: a.mutateCurrent, rect: [m + cw3 + gap, r0y, cw3, r0h] },
-      { label: 'CROSS-BREED', sub: 'B button', kind: 'action', run: a.breed, rect: [m + 2 * (cw3 + gap), r0y, cw3, r0h] },
+      { label: 'MODE', kind: 'action', valueKey: 'mode', run: a.toggleMode, rect: [bx(0), r0y, cwb, r0h] },
+      { label: 'RANDOMIZE', sub: 'R-trig', kind: 'action', run: a.randomize, rect: [bx(1), r0y, cwb, r0h] },
+      { label: 'MUTATE', sub: 'L-trig', kind: 'action', run: a.mutateCurrent, rect: [bx(2), r0y, cwb, r0h] },
+      { label: 'CROSS-BREED', sub: 'B btn', kind: 'action', run: a.breed, rect: [bx(3), r0y, cwb, r0h] },
     ]
     // auto / recolor / save / faves / delete / passthrough row (6 cells)
     const r1y = r0y + r0h + gap
@@ -296,7 +300,7 @@ export class WristMenu {
       this.redrawSliver(st)
     }
     if (showPanel) {
-      const snap = `${st.name}|${st.morphing}|${st.auto}|${st.passthrough}|${st.arAvailable}|${st.currentPreset}|${this.cursor.r},${this.cursor.c}|${st.accent.join(',')}|${st.particles}|${st.size}|${st.morph}|${st.animation}|${st.saved}|${st.faves}|${st.perf}`
+      const snap = `${st.name}|${st.mode}|${st.morphing}|${st.auto}|${st.passthrough}|${st.arAvailable}|${st.currentPreset}|${this.cursor.r},${this.cursor.c}|${st.accent.join(',')}|${st.particles}|${st.size}|${st.morph}|${st.animation}|${st.saved}|${st.faves}|${st.perf}`
       if (snap !== this.lastSnapshot) {
         this.lastSnapshot = snap
         this.redrawPanel(st)

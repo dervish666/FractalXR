@@ -23,6 +23,8 @@ import { encodeFlame } from './flame/encode'
 import { Palette } from './flame/palette'
 import { interpolateGenome, smoothstep } from './flame/morph'
 import { randomGenome, mutate, crossover } from './flame/breed'
+import { BULB_GALLERY, randomBulb, mutateBulb, flipBulbKind, interpolateBulb } from './flame/bulbs'
+import type { BulbGenome } from './flame/bulbs'
 import { THEMES, themeColors } from './flame/palettes'
 import { loadFavorites, persistFavorites } from './flame/favorites'
 import { Simulation } from './engine/Simulation'
@@ -173,6 +175,10 @@ function applyGenome(g: FlameGenome): void {
 }
 
 function updateLabel(): void {
+  if (sim.mode === 'bulb') {
+    label.textContent = `${currentBulb.name}   ◆ bulb${bulbMorphT < 1 ? '  …morphing' : ''}${autoGenerate ? '   ▶ auto' : ''}`
+    return
+  }
   label.textContent = `${toGenome.name}${morphT < 1 ? '  …morphing' : ''}${autoGenerate ? '   ▶ auto' : ''}`
 }
 
@@ -187,6 +193,7 @@ function startMorphTo(g: FlameGenome): void {
 }
 
 function stepMorph(dtSec: number): void {
+  if (sim.mode === 'bulb') return // bulb mode runs its own morph driver (stepBulbMorph)
   if (morphT >= 1) {
     if (!autoGenerate) return
     startMorphTo(randomGenome(serial++)) // auto: keep birthing new flames
@@ -199,10 +206,19 @@ function stepMorph(dtSec: number): void {
   }
 }
 
-// breeding actions — each result morphs in
-const randomize = (): void => startMorphTo(randomGenome(serial++))
-const mutateCurrent = (): void => startMorphTo(mutate(toGenome, serial++))
-const breed = (): void => startMorphTo(crossover(toGenome, prevTarget, serial++))
+// breeding actions — in bulb mode they morph the cloud toward a new / varied bulb
+const randomize = (): void => {
+  if (sim.mode === 'bulb') startBulbMorphTo(randomBulb())
+  else startMorphTo(randomGenome(serial++))
+}
+const mutateCurrent = (): void => {
+  if (sim.mode === 'bulb') startBulbMorphTo(mutateBulb(currentBulb))
+  else startMorphTo(mutate(toGenome, serial++))
+}
+const breed = (): void => {
+  if (sim.mode === 'bulb') startBulbMorphTo(flipBulbKind(currentBulb)) // Mandelbulb ⇄ Juliabulb
+  else startMorphTo(crossover(toGenome, prevTarget, serial++))
+}
 const toggleAuto = (): void => {
   autoGenerate = !autoGenerate
   updateLabel()
@@ -211,7 +227,9 @@ const toggleAuto = (): void => {
 let themeIndex = -1
 const recolor = (): void => {
   themeIndex = (themeIndex + 1) % THEMES.length
-  startMorphTo({ ...toGenome, palette: themeColors(THEMES[themeIndex].name) })
+  const pal = themeColors(THEMES[themeIndex].name)
+  if (sim.mode === 'bulb') startBulbMorphTo({ ...currentBulb, palette: pal })
+  else startMorphTo({ ...toGenome, palette: pal })
 }
 
 // favorites — persisted to localStorage, survive across sessions
@@ -235,6 +253,109 @@ const deleteFave = (): void => {
   faveIndex-- // so the next Faves press lands on the item that shifted into this slot
 }
 
+// --- bulb mode (Mandelbulb point cloud) -------------------------------------
+let bulbTime = 0 // drives the living-bulb breath (power breath / Julia-C orbit), runs continuously
+const bulbC = new Vector3()
+let currentBulb: BulbGenome = BULB_GALLERY[0] // the bulb currently displayed (mid-morph: an interpolated one)
+// bulb-to-bulb morph state — the parametric analog of fromGenome/toGenome/morphT
+let bulbFrom: BulbGenome = BULB_GALLERY[0]
+let bulbTo: BulbGenome = BULB_GALLERY[0]
+let bulbMorphT = 1 // 1 = settled on bulbTo
+
+/** Snap instantly to a bulb (used on mode-switch / init — no transition). */
+const applyBulb = (b: BulbGenome): void => {
+  currentBulb = b
+  bulbFrom = b
+  bulbTo = b
+  bulbMorphT = 1
+  palette.setColors(b.palette) // bulbs share the flame palettes
+  bulbTime = 0
+  flameGroup.scale.setScalar(0.65 / b.bound) // normalise apparent size across bulb / box
+  updateLabel()
+}
+
+/** Begin morphing the cloud toward a new bulb — the bulb analog of startMorphTo. */
+function startBulbMorphTo(b: BulbGenome): void {
+  // snapshot the currently-displayed (possibly mid-morph) bulb as the source
+  bulbFrom = bulbMorphT < 1 ? interpolateBulb(bulbFrom, bulbTo, smoothstep(bulbMorphT)) : currentBulb
+  bulbTo = b
+  bulbMorphT = 0
+  // a discrete formula switch (bulb⇄box) can't be melted — reform the cloud onto the new surface;
+  // interpolateBulb then crossfades only the palette while the points re-relax
+  if (bulbFrom.formula !== b.formula) sim.seed(renderer)
+  // NB: bulbTime is NOT reset — the breath phase stays continuous across the morph
+  updateLabel()
+}
+
+// auto-cycle: mostly mutate within the family (smooth melt) with the odd random jump (reform)
+const nextAutoBulb = (): BulbGenome => (Math.random() < 0.6 ? mutateBulb(currentBulb) : randomBulb())
+
+/** Advance the bulb morph + drive the living breath, writing the live DE uniforms. */
+function stepBulbMorph(dtSec: number): void {
+  const wasMorphing = bulbMorphT < 1
+  // auto-cycle: when settled, start the next bulb NOW so this same frame advances it — mirrors the
+  // flame stepMorph (no one-frame stall at the cycle boundary)
+  if (!wasMorphing && autoGenerate) startBulbMorphTo(nextAutoBulb()) // sets bulbMorphT=0
+  if (bulbMorphT < 1) bulbMorphT = Math.min(1, bulbMorphT + dtSec / morphDuration)
+
+  const disp = bulbMorphT < 1 ? interpolateBulb(bulbFrom, bulbTo, smoothstep(bulbMorphT)) : bulbTo
+  currentBulb = disp
+  // re-apply framing + palette only while in motion (or on the frame we just landed) —
+  // a settled bulb leaves them untouched, so no per-frame texture upload while idle
+  if (bulbMorphT < 1 || wasMorphing) {
+    // same-formula morphs already lerp bound inside interpolateBulb; a cross-formula morph snaps the
+    // DE bound to the target (the cloud reseeds onto the new surface), so ease the FRAMING (apparent
+    // size) independently — otherwise the group scale pops 3-4× on the morph-start frame.
+    const framingBound =
+      bulbFrom.formula === bulbTo.formula
+        ? disp.bound
+        : bulbFrom.bound + (bulbTo.bound - bulbFrom.bound) * smoothstep(bulbMorphT)
+    flameGroup.scale.setScalar(0.65 / framingBound)
+    palette.setColors(disp.palette)
+    if (wasMorphing && bulbMorphT >= 1) updateLabel() // drop the "…morphing" tag
+  }
+
+  // living breath on top of the (possibly morphing) base params
+  const t = bulbTime * disp.speed
+  if (disp.formula === 'mandelbox') {
+    sim.setBulbParams({
+      formula: 'mandelbox',
+      scale: disp.scale + disp.scaleBreath * Math.sin(t),
+      minR: disp.minR,
+      fixedR: disp.fixedR,
+      bound: disp.bound,
+      mandelbulb: disp.mandelbulb,
+      juliaC: bulbC.set(disp.juliaC[0], disp.juliaC[1], disp.juliaC[2]),
+    })
+  } else {
+    const p = disp.power + disp.powerBreath * Math.sin(t)
+    bulbC.set(
+      disp.juliaC[0] + disp.juliaOrbit * Math.sin(t),
+      disp.juliaC[1] + disp.juliaOrbit * Math.cos(t * 0.8),
+      disp.juliaC[2] + disp.juliaOrbit * Math.sin(t * 0.6),
+    )
+    sim.setBulbParams({ formula: 'mandelbulb', power: p, juliaC: bulbC, mandelbulb: disp.mandelbulb, bound: disp.bound })
+  }
+}
+
+const setMode = (m: 'flame' | 'bulb'): void => {
+  sim.setMode(m)
+  sim.setActiveTexels(activeCount) // scissor the (heavy) bulb sim to the drawn count
+  sim.seed(renderer) // re-scatter particles into the new attractor
+  // re-arm the freeze window: the re-seeded random scatter needs its SETTLE_TAIL frames of chaos
+  // game to converge onto the attractor. Without this, returning to a flame that had already
+  // settled (settleFrames ≫ tail, morphT == 1) leaves the fresh scatter frozen as a raw blob.
+  settleFrames = 0
+  if (m === 'bulb') {
+    applyBulb(bulbMorphT < 1 ? bulbTo : currentBulb) // settle on the morph target, not a frozen midpoint
+  } else {
+    applyGenome(toGenome)
+    flameGroup.scale.setScalar(0.16)
+  }
+  updateLabel()
+}
+const toggleMode = (): void => setMode(sim.mode === 'bulb' ? 'flame' : 'bulb')
+
 // --- live settings (cycled from the menu) -----------------------------------
 const PARTICLE_STEPS = [0.3, 0.5, 0.7, 0.85, 1.0]
 const SIZE_STEPS = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
@@ -257,6 +378,7 @@ const cycleParticles = (): void => {
   userCount = Math.floor(sim.count * PARTICLE_STEPS[pIdx])
   activeCount = userCount
   flamePoints.setActiveCount(activeCount)
+  sim.setActiveTexels(activeCount)
 }
 const cycleSize = (): void => {
   sIdx = next(sIdx, SIZE_STEPS.length)
@@ -275,6 +397,7 @@ const exitVR = (): void => {
   renderer.xr.getSession()?.end().catch(() => {})
 }
 flamePoints.setActiveCount(activeCount)
+sim.setActiveTexels(activeCount)
 flamePoints.setPointSize(pointSize)
 
 // in-VR controls guide — a "what the buttons do" card that pops in front of you on
@@ -289,8 +412,9 @@ renderer.xr.addEventListener('sessionstart', () => window.setTimeout(() => guide
 const menu = new WristMenu(
   controllers[0],
   () => ({
-    name: toGenome.name,
-    morphing: morphT < 1,
+    name: sim.mode === 'bulb' ? currentBulb.name : toGenome.name,
+    mode: sim.mode === 'bulb' ? 'BULB' : 'FLAME',
+    morphing: sim.mode === 'bulb' ? bulbMorphT < 1 : morphT < 1,
     auto: autoGenerate,
     passthrough: passthroughOn,
     arAvailable: sessionIsAR,
@@ -308,9 +432,13 @@ const menu = new WristMenu(
     randomize,
     mutateCurrent,
     breed,
+    toggleMode,
     toggleAuto,
     recolor,
-    morphToPreset: (i) => startMorphTo(GALLERY[i]),
+    morphToPreset: (i) => {
+      if (sim.mode === 'bulb') setMode('flame') // picking a flame preset leaves bulb mode
+      startMorphTo(GALLERY[i])
+    },
     saveFavorite,
     loadFave,
     deleteFave,
@@ -357,6 +485,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'e') mutateCurrent()
   else if (k === 'b') breed()
   else if (k === 'a') toggleAuto()
+  else if (k === 'm') toggleMode()
   else if (k >= '1' && k <= '9') {
     const i = Number(k) - 1
     if (i < GALLERY.length) startMorphTo(GALLERY[i])
@@ -445,6 +574,7 @@ const adaptive = new AdaptiveQuality(
     setCount: (n) => {
       activeCount = n
       flamePoints.setActiveCount(n)
+      sim.setActiveTexels(n) // shedding particles now also sheds the bulb's heavy sim cost
     },
     setFoveation: (f) => renderer.xr.setFoveation(f),
   },
@@ -507,11 +637,20 @@ renderer.setAnimationLoop(() => {
   pollButtons()
   stepMorph(dtMs / 1000)
 
+  // living bulb: morph the cloud toward the target bulb (param melt — the bulb's analog of
+  // the flame morph) and breathe on top. The cloud re-relaxes every frame so it chases the
+  // continuously deforming isosurface; auto-cycle keeps birthing new bulbs.
+  if (sim.mode === 'bulb') {
+    bulbTime += dtMs / 1000
+    stepBulbMorph(dtMs / 1000)
+  }
+
   // 1. simulate — only while morphing (or briefly after), then FREEZE so the settled
   // cloud is stable: no per-frame chaos-game reshuffle = no distracting edge flicker.
   if (morphT < 1) settleFrames = 0
   else settleFrames++
-  if (morphT < 1 || settleFrames <= SETTLE_TAIL) {
+  // bulb mode re-relaxes every frame (the cloud chases the live isosurface); flames freeze once settled
+  if (sim.mode === 'bulb' || morphT < 1 || settleFrames <= SETTLE_TAIL) {
     sim.update(renderer, frame)
     flamePoints.setStateTexture(sim.stateTexture)
   }
@@ -582,5 +721,11 @@ window.addEventListener('resize', () => {
   getGenome: () => JSON.parse(JSON.stringify(toGenome)) as FlameGenome,
   setMorph: (s: number) => {
     morphDuration = s
+  },
+  // EXPERIMENTAL: Mandelbulb point-cloud mode (swaps the chaos game for a bulb iterator)
+  bulb: (on = true) => setMode(on ? 'bulb' : 'flame'),
+  bulbPreset: (i: number) => {
+    if (sim.mode !== 'bulb') setMode('bulb') // enter bulb mode (instant), then melt to the pick
+    startBulbMorphTo(BULB_GALLERY[i])
   },
 }

@@ -105,6 +105,139 @@ void main(){
 }
 `
 
+// ---- bulb update: relax particles onto a Mandelbulb/Juliabulb surface ------
+// Same texel layout as UPDATE_FRAG (pos.xyz + colorIndex) so FlamePoints/Compositor
+// are untouched — only the iterator differs. Each particle Newton-projects onto the
+// DE=0 isosurface (the Green-function distance estimate never overshoots), then wanders
+// tangentially so the shell fills and shimmers instead of freezing.
+export const BULB_UPDATE_FRAG = /* glsl */ `
+precision highp float;
+precision highp int;
+uniform sampler2D uState;
+uniform float uTexSize;
+uniform float uFrame;
+uniform float uReseedProb;
+uniform float uPower;      // polynomial power (8 = classic Mandelbulb)
+uniform vec3 uJuliaC;      // Julia constant (used when uMandelbulb < 0.5)
+uniform float uMandelbulb; // 1 = c = p (Mandelbulb/box), 0 = Julia (c = uJuliaC)
+uniform float uFormula;    // 0 = Mandelbulb, 1 = Mandelbox
+uniform float uScale;      // Mandelbox scale (negative gives the "architectural" look)
+uniform float uMinR;       // Mandelbox sphere-fold min radius
+uniform float uFixedR;     // Mandelbox sphere-fold fixed radius
+uniform float uBound;      // seed / reseed ball radius (per formula)
+uniform float uProjSteps;  // Newton projection steps toward the surface
+uniform float uJitter;     // tangential wander amount
+out vec4 outState;
+${PCG}
+
+// Mandelbulb / Juliabulb distance estimate (trig form, IQ/Hvidtfeldt).
+// Returns (distance, orbitTrapR, orbitTrapY) — the traps drive colour.
+vec4 mandelbulbDE(vec3 p){
+  vec3 z = p;
+  vec3 c = (uMandelbulb > 0.5) ? p : uJuliaC;
+  float dr = 1.0;
+  float r = length(z);
+  float trapR = 1e10, trapY = 1e10;
+  float esc = 0.0;
+  for(int i = 0; i < 8; i++){
+    r = length(z);
+    if(r > 2.0){ esc = 1.0; break; }
+    float rr = max(r, 1e-9);
+    float theta = acos(clamp(z.z / rr, -1.0, 1.0));
+    float phi = atan(z.y, z.x);
+    dr = pow(rr, uPower - 1.0) * uPower * dr + 1.0;
+    float zr = pow(rr, uPower);
+    theta *= uPower; phi *= uPower;
+    z = zr * vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + c;
+    trapR = min(trapR, length(z));
+    trapY = min(trapY, abs(z.y));
+  }
+  float d = 0.5 * log(max(r, 1e-9)) * r / max(dr, 1e-6);
+  return vec4(d, trapR, trapY, esc);
+}
+
+// Mandelbox distance estimate: box fold + sphere fold + scale (linear DE).
+// Negative uScale gives the classic "architectural / branching" look.
+vec4 mandelboxDE(vec3 p){
+  vec3 offset = (uMandelbulb > 0.5) ? p : uJuliaC;
+  vec3 z = p;
+  float dr = 1.0;
+  float trapR = 1e10, trapY = 1e10;
+  float minR2 = uMinR * uMinR;
+  float fixedR2 = uFixedR * uFixedR;
+  float esc = 0.0;
+  for(int i = 0; i < 10; i++){
+    z = clamp(z, -1.0, 1.0) * 2.0 - z;             // box fold
+    float r2 = dot(z, z);
+    if(r2 < minR2){ float t = fixedR2 / minR2; z *= t; dr *= t; }       // sphere fold (inner)
+    else if(r2 < fixedR2){ float t = fixedR2 / r2; z *= t; dr *= t; }   // sphere fold (shell)
+    z = uScale * z + offset;
+    dr = dr * abs(uScale) + 1.0;
+    if(dot(z, z) > 36.0){ esc = 1.0; break; }      // orbit escaped → outside the set
+    trapR = min(trapR, length(z));
+    trapY = min(trapY, abs(z.y));
+  }
+  return vec4(length(z) / max(abs(dr), 1e-6), trapR, trapY, esc);
+}
+
+// dispatch on the selected formula. .x=distance, .yz=orbit traps, .w=escaped (1/0)
+vec4 de(vec3 p){
+  return (uFormula > 0.5) ? mandelboxDE(p) : mandelbulbDE(p);
+}
+
+vec3 deGrad(vec3 p, float e){
+  vec2 k = vec2(1.0, -1.0);
+  return normalize(
+    k.xyy * de(p + k.xyy * e).x +
+    k.yyx * de(p + k.yyx * e).x +
+    k.yxy * de(p + k.yxy * e).x +
+    k.xxx * de(p + k.xxx * e).x);
+}
+
+void main(){
+  ivec2 ip = ivec2(gl_FragCoord.xy);
+  vec2 uv = (vec2(ip) + 0.5) / uTexSize;
+  vec4 s = texture(uState, uv);
+  vec3 pos = s.xyz;
+  float col = s.w;
+
+  uint seed = uint(ip.y) * uint(uTexSize) + uint(ip.x);
+  seed = seed * 747796405u + uint(uFrame) * 2654435761u + 1u;
+
+  float bsq = uBound * uBound * 4.0; // generous escape bound (scales with the object)
+  float e = 0.0012 * uBound;         // gradient epsilon scales with object size
+
+  bool bad = !(pos.x == pos.x) || !(pos.y == pos.y) || !(pos.z == pos.z) || dot(pos, pos) > bsq;
+  if(bad || rnd(seed) < uReseedProb){
+    pos = randBall(seed, uBound); // scatter into the bounding ball
+  }
+
+  // Newton-project toward the surface. For the box, aim a thin shellEps OUTSIDE the
+  // surface (DE>0) — this repels the spurious interior zeros (the core blob) instead of
+  // collapsing onto them. For the bulb shellEps=0 (project straight onto the shell).
+  float shellEps = (uFormula > 0.5) ? 0.012 * uBound : 0.0;
+  vec4 d = de(pos);
+  for(int i = 0; i < 6; i++){
+    if(float(i) >= uProjSteps) break;
+    d = de(pos);
+    pos -= deGrad(pos, e) * (d.x - shellEps);
+  }
+
+  // wander tangentially so the shell fills uniformly and shimmers (stays alive)
+  vec3 n = deGrad(pos, e);
+  vec3 t1 = normalize(cross(n, vec3(0.0, 0.0, 1.0) + vec3(1e-3)));
+  vec3 t2 = cross(n, t1);
+  pos += (t1 * (rnd(seed) * 2.0 - 1.0) + t2 * (rnd(seed) * 2.0 - 1.0)) * uJitter * uBound;
+
+  col = clamp(d.y * 0.7 + d.z * 0.5, 0.0, 1.0); // orbit-trap banding
+
+  // Mandelbox: recycle interior points (orbit never escaped) so they don't pile on the core
+  if(uFormula > 0.5 && d.w < 0.5) pos = randBall(seed, uBound);
+  if(dot(pos, pos) > bsq) pos = randBall(seed, uBound);
+  outState = vec4(pos, col);
+}
+`
+
 // ---- points: sample state texture, splat additive HDR ---------------------
 export const POINTS_VERT = /* glsl */ `
 precision highp float;
