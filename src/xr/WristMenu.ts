@@ -39,6 +39,7 @@ export interface MenuActions {
   toggleAuto: () => void
   recolor: () => void
   morphToPreset: (i: number) => void
+  morphToBulbPreset: (i: number) => void // bulb-gallery chip (shown only in bulb mode)
   saveFavorite: () => void
   loadFave: () => void
   deleteFave: () => void
@@ -86,6 +87,11 @@ export class WristMenu {
   private raycaster = new Raycaster()
   private _hovered = false
   private _hitDist = 0
+  // retained so the grid can be rebuilt when the mode changes (flame ⇄ bulb)
+  private actions: MenuActions
+  private flamePresets: string[]
+  private bulbPresets: string[]
+  private mode: string
 
   constructor(
     offHand: Object3D,
@@ -93,8 +99,13 @@ export class WristMenu {
     actions: MenuActions,
     private isFlyThrough: () => boolean,
     presetNames: string[],
+    bulbPresetNames: string[],
   ) {
-    this.buildGrid(actions, presetNames)
+    this.actions = actions
+    this.flamePresets = presetNames
+    this.bulbPresets = bulbPresetNames
+    this.mode = getState().mode
+    this.buildGrid(actions, this.mode)
 
     this.panelCanvas.width = W
     this.panelCanvas.height = this.h
@@ -125,7 +136,9 @@ export class WristMenu {
     this.redrawPanel(this.getState())
   }
 
-  private buildGrid(a: MenuActions, presetNames: string[]): void {
+  private buildGrid(a: MenuActions, mode: string): void {
+    const bulb = mode === 'BULB'
+    const presetNames = bulb ? this.bulbPresets : this.flamePresets
     const m = 36
     const gap = 20
     const stripBottom = 150
@@ -138,9 +151,12 @@ export class WristMenu {
       { label: 'MODE', kind: 'action', valueKey: 'mode', run: a.toggleMode, rect: [bx(0), r0y, cwb, r0h] },
       { label: 'RANDOMIZE', sub: 'R-trig', kind: 'action', run: a.randomize, rect: [bx(1), r0y, cwb, r0h] },
       { label: 'MUTATE', sub: 'L-trig', kind: 'action', run: a.mutateCurrent, rect: [bx(2), r0y, cwb, r0h] },
-      { label: 'CROSS-BREED', sub: 'B btn', kind: 'action', run: a.breed, rect: [bx(3), r0y, cwb, r0h] },
+      // in bulb mode "breed" flips Mandelbulb ⇄ Juliabulb, so relabel it
+      bulb
+        ? { label: 'FLIP', sub: 'kind', kind: 'action', run: a.breed, rect: [bx(3), r0y, cwb, r0h] }
+        : { label: 'CROSS-BREED', sub: 'B btn', kind: 'action', run: a.breed, rect: [bx(3), r0y, cwb, r0h] },
     ]
-    // auto / recolor / save / faves / delete / passthrough row (6 cells)
+    // auto / recolor / [save / faves / delete — flame only] / passthrough row
     const r1y = r0y + r0h + gap
     const r1h = 120
     const cw4 = (W - 2 * m - 5 * gap) / 6
@@ -148,12 +164,18 @@ export class WristMenu {
     const middle: Cell[] = [
       { label: 'AUTO', kind: 'toggle', toggleKey: 'auto', run: a.toggleAuto, rect: [mx(0), r1y, cw4, r1h] },
       { label: 'RECOLOR', sub: 'theme', kind: 'action', run: a.recolor, rect: [mx(1), r1y, cw4, r1h] },
-      { label: 'SAVE', kind: 'action', valueKey: 'saved', run: a.saveFavorite, rect: [mx(2), r1y, cw4, r1h] },
-      { label: 'FAVES', kind: 'action', valueKey: 'faves', run: a.loadFave, rect: [mx(3), r1y, cw4, r1h] },
-      { label: 'DELETE', sub: 'fave', kind: 'action', run: a.deleteFave, rect: [mx(4), r1y, cw4, r1h] },
+      // favourites store flame genomes — hide them in bulb mode (keep PASSTHRU in its slot)
+      ...(bulb
+        ? []
+        : [
+            { label: 'SAVE', kind: 'action' as const, valueKey: 'saved' as const, run: a.saveFavorite, rect: [mx(2), r1y, cw4, r1h] as [number, number, number, number] },
+            { label: 'FAVES', kind: 'action' as const, valueKey: 'faves' as const, run: a.loadFave, rect: [mx(3), r1y, cw4, r1h] as [number, number, number, number] },
+            { label: 'DELETE', sub: 'fave', kind: 'action' as const, run: a.deleteFave, rect: [mx(4), r1y, cw4, r1h] as [number, number, number, number] },
+          ]),
       { label: 'PASSTHRU', kind: 'toggle', toggleKey: 'passthrough', run: a.togglePassthrough, rect: [mx(5), r1y, cw4, r1h] },
     ]
-    // preset chips — wrap into up to two rows so larger galleries stay readable
+    // preset chips — bulb gallery in bulb mode, flame gallery otherwise; wrap into up to two rows
+    const presetAction = bulb ? a.morphToBulbPreset : a.morphToPreset
     const r2y = r1y + r1h + gap
     const r2h = 92
     const cgap = 12
@@ -172,7 +194,7 @@ export class WristMenu {
         label: name,
         kind: 'preset',
         presetIdx: i,
-        run: () => a.morphToPreset(i),
+        run: () => presetAction(i),
         rect: [x0 + col * (cwN + cgap), r2y + row * (r2h + cgap), cwN, r2h] as [number, number, number, number],
       })
     })
@@ -278,8 +300,29 @@ export class WristMenu {
 
   // ---- per-frame ----------------------------------------------------------
 
+  /** Rebuild the grid for the current mode (flame ⇄ bulb) — different preset gallery,
+   * and favourites are hidden in bulb mode. Cheap; only runs on an actual mode change. */
+  private rebuildForMode(): void {
+    const prevH = this.h
+    this.buildGrid(this.actions, this.mode)
+    if (this.h !== prevH) {
+      this.panelCanvas.height = this.h
+      this.panel.geometry.dispose()
+      this.panel.geometry = new PlaneGeometry(0.17, 0.17 * (this.h / W))
+    }
+    // the new grid may have fewer rows/cells — keep the cursor in bounds
+    this.cursor.r = clampInt(this.cursor.r, 0, this.rows.length - 1)
+    this.cursor.c = clampInt(this.cursor.c, 0, this.rows[this.cursor.r].length - 1)
+    this.lastSnapshot = '' // force a panel redraw
+  }
+
   update(dt: number): void {
     this.root.visible = true
+    const st = this.getState()
+    if (st.mode !== this.mode) {
+      this.mode = st.mode
+      this.rebuildForMode()
+    }
     // force-collapse while two-hand fly-through scaling
     const target = this.isFlyThrough() ? false : this.open
     if (!target) this.open = false
@@ -293,7 +336,6 @@ export class WristMenu {
     ;(this.panel.material as MeshBasicMaterial).opacity = this.openAmount
     ;(this.sliver.material as MeshBasicMaterial).opacity = 1 - this.openAmount
 
-    const st = this.getState()
     const sliverSnap = `${st.name}|${st.auto}`
     if (sliverSnap !== this.lastSliverSnapshot) {
       this.lastSliverSnapshot = sliverSnap

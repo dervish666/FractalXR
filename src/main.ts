@@ -225,10 +225,12 @@ const toggleAuto = (): void => {
 }
 // recolor: apply the next curated theme to the current flame (structure unchanged, colours morph)
 let themeIndex = -1
-const recolor = (): void => {
-  themeIndex = (themeIndex + 1) % THEMES.length
+const recolor = (dir = 1): void => {
+  themeIndex = (themeIndex + dir + THEMES.length) % THEMES.length
   const pal = themeColors(THEMES[themeIndex].name)
-  if (sim.mode === 'bulb') startBulbMorphTo({ ...currentBulb, palette: pal })
+  // recolor toward the morph DESTINATION (bulbTo / toGenome), not the frozen mid-morph
+  // value — so changing colour mid-morph keeps heading to the shape you were going to.
+  if (sim.mode === 'bulb') startBulbMorphTo({ ...bulbTo, palette: pal })
   else startMorphTo({ ...toGenome, palette: pal })
 }
 
@@ -389,6 +391,11 @@ const cycleMorph = (): void => {
   mIdx = next(mIdx, MORPH_STEPS.length)
   morphDuration = MORPH_STEPS[mIdx]
 }
+// thumbstick morph-speed nudge — clamped (no wrap), faster = shorter duration = lower index
+const setMorphSpeed = (faster: boolean): void => {
+  mIdx = Math.max(0, Math.min(MORPH_STEPS.length - 1, mIdx + (faster ? -1 : 1)))
+  morphDuration = MORPH_STEPS[mIdx]
+}
 const cycleAnimation = (): void => {
   spinIdx = next(spinIdx, SPIN_STEPS.length)
   rotationSpeed = SPIN_STEPS[spinIdx]
@@ -419,7 +426,7 @@ const menu = new WristMenu(
     passthrough: passthroughOn,
     arAvailable: sessionIsAR,
     accent: toGenome.palette[toGenome.palette.length - 1],
-    currentPreset: GALLERY.indexOf(toGenome),
+    currentPreset: sim.mode === 'bulb' ? BULB_GALLERY.indexOf(currentBulb) : GALLERY.indexOf(toGenome),
     particles: fmtCount(userCount),
     size: pointSize.toFixed(1),
     morph: `${morphDuration.toFixed(1)}s`,
@@ -439,6 +446,7 @@ const menu = new WristMenu(
       if (sim.mode === 'bulb') setMode('flame') // picking a flame preset leaves bulb mode
       startMorphTo(GALLERY[i])
     },
+    morphToBulbPreset: (i) => startBulbMorphTo(BULB_GALLERY[i]), // bulb-gallery chip (bulb mode only)
     saveFavorite,
     loadFave,
     deleteFave,
@@ -452,6 +460,7 @@ const menu = new WristMenu(
   },
   () => worldGrab.gripCount >= 2,
   GALLERY.map((g) => g.name),
+  BULB_GALLERY.map((b) => b.name),
 )
 
 applyGenome(initial)
@@ -512,6 +521,7 @@ let aWasDown = false
 let bWasDown = false
 let stickArmed = true
 let stickClickWas = false
+let adjArmed = true // pointer-hand stick debounce (palette / morph-speed nudges)
 const menuBtnPrev: boolean[] = [] // previous pressed-state per unmapped button index (menu-button detection)
 let menuBtnInit = false // skip firing on the very first poll so a stuck/phantom button can't auto-open
 function pollButtons(): void {
@@ -542,8 +552,9 @@ function pollButtons(): void {
     menuBtnInit = true
   }
 
-  // left controller thumbstick + click drives the wrist menu
-  const lpad = inputSources[0]?.gamepad
+  // menu-hand thumbstick + click drives the wrist menu cursor (follow handedness, like the
+  // menu-button and pointer-tweak blocks — don't assume the left controller is index 0)
+  const lpad = inputSources[menuHand]?.gamepad
   if (lpad) {
     let ax = lpad.axes[2] ?? 0
     let ay = lpad.axes[3] ?? 0
@@ -563,6 +574,26 @@ function pollButtons(): void {
     if (click && !stickClickWas) menu.click()
     stickClickWas = click
   }
+
+  // pointer-hand thumbstick — quick tweaks any time: left/right = previous/next palette,
+  // up/down = faster/slower morph. It's the OTHER stick from the menu cursor nav (which is
+  // on the menu hand), so the two never fight even with the menu open.
+  const ppad = inputSources[pointerHand]?.gamepad
+  if (ppad) {
+    let ax = ppad.axes[2] ?? 0
+    let ay = ppad.axes[3] ?? 0
+    if (Math.abs(ax) < 0.15 && Math.abs(ay) < 0.15) {
+      ax = ppad.axes[0] ?? 0
+      ay = ppad.axes[1] ?? 0
+    }
+    if (adjArmed && (Math.abs(ax) > 0.6 || Math.abs(ay) > 0.6)) {
+      if (Math.abs(ax) > Math.abs(ay)) recolor(ax > 0 ? 1 : -1) // L/R: step palette (colour)
+      else setMorphSpeed(ay < 0) // up = faster morph, down = slower
+      adjArmed = false
+      ;(ppad as unknown as { hapticActuators?: { pulse?: (a: number, b: number) => void }[] }).hapticActuators?.[0]?.pulse?.(0.3, 15)
+    }
+    if (Math.abs(ax) < 0.35 && Math.abs(ay) < 0.35) adjArmed = true
+  }
 }
 
 // --- adaptive quality -------------------------------------------------------
@@ -581,14 +612,16 @@ const adaptive = new AdaptiveQuality(
   72,
 )
 
-// pick the best sustainable refresh rate when a session starts
+// refresh rate when a session starts. This app trades refresh for particle DENSITY — a higher
+// refresh shrinks the frame budget and forces the adaptive guard to shed particles to keep up.
+// 72Hz is the comfortable VR floor and gives the largest budget, so the cloud stays fullest.
 renderer.xr.addEventListener('sessionstart', () => {
   const session = renderer.xr.getSession()
   const rates = session?.supportedFrameRates
   if (session && rates && rates.length) {
-    const target = Math.max(...rates.filter((r) => r <= 120))
+    const target = rates.includes(72) ? 72 : Math.min(...rates)
     session.updateTargetFrameRate?.(target).catch(() => {})
-    adaptive.setTargetHz(target >= 90 ? 90 : 72) // adapt against a sustainable floor
+    adaptive.setTargetHz(target) // adapt against the rate we actually run at
   }
 })
 
