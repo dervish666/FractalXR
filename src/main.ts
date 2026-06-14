@@ -349,16 +349,20 @@ controllers.forEach((c, i) => {
   })
 })
 
-// desktop keys: r=randomize, e=mutate, b=breed, a=auto, 1-5=gallery presets
+// desktop keys: r=randomize, e=mutate, b=breed, a=auto, 1-9=gallery presets
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'r') randomize()
-  else if (e.key === 'e') mutateCurrent()
-  else if (e.key === 'b') breed()
-  else if (e.key === 'a') toggleAuto()
-  else if (e.key >= '1' && e.key <= '9') {
-    const i = Number(e.key) - 1
+  const k = e.key
+  let hit = true
+  if (k === 'r') randomize()
+  else if (k === 'e') mutateCurrent()
+  else if (k === 'b') breed()
+  else if (k === 'a') toggleAuto()
+  else if (k >= '1' && k <= '9') {
+    const i = Number(k) - 1
     if (i < GALLERY.length) startMorphTo(GALLERY[i])
-  }
+  } else hit = false
+  // once they've used a control, fade the on-screen hint back so it's not in the way
+  if (hit) document.getElementById('desk-controls')?.classList.add('used')
 })
 
 // headset face buttons: A/X (4) = toggle auto-generate, B/Y (5) = cross-breed

@@ -43,6 +43,38 @@ body {
   opacity: 0.75;
 }
 
+/* Desktop keyboard hint — surfaces the browser controls for visitors without a
+   headset (most of them). Fades back once they've started playing (.used). */
+#desk-controls {
+  margin-top: 0.9rem;
+  font-size: 0.82rem;
+  line-height: 1.8;
+  transition: opacity 0.6s ease;
+}
+#desk-controls.used {
+  opacity: 0.3;
+}
+#desk-controls .dc-label {
+  display: block;
+  opacity: 0.6;
+  margin-bottom: 0.45rem;
+  letter-spacing: 0.02em;
+}
+#desk-controls .dc-keys {
+  color: #cfd8ff;
+}
+#desk-controls kbd {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.74rem;
+  padding: 0.08rem 0.42rem;
+  color: #e6ecff;
+  background: rgba(120, 150, 255, 0.16);
+  border: 1px solid rgba(136, 170, 255, 0.45);
+  border-radius: 5px;
+  box-shadow: 0 1px 0 rgba(136, 170, 255, 0.25);
+  white-space: nowrap;
+}
+
 canvas {
   display: block;
 }
