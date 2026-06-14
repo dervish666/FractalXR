@@ -39,6 +39,7 @@ export interface MenuActions {
   morphToPreset: (i: number) => void
   saveFavorite: () => void
   loadFave: () => void
+  deleteFave: () => void
   cycleParticles: () => void
   cycleSize: () => void
   cycleMorph: () => void
@@ -73,6 +74,7 @@ export class WristMenu {
   private panelTex: CanvasTexture
   private sliverTex: CanvasTexture
   private rows: Cell[][] = []
+  private h = H // panel canvas height — recomputed by buildGrid to fit the preset rows
   private cursor = { r: 0, c: 0 }
   private open = false
   private openAmount = 0
@@ -92,7 +94,7 @@ export class WristMenu {
     this.buildGrid(actions, presetNames)
 
     this.panelCanvas.width = W
-    this.panelCanvas.height = H
+    this.panelCanvas.height = this.h
     this.panelTex = new CanvasTexture(this.panelCanvas)
     this.panelTex.minFilter = LinearFilter
     const panelMat = new MeshBasicMaterial({
@@ -102,7 +104,7 @@ export class WristMenu {
       polygonOffset: true,
       polygonOffsetFactor: -1,
     })
-    this.panel = new Mesh(new PlaneGeometry(0.17, 0.17 * (H / W)), panelMat)
+    this.panel = new Mesh(new PlaneGeometry(0.17, 0.17 * (this.h / W)), panelMat)
 
     this.sliverCanvas.width = 512
     this.sliverCanvas.height = 128
@@ -133,33 +135,44 @@ export class WristMenu {
       { label: 'MUTATE', sub: 'L-trigger', kind: 'action', run: a.mutateCurrent, rect: [m + cw3 + gap, r0y, cw3, r0h] },
       { label: 'CROSS-BREED', sub: 'B button', kind: 'action', run: a.breed, rect: [m + 2 * (cw3 + gap), r0y, cw3, r0h] },
     ]
-    // auto / recolor / save / faves / passthrough row (5 cells)
+    // auto / recolor / save / faves / delete / passthrough row (6 cells)
     const r1y = r0y + r0h + gap
     const r1h = 120
-    const cw4 = (W - 2 * m - 4 * gap) / 5
+    const cw4 = (W - 2 * m - 5 * gap) / 6
     const mx = (i: number): number => m + i * (cw4 + gap)
     const middle: Cell[] = [
       { label: 'AUTO', kind: 'toggle', toggleKey: 'auto', run: a.toggleAuto, rect: [mx(0), r1y, cw4, r1h] },
       { label: 'RECOLOR', sub: 'theme', kind: 'action', run: a.recolor, rect: [mx(1), r1y, cw4, r1h] },
       { label: 'SAVE', kind: 'action', valueKey: 'saved', run: a.saveFavorite, rect: [mx(2), r1y, cw4, r1h] },
       { label: 'FAVES', kind: 'action', valueKey: 'faves', run: a.loadFave, rect: [mx(3), r1y, cw4, r1h] },
-      { label: 'PASSTHRU', kind: 'toggle', toggleKey: 'passthrough', run: a.togglePassthrough, rect: [mx(4), r1y, cw4, r1h] },
+      { label: 'DELETE', sub: 'fave', kind: 'action', run: a.deleteFave, rect: [mx(4), r1y, cw4, r1h] },
+      { label: 'PASSTHRU', kind: 'toggle', toggleKey: 'passthrough', run: a.togglePassthrough, rect: [mx(5), r1y, cw4, r1h] },
     ]
-    // preset chips row (one row, sized to fit however many presets there are)
+    // preset chips — wrap into up to two rows so larger galleries stay readable
     const r2y = r1y + r1h + gap
-    const r2h = 96
-    const n = Math.max(1, presetNames.length)
+    const r2h = 92
     const cgap = 12
-    const cwN = (W - 2 * m - (n - 1) * cgap) / n
-    const presets: Cell[] = presetNames.map((name, i) => ({
-      label: name,
-      kind: 'preset' as const,
-      presetIdx: i,
-      run: () => a.morphToPreset(i),
-      rect: [m + i * (cwN + cgap), r2y, cwN, r2h] as [number, number, number, number],
-    }))
-    // settings row — value cyclers (click to step) + Exit VR
-    const r3y = r2y + r2h + gap
+    const n = Math.max(1, presetNames.length)
+    const presetRowCount = n > 8 ? 2 : 1
+    const perRow = Math.ceil(n / presetRowCount)
+    const cwN = (W - 2 * m - (perRow - 1) * cgap) / perRow
+    const presetRows: Cell[][] = Array.from({ length: presetRowCount }, () => [] as Cell[])
+    presetNames.forEach((name, i) => {
+      const row = Math.floor(i / perRow)
+      const col = i % perRow
+      const inThisRow = Math.min(perRow, n - row * perRow) // last row may be short → centre it
+      const rowW = inThisRow * cwN + (inThisRow - 1) * cgap
+      const x0 = (W - rowW) / 2
+      presetRows[row].push({
+        label: name,
+        kind: 'preset',
+        presetIdx: i,
+        run: () => a.morphToPreset(i),
+        rect: [x0 + col * (cwN + cgap), r2y + row * (r2h + cgap), cwN, r2h] as [number, number, number, number],
+      })
+    })
+    // settings row — value cyclers (click to step) + Exit VR — below the preset rows
+    const r3y = r2y + presetRowCount * r2h + (presetRowCount - 1) * cgap + gap
     const r3h = 104
     const sgap = 12
     const sw = (W - 2 * m - 4 * sgap) / 5
@@ -171,7 +184,8 @@ export class WristMenu {
       { label: 'SPIN', kind: 'setting', valueKey: 'animation', run: a.cycleAnimation, rect: [sx(3), r3y, sw, r3h] },
       { label: 'EXIT VR', kind: 'exit', run: a.exitVR, rect: [sx(4), r3y, sw, r3h] },
     ]
-    this.rows = [breeding, middle, presets, settings]
+    this.h = r3y + r3h + 28 // panel height fits the actual content (1 or 2 preset rows)
+    this.rows = [breeding, middle, ...presetRows, settings]
   }
 
   // ---- input (called from main's button poll) -----------------------------
@@ -239,7 +253,7 @@ export class WristMenu {
     const uv = hits[0].uv
     if (uv) {
       const px = uv.x * W
-      const py = (1 - uv.y) * H
+      const py = (1 - uv.y) * this.h
       for (let r = 0; r < this.rows.length; r++) {
         for (let c = 0; c < this.rows[r].length; c++) {
           const [x, y, w, h] = this.rows[r][c].rect
@@ -310,10 +324,10 @@ export class WristMenu {
   private redrawPanel(st: MenuState): void {
     const ctx = this.panelCanvas.getContext('2d')!
     const accent = accentCss(st.accent)
-    ctx.clearRect(0, 0, W, H)
+    ctx.clearRect(0, 0, W, this.h)
 
     // backing
-    roundRect(ctx, 8, 8, W - 16, H - 16, 40)
+    roundRect(ctx, 8, 8, W - 16, this.h - 16, 40)
     ctx.fillStyle = 'rgba(10,14,22,0.9)'
     ctx.fill()
     ctx.lineWidth = 3
@@ -416,7 +430,7 @@ export class WristMenu {
 
     const subText = cell.valueKey ? st[cell.valueKey] : cell.sub
     ctx.fillStyle = dim ? 'rgba(200,210,240,0.4)' : '#eef2ff'
-    ctx.font = `600 ${cell.kind === 'preset' ? 24 : 40}px ui-sans-serif, system-ui, sans-serif`
+    ctx.font = `600 ${cell.kind === 'preset' ? 24 : 36}px ui-sans-serif, system-ui, sans-serif`
     ctx.fillText(cell.label, cx, subText ? cy - 16 : cy)
     if (subText) {
       ctx.font = '400 26px ui-sans-serif, system-ui, sans-serif'

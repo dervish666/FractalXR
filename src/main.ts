@@ -226,6 +226,13 @@ const loadFave = (): void => {
   faveIndex = (faveIndex + 1) % favorites.length
   startMorphTo(cloneGenome(favorites[faveIndex]))
 }
+// delete the favourite you most recently loaded with Faves (recoverable — just re-Save)
+const deleteFave = (): void => {
+  if (faveIndex < 0 || faveIndex >= favorites.length) return
+  favorites.splice(faveIndex, 1)
+  persistFavorites(favorites)
+  faveIndex-- // so the next Faves press lands on the item that shifted into this slot
+}
 
 // --- live settings (cycled from the menu) -----------------------------------
 const PARTICLE_STEPS = [0.3, 0.5, 0.7, 0.85, 1.0]
@@ -297,6 +304,7 @@ const menu = new WristMenu(
     morphToPreset: (i) => startMorphTo(GALLERY[i]),
     saveFavorite,
     loadFave,
+    deleteFave,
     cycleParticles,
     cycleSize,
     cycleMorph,
@@ -551,4 +559,9 @@ window.addEventListener('resize', () => {
   menu,
   overlayScene,
   controllers,
+  // tuning/dev helpers: read the live genome, and set morph speed (for fast candidate harvesting)
+  getGenome: () => JSON.parse(JSON.stringify(toGenome)) as FlameGenome,
+  setMorph: (s: number) => {
+    morphDuration = s
+  },
 }

@@ -5,6 +5,8 @@ explore glowing, living fractal-flame structures — in full **VR**, or in **mix
 reality** where they float in your actual room. Built with a custom GPU chaos-game
 engine running a few-million-particle point cloud at headset framerate.
 
+**▶ Live: [fractalxr.brisflix.com](https://fractalxr.brisflix.com)** — open it in the Meta Quest 3 browser.
+
 > Put on a Quest 3, open the page, press **Enter VR** (void) or **Enter MR** (passthrough),
 > and reach out and grab a fractal.
 
@@ -12,7 +14,7 @@ engine running a few-million-particle point cloud at headset framerate.
 
 - **3D volumetric fractal flames** — the IFS chaos game generalised to 3D, rendered as a
   glowing additive point cloud (~700K–2.4M particles) you fly through and grab.
-- **Explore** — 8 hand-tuned presets; one-hand grab to move, two-hand pull to scale and fly in.
+- **Explore** — 13 presets (8 hand-tuned + 5 bred-and-curated); one-hand grab to move, two-hand pull to scale and fly in.
 - **Create** — randomize / mutate / cross-breed endless new flames (Electric-Sheep style).
 - **Animate** — smooth flame-to-flame morphing, infinite auto-generate, gentle auto-rotation.
 - **Colour** — 14 multi-hue palettes + recolour any flame.
