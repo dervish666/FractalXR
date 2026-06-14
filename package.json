@@ -1,0 +1,21 @@
+{
+  "name": "fractalxr",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "WebXR 3D fractal flame generator for the Meta Quest 3",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host"
+  },
+  "dependencies": {
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.1",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  }
+}

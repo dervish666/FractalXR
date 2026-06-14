@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #05060a;
+  color: #e8ecff;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#overlay {
+  position: fixed;
+  top: 24px;
+  left: 24px;
+  max-width: 28rem;
+  pointer-events: none;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
+}
+
+#overlay h1 {
+  font-size: 1.6rem;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  background: linear-gradient(90deg, #7ad7ff, #b88bff, #ff8bd1);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+#overlay p {
+  margin-top: 0.5rem;
+  font-size: 0.95rem;
+  opacity: 0.75;
+}
+
+canvas {
+  display: block;
+}
+
+/* Place the "Enter VR" (three's VRButton) and "Enter MR" buttons side-by-side.
+   !important beats the inline `left` VRButton sets on itself asynchronously. */
+#VRButton {
+  left: calc(50% - 130px) !important;
+}
+#MRButton {
+  left: calc(50% + 20px) !important;
+}
+
+#flame-label {
+  position: fixed;
+  bottom: 20px;
+  left: 24px;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  color: #cfd8ff;
+  opacity: 0.8;
+  pointer-events: none;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.9);
+}
