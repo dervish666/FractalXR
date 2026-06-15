@@ -217,14 +217,18 @@ void main(){
   // collapsing onto them. For the bulb shellEps=0 (project straight onto the shell).
   float shellEps = (uFormula > 0.5) ? 0.012 * uBound : 0.0;
   vec4 d = de(pos);
+  vec3 n = vec3(0.0, 0.0, 1.0); // surface normal — kept from the final projection step
   for(int i = 0; i < 6; i++){
     if(float(i) >= uProjSteps) break;
     d = de(pos);
-    pos -= deGrad(pos, e) * (d.x - shellEps);
+    n = deGrad(pos, e);
+    pos -= n * (d.x - shellEps);
   }
+  if(uProjSteps < 0.5) n = deGrad(pos, e); // no projection ran → still need a normal for the wander
 
-  // wander tangentially so the shell fills uniformly and shimmers (stays alive)
-  vec3 n = deGrad(pos, e);
+  // wander tangentially so the shell fills uniformly and shimmers (stays alive). Reuses n from the
+  // last projection step instead of a fresh 4-tap gradient — the point barely moves on that final
+  // step, so it's the same surface normal, saving a full deGrad (4 DE evals) per particle.
   vec3 t1 = normalize(cross(n, vec3(0.0, 0.0, 1.0) + vec3(1e-3)));
   vec3 t2 = cross(n, t1);
   pos += (t1 * (rnd(seed) * 2.0 - 1.0) + t2 * (rnd(seed) * 2.0 - 1.0)) * uJitter * uBound;
