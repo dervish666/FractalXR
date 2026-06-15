@@ -84,6 +84,8 @@ export class WristMenu {
   private openAmount = 0
   private lastSnapshot = ''
   private lastSliverSnapshot = ''
+  private lastPerf = '' // the live fps readout — refreshed on a throttle, kept out of the structural dirty-check
+  private perfClock = 0
   private raycaster = new Raycaster()
   private _hovered = false
   private _hitDist = 0
@@ -342,9 +344,17 @@ export class WristMenu {
       this.redrawSliver(st)
     }
     if (showPanel) {
-      const snap = `${st.name}|${st.mode}|${st.morphing}|${st.auto}|${st.passthrough}|${st.arAvailable}|${st.currentPreset}|${this.cursor.r},${this.cursor.c}|${st.accent.join(',')}|${st.particles}|${st.size}|${st.morph}|${st.animation}|${st.saved}|${st.faves}|${st.perf}`
-      if (snap !== this.lastSnapshot) {
+      // `perf` (live fps) is the ONLY field that changes ~every frame, so it's kept OUT of the
+      // structural snapshot and refreshed on a gentle throttle. Otherwise an open menu would
+      // repaint the whole 1024px canvas + re-upload ~3.7MB to the GPU every frame — enough to
+      // trip AdaptiveQuality into shedding particles while you're using the menu.
+      const snap = `${st.name}|${st.mode}|${st.morphing}|${st.auto}|${st.passthrough}|${st.arAvailable}|${st.currentPreset}|${this.cursor.r},${this.cursor.c}|${st.accent.join(',')}|${st.particles}|${st.size}|${st.morph}|${st.animation}|${st.saved}|${st.faves}`
+      this.perfClock += dt
+      const perfDue = this.perfClock >= 0.5 && st.perf !== this.lastPerf
+      if (snap !== this.lastSnapshot || perfDue) {
         this.lastSnapshot = snap
+        this.lastPerf = st.perf
+        this.perfClock = 0
         this.redrawPanel(st)
       }
     }

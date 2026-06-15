@@ -36,6 +36,31 @@ import { WristMenu } from './xr/WristMenu'
 import { ControlsGuide } from './xr/ControlsGuide'
 import { createMRButton } from './xr/MRButton'
 
+// Replace the landing overlay with a readable message (no innerHTML — keep the codebase XSS-free).
+function showFatal(msg: string, hint: string): void {
+  const o = document.getElementById('overlay')
+  if (!o) return
+  o.replaceChildren()
+  const h = document.createElement('h1')
+  h.textContent = 'FractalXR'
+  const p = document.createElement('p')
+  p.textContent = msg
+  const s = document.createElement('p')
+  s.textContent = hint
+  s.style.opacity = '0.7'
+  o.append(h, p, s)
+}
+
+// The engine is WebGL2 / GLSL ES 3.00. Fail with a readable message rather than a silent black
+// screen for visitors on older/locked-down browsers or a GPU blocklist.
+if (!document.createElement('canvas').getContext('webgl2')) {
+  showFatal(
+    "This needs WebGL2, which this browser or device doesn't support here.",
+    'Try a recent desktop Chrome, Edge or Firefox — or open it in the Meta Quest browser.',
+  )
+  throw new Error('WebGL2 unavailable')
+}
+
 // --- renderer ---------------------------------------------------------------
 // alpha: true gives the drawing buffer an alpha channel so immersive-ar passthrough
 // can show through where we clear/write transparent. Harmless for VR (opaque blend)
@@ -240,6 +265,7 @@ let favorites = loadFavorites()
 let faveIndex = -1
 const saveFavorite = (): void => {
   favorites.push(cloneGenome(toGenome))
+  faveIndex = favorites.length - 1 // the just-saved flame is now "current" so Delete targets it, not a stale prior load
   persistFavorites(favorites)
 }
 const loadFave = (): void => {
@@ -364,10 +390,13 @@ const SIZE_STEPS = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
 const MORPH_STEPS = [0.8, 1.5, 2.5, 4.0, 7.0]
 const SPIN_STEPS = [0, 0.03, 0.06, 0.12, 0.25]
 const SPIN_LABELS = ['Off', 'Slow', 'Med', 'Fast', 'Spin']
+// honour prefers-reduced-motion: start with no ambient auto-rotation (the user can re-enable
+// spin from the menu). The flame already freezes when settled, so this leaves it still at rest.
+const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 let pIdx = 0 // default 0.3 ≈ 708K particles — the sweet spot for clarity at size 1
 let sIdx = 0 // default size 1.0 (smallest points)
 let mIdx = 2
-let spinIdx = 2
+let spinIdx = reduceMotion ? 0 : 2
 let userCount = Math.floor(sim.count * PARTICLE_STEPS[pIdx]) // user-set ceiling
 let activeCount = userCount // currently drawn (the thermal guard may dip below this)
 let pointSize = SIZE_STEPS[sIdx]

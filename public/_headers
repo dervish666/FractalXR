@@ -1,0 +1,6 @@
+# Cloudflare Pages headers. No auth/secrets/user-content here, so this is defence-in-depth:
+# stop MIME sniffing, trim the referrer, and forbid framing (clickjacking).
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY

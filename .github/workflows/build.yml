@@ -1,0 +1,21 @@
+name: build
+
+# Move the one gate (tsc + vite build) off the dev laptop and into CI, so a push can't
+# outrun a clean type-check before Cloudflare Pages auto-deploys main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
