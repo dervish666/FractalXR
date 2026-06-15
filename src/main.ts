@@ -31,6 +31,7 @@ import { Simulation } from './engine/Simulation'
 import { FlamePoints } from './engine/FlamePoints'
 import { Compositor } from './engine/Compositor'
 import { AdaptiveQuality } from './engine/AdaptiveQuality'
+import { GpuTimer } from './engine/GpuTimer'
 import { WorldGrab } from './xr/WorldGrab'
 import { WristMenu } from './xr/WristMenu'
 import { ControlsGuide } from './xr/ControlsGuide'
@@ -672,10 +673,15 @@ function getRenderSize(out: Vector2): Vector2 {
   return renderer.getDrawingBufferSize(out)
 }
 
+// per-pass GPU timing (sim / splat / tone) so quality tuning is measured, not guessed. No-ops if
+// the EXT_disjoint_timer_query extension is unavailable (common in a WebXR session).
+const gpuTimer = new GpuTimer(renderer.getContext() as WebGL2RenderingContext)
+
 renderer.setAnimationLoop(() => {
   const now = performance.now()
   const dtMs = now - last
   last = now
+  gpuTimer.poll() // harvest GPU times from earlier frames (results come back a few frames late)
   frame++
 
   // fresh controller world matrices for the grab math
@@ -713,7 +719,9 @@ renderer.setAnimationLoop(() => {
   else settleFrames++
   // bulb mode re-relaxes every frame (the cloud chases the live isosurface); flames freeze once settled
   if (sim.mode === 'bulb' || morphT < 1 || settleFrames <= SETTLE_TAIL) {
+    gpuTimer.begin('sim')
     sim.update(renderer, frame)
+    gpuTimer.end()
     flamePoints.setStateTexture(sim.stateTexture)
   }
 
@@ -729,7 +737,9 @@ renderer.setAnimationLoop(() => {
   renderer.setRenderTarget(compositor.hdrRT)
   renderer.clear(true, true, true)
   renderer.autoClear = false
+  gpuTimer.begin('splat')
   renderer.render(pointsScene, cam)
+  gpuTimer.end()
 
   // 3. log-density tone-map into the XR framebuffer / canvas (per eye). In MR
   //    passthrough mode applyEnvMode has set clear-alpha to 0 and uPassthrough to 1,
@@ -737,7 +747,9 @@ renderer.setAnimationLoop(() => {
   //    clears opaque black and writes alpha 1, identical to before.
   renderer.setRenderTarget(xrRT)
   renderer.clear(true, true, true)
+  gpuTimer.begin('tone')
   compositor.tonemap(renderer, xrRT)
+  gpuTimer.end()
 
   // 4. overlay (controllers / grid) in LDR over the flame
   renderer.render(overlayScene, cam)
@@ -750,7 +762,7 @@ renderer.setAnimationLoop(() => {
   // resolution; if particles are being shed (drawn < ceiling) or fov has climbed, we're
   // at the GPU limit. Only meaningful while presenting.
   const fps = adaptive.frameMs > 0 ? Math.round(1000 / adaptive.frameMs) : 0
-  perfLine = `${fps} fps · ${fmtCount(activeCount)}/${fmtCount(userCount)} · fov ${adaptive.currentFoveation.toFixed(2)}`
+  perfLine = `${fps} fps · ${fmtCount(activeCount)}/${fmtCount(userCount)} · fov ${adaptive.currentFoveation.toFixed(2)}${gpuTimer.hud()}`
 })
 
 // --- resize -----------------------------------------------------------------
@@ -790,4 +802,24 @@ window.addEventListener('resize', () => {
     if (sim.mode !== 'bulb') setMode('bulb') // enter bulb mode (instant), then melt to the pick
     startBulbMorphTo(BULB_GALLERY[i])
   },
+  // --- perf-pass instrumentation + live levers (for on-device A/B tuning) ---
+  // measured per-pass GPU cost in ms (sim / splat / tone), or available:false in WebXR if the
+  // timer-query extension is blocked there.
+  gpu: () => ({
+    available: gpuTimer.available,
+    sim: +gpuTimer.ms('sim').toFixed(2),
+    splat: +gpuTimer.ms('splat').toFixed(2),
+    tone: +gpuTimer.ms('tone').toFixed(2),
+    fps: adaptive.frameMs > 0 ? Math.round(1000 / adaptive.frameMs) : 0,
+    drawn: activeCount,
+  }),
+  // supersample factor (default 1.5 = 2.25× pixels — the per-eye tone/composite pay it). Re-enter
+  // VR to apply (framebufferScaleFactor is read only at session init).
+  setScale: (x: number) => {
+    renderer.xr.setFramebufferScaleFactor(x)
+    return `framebufferScaleFactor=${x} — re-enter VR to apply`
+  },
+  setFoveation: (x: number) => renderer.xr.setFoveation(x), // 0..1, live
+  setProjSteps: (n: number) => sim.setBulbParams({ projSteps: n }), // bulb DE Newton steps (cost), live
+  setIterations: (n: number) => sim.setParams({ iterations: n, reseedProb: 0.0015 }), // flame chaos-game iters/frame
 }

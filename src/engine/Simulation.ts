@@ -191,11 +191,14 @@ export class Simulation {
     renderer.xr.enabled = false // ← stop render() swapping in the XR camera
     renderer.setRenderTarget(target)
     if (rows < this.size) {
+      const scissorWas = renderer.getScissorTest()
       renderer.setScissorTest(true)
       renderer.setScissor(0, 0, this.size, rows) // run the shader on the drawn texels only
+      renderer.render(this.scene, this.cam)
+      renderer.setScissorTest(scissorWas) // restore prior state rather than forcing it off every flame frame
+    } else {
+      renderer.render(this.scene, this.cam)
     }
-    renderer.render(this.scene, this.cam)
-    renderer.setScissorTest(false)
     renderer.xr.enabled = xrWas
     renderer.setRenderTarget(prevTarget)
   }
