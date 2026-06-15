@@ -3,6 +3,23 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## [0.1.2] - 2026-06-15
+
+A performance pass — measure first, then optimise.
+
+### Changed
+- **Bulb mode is smoother**: the Mandelbulb/Mandelbox iterator was computing a distance-estimator
+  gradient twice near the end of each particle's update; it now reuses the projection gradient for
+  the tangent shimmer, cutting ~20% of the bulb DE cost with an identical look. (Flames untouched.)
+- The simulation pass restores the renderer's scissor-test state instead of forcing it off every
+  frame.
+
+### Added
+- Developer GPU-timing instrumentation (`EXT_disjoint_timer_query`) surfacing per-pass cost
+  (sim / splat / tone) in the menu HUD and `window.fractal.gpu()`, plus live tuning levers
+  (`setScale` / `setFoveation` / `setProjSteps` / `setIterations`). Desktop-only — Quest WebXR
+  blocks timer queries — but it redirected this pass from the wrong bottleneck to the right one.
+
 ## [0.1.1] - 2026-06-15
 
 Quick-win pass from the first codebase audit — bug fixes, the desktop/landing experience, and a CI gate.
