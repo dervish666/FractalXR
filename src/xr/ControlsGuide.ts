@@ -13,7 +13,7 @@ import {
 type Vec3 = [number, number, number]
 
 const W = 1024
-const H = 624
+const H = 720 // tall enough for the two thumbstick rows
 
 /**
  * A self-dismissing "what the buttons do" card. Head-locks ~1.1 m in front of the
@@ -127,6 +127,8 @@ export class ControlsGuide {
       ['POINT + TRIGGER (right)', 'Pick a menu button', false],
       ['TRIGGER (right, in space)', 'Spawn a new flame', false],
       ['TRIGGER (left)', 'Mutate this flame', false],
+      ['LEFT STICK', 'Move the menu cursor · click to open', false],
+      ['RIGHT STICK', 'Colour ◂▸  ·  morph speed ▴▾', false],
     ]
     let y = 178
     for (const [btn, act, essential] of rows) {

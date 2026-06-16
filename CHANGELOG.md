@@ -3,7 +3,28 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
-## [0.3.1] - 2026-06-16
+## [0.4.0] - 2026-06-16
+
+Wrist-menu clarity pass.
+
+### Changed
+- **Wrist menu regrouped into labelled sections** — `CREATE` (randomize / mutate / cross-breed /
+  auto), `EXPLORE` (presets / mode / recolor), `TUNE` (the value cyclers), and `KEEP` (favourites),
+  instead of one dense grab-bag. **Exit VR** moved to its own system row so it's no longer a
+  stray-tap neighbour of the cyclers, and the cells got more room.
+- **Variant chips moved into a `PRESETS ▸` popup** — picking the EXPLORE → Presets cell opens a
+  grid of every flame/bulb variant (+ Back); choosing one applies it and returns. Reclaims the two
+  rows the chips used to occupy.
+- **PASSTHRU now only appears in an MR (immersive-ar) session**, on the system row — it's
+  meaningless in VR/desktop, so it no longer takes a permanent slot (which also widens the rows).
+
+### Added
+- **`SPLAT` cycler in the TUNE row** (Full / ¾ / ½) — the v0.3.1 splat-resolution overdraw lever is
+  now adjustable in-headset with the controller, no console needed.
+- **Thumbstick controls in the help card** — `LEFT STICK` (move the menu cursor · click to open)
+  and `RIGHT STICK` (step colour · morph speed), which were previously undocumented.
+
+
 
 A splat-overdraw lever for on-device tuning.
 

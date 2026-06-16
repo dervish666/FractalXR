@@ -24,6 +24,7 @@ export interface MenuState {
   currentPreset: number // index in gallery, or -1 if a bred flame
   particles: string // formatted current values for the settings cells
   size: string
+  splat: string // splat-resolution lever label (Full / ¾ / ½)
   morph: string
   animation: string
   saved: string
@@ -45,6 +46,7 @@ export interface MenuActions {
   deleteFave: () => void
   cycleParticles: () => void
   cycleSize: () => void
+  cycleSplat: () => void
   cycleMorph: () => void
   cycleAnimation: () => void
   togglePassthrough: () => void
@@ -55,12 +57,17 @@ export interface MenuActions {
 interface Cell {
   label: string
   sub?: string
-  kind: 'action' | 'toggle' | 'stub' | 'preset' | 'setting' | 'exit'
+  kind: 'action' | 'toggle' | 'stub' | 'preset' | 'setting' | 'exit' | 'nav' // nav = opens/closes a sub-view
   run: () => void
   presetIdx?: number
-  valueKey?: 'particles' | 'size' | 'morph' | 'animation' | 'saved' | 'faves' | 'mode' // dynamic value
+  valueKey?: 'particles' | 'size' | 'splat' | 'morph' | 'animation' | 'saved' | 'faves' | 'mode' // dynamic value
   toggleKey?: 'auto' | 'passthrough' // which MenuState bool drives the ON/OFF capsule
   rect: [number, number, number, number] // x,y,w,h in canvas px
+}
+
+interface Section {
+  label: string
+  y: number // top of the section-header band, canvas px
 }
 
 const W = 1024
@@ -78,7 +85,10 @@ export class WristMenu {
   private panelTex: CanvasTexture
   private sliverTex: CanvasTexture
   private rows: Cell[][] = []
-  private h = H // panel canvas height — recomputed by buildGrid to fit the preset rows
+  private sections: Section[] = [] // labelled group headers for the main view
+  private view: 'main' | 'presets' = 'main' // main grid vs the variant-picker popup
+  private ar = false // inside an immersive-ar session — gates the PASSTHRU cell onto the system row
+  private h = H // panel canvas height — recomputed by buildGrid to fit the current view
   private cursor = { r: 0, c: 0 }
   private open = false
   private openAmount = 0
@@ -107,6 +117,7 @@ export class WristMenu {
     this.flamePresets = presetNames
     this.bulbPresets = bulbPresetNames
     this.mode = getState().mode
+    this.ar = getState().arAvailable
     this.buildGrid(actions, this.mode)
 
     this.panelCanvas.width = W
@@ -139,83 +150,126 @@ export class WristMenu {
   }
 
   private buildGrid(a: MenuActions, mode: string): void {
+    if (this.view === 'presets') this.buildPresetsGrid(a, mode)
+    else this.buildMainGrid(a, mode)
+  }
+
+  /** Main grid: function-grouped sections (Create / Explore / Tune / Keep) + a system row.
+   *  Variant chips live behind the EXPLORE → PRESETS popup, so this stays compact. */
+  private buildMainGrid(a: MenuActions, mode: string): void {
     const bulb = mode === 'BULB'
-    const presetNames = bulb ? this.bulbPresets : this.flamePresets
     const m = 36
-    const gap = 20
-    const stripBottom = 150
-    // mode toggle + breeding row (4 cells)
-    const r0y = stripBottom + 24
-    const r0h = 130
-    const cwb = (W - 2 * m - 3 * gap) / 4
-    const bx = (i: number): number => m + i * (cwb + gap)
-    const breeding: Cell[] = [
-      { label: 'MODE', kind: 'action', valueKey: 'mode', run: a.toggleMode, rect: [bx(0), r0y, cwb, r0h] },
-      { label: 'RANDOMIZE', sub: 'R-trig', kind: 'action', run: a.randomize, rect: [bx(1), r0y, cwb, r0h] },
-      { label: 'MUTATE', sub: 'L-trig', kind: 'action', run: a.mutateCurrent, rect: [bx(2), r0y, cwb, r0h] },
-      // in bulb mode "breed" flips Mandelbulb ⇄ Juliabulb, so relabel it
-      bulb
-        ? { label: 'FLIP', sub: 'kind', kind: 'action', run: a.breed, rect: [bx(3), r0y, cwb, r0h] }
-        : { label: 'CROSS-BREED', sub: 'B btn', kind: 'action', run: a.breed, rect: [bx(3), r0y, cwb, r0h] },
-    ]
-    // auto / recolor / [save / faves / delete — flame only] / passthrough row
-    const r1y = r0y + r0h + gap
-    const r1h = 120
-    const cw4 = (W - 2 * m - 5 * gap) / 6
-    const mx = (i: number): number => m + i * (cw4 + gap)
-    const middle: Cell[] = [
-      { label: 'AUTO', kind: 'toggle', toggleKey: 'auto', run: a.toggleAuto, rect: [mx(0), r1y, cw4, r1h] },
-      { label: 'RECOLOR', sub: 'theme', kind: 'action', run: a.recolor, rect: [mx(1), r1y, cw4, r1h] },
-      // favourites store flame genomes — hide them in bulb mode (keep PASSTHRU in its slot)
-      ...(bulb
-        ? []
-        : [
-            { label: 'SAVE', kind: 'action' as const, valueKey: 'saved' as const, run: a.saveFavorite, rect: [mx(2), r1y, cw4, r1h] as [number, number, number, number] },
-            { label: 'FAVES', kind: 'action' as const, valueKey: 'faves' as const, run: a.loadFave, rect: [mx(3), r1y, cw4, r1h] as [number, number, number, number] },
-            { label: 'DELETE', sub: 'fave', kind: 'action' as const, run: a.deleteFave, rect: [mx(4), r1y, cw4, r1h] as [number, number, number, number] },
-          ]),
-      { label: 'PASSTHRU', kind: 'toggle', toggleKey: 'passthrough', run: a.togglePassthrough, rect: [mx(5), r1y, cw4, r1h] },
-    ]
-    // preset chips — bulb gallery in bulb mode, flame gallery otherwise; wrap into up to two rows
-    const presetAction = bulb ? a.morphToBulbPreset : a.morphToPreset
-    const r2y = r1y + r1h + gap
-    const r2h = 92
-    const cgap = 12
-    const n = Math.max(1, presetNames.length)
-    const presetRowCount = n > 8 ? 2 : 1
-    const perRow = Math.ceil(n / presetRowCount)
-    const cwN = (W - 2 * m - (perRow - 1) * cgap) / perRow
-    const presetRows: Cell[][] = Array.from({ length: presetRowCount }, () => [] as Cell[])
-    presetNames.forEach((name, i) => {
-      const row = Math.floor(i / perRow)
-      const col = i % perRow
-      const inThisRow = Math.min(perRow, n - row * perRow) // last row may be short → centre it
-      const rowW = inThisRow * cwN + (inThisRow - 1) * cgap
-      const x0 = (W - rowW) / 2
-      presetRows[row].push({
-        label: name,
-        kind: 'preset',
-        presetIdx: i,
-        run: () => presetAction(i),
-        rect: [x0 + col * (cwN + cgap), r2y + row * (r2h + cgap), cwN, r2h] as [number, number, number, number],
-      })
+    const gap = 18
+    const labelH = 24 // section-header band
+    const sgap = 10 // gap below a section
+    this.sections = []
+    const rows: Cell[][] = []
+    let y = 160 // below the title divider
+
+    type Def = Omit<Cell, 'rect'>
+    // lay a labelled section of n evenly-spaced cells across the full width
+    const section = (label: string, defs: Def[], cellH = 100): void => {
+      this.sections.push({ label, y })
+      y += labelH
+      const n = defs.length
+      const cw = (W - 2 * m - (n - 1) * gap) / n
+      rows.push(defs.map((d, i) => ({ ...d, rect: [m + i * (cw + gap), y, cw, cellH] as [number, number, number, number] })))
+      y += cellH + sgap
+    }
+
+    // CREATE — make new flames/bulbs
+    section('CREATE', [
+      { label: 'RANDOMIZE', sub: 'R-trig', kind: 'action', run: a.randomize },
+      { label: 'MUTATE', sub: 'L-trig', kind: 'action', run: a.mutateCurrent },
+      bulb ? { label: 'FLIP', sub: 'kind', kind: 'action', run: a.breed } : { label: 'CROSS-BREED', sub: 'B btn', kind: 'action', run: a.breed },
+      { label: 'AUTO', kind: 'toggle', toggleKey: 'auto', run: a.toggleAuto },
+    ])
+
+    // EXPLORE — browse presets, switch engine, recolour
+    section('EXPLORE', [
+      { label: 'PRESETS', sub: 'browse ▸', kind: 'nav', run: () => this.setView('presets') },
+      { label: 'MODE', kind: 'action', valueKey: 'mode', run: a.toggleMode },
+      { label: 'RECOLOR', sub: 'theme', kind: 'action', run: a.recolor },
+    ])
+
+    // TUNE — value cyclers (click to step)
+    section('TUNE', [
+      { label: 'PARTICLES', kind: 'setting', valueKey: 'particles', run: a.cycleParticles },
+      { label: 'SIZE', kind: 'setting', valueKey: 'size', run: a.cycleSize },
+      { label: 'SPLAT', kind: 'setting', valueKey: 'splat', run: a.cycleSplat },
+      { label: 'SPIN', kind: 'setting', valueKey: 'animation', run: a.cycleAnimation },
+      { label: 'MORPH', kind: 'setting', valueKey: 'morph', run: a.cycleMorph },
+    ])
+
+    // KEEP — favourites (flame only; bulb has none, so the section is skipped)
+    if (!bulb)
+      section('KEEP', [
+        { label: 'SAVE', kind: 'action', valueKey: 'saved', run: a.saveFavorite },
+        { label: 'FAVES', kind: 'action', valueKey: 'faves', run: a.loadFave },
+        { label: 'DELETE', sub: 'fave', kind: 'action', run: a.deleteFave },
+      ])
+
+    // SYSTEM — Help + (Passthru, MR sessions only) + Exit, centred and set apart from the grid.
+    // Passthrough is meaningless outside an immersive-ar session, so it only takes a slot there.
+    const sysDefs: Def[] = [{ label: 'HELP', sub: 'controls', kind: 'action', run: a.showGuide }]
+    if (this.ar) sysDefs.push({ label: 'PASSTHRU', kind: 'toggle', toggleKey: 'passthrough', run: a.togglePassthrough })
+    sysDefs.push({ label: 'EXIT VR', kind: 'exit', run: a.exitVR })
+    const sysH = 92
+    const sysW = 290
+    const sysGap = 24
+    const sysTotal = sysDefs.length * sysW + (sysDefs.length - 1) * sysGap
+    const sx0 = (W - sysTotal) / 2
+    y += 6
+    rows.push(sysDefs.map((d, i) => ({ ...d, rect: [sx0 + i * (sysW + sysGap), y, sysW, sysH] as [number, number, number, number] })))
+    y += sysH + 18
+
+    this.h = y
+    this.rows = rows
+  }
+
+  /** Presets popup: a 4-wide grid of every variant in the active gallery + a Back cell.
+   *  Picking one applies it and returns to the main view. */
+  private buildPresetsGrid(a: MenuActions, mode: string): void {
+    const bulb = mode === 'BULB'
+    const names = bulb ? this.bulbPresets : this.flamePresets
+    const action = bulb ? a.morphToBulbPreset : a.morphToPreset
+    const m = 36
+    const cols = 4
+    const cgap = 14
+    const chipH = 96
+    const cw = (W - 2 * m - (cols - 1) * cgap) / cols
+    this.sections = []
+    const rows: Cell[][] = []
+    let y = 168
+    let row: Cell[] = []
+    names.forEach((name, i) => {
+      const col = i % cols
+      if (col === 0 && i > 0) {
+        rows.push(row)
+        row = []
+        y += chipH + cgap
+      }
+      row.push({ label: name, kind: 'preset', presetIdx: i, run: () => { action(i); this.setView('main') }, rect: [m + col * (cw + cgap), y, cw, chipH] })
     })
-    // settings row — value cyclers (click to step) + Exit VR — below the preset rows
-    const r3y = r2y + presetRowCount * r2h + (presetRowCount - 1) * cgap + gap
-    const r3h = 104
-    const sgap = 12
-    const sw = (W - 2 * m - 5 * sgap) / 6
-    const sx = (i: number): number => m + i * (sw + sgap)
-    const settings: Cell[] = [
-      { label: 'PARTICLES', kind: 'setting', valueKey: 'particles', run: a.cycleParticles, rect: [sx(0), r3y, sw, r3h] },
-      { label: 'SIZE', kind: 'setting', valueKey: 'size', run: a.cycleSize, rect: [sx(1), r3y, sw, r3h] },
-      { label: 'MORPH', kind: 'setting', valueKey: 'morph', run: a.cycleMorph, rect: [sx(2), r3y, sw, r3h] },
-      { label: 'SPIN', kind: 'setting', valueKey: 'animation', run: a.cycleAnimation, rect: [sx(3), r3y, sw, r3h] },
-      { label: 'HELP', sub: 'controls', kind: 'action', run: a.showGuide, rect: [sx(4), r3y, sw, r3h] },
-      { label: 'EXIT VR', kind: 'exit', run: a.exitVR, rect: [sx(5), r3y, sw, r3h] },
-    ]
-    this.h = r3y + r3h + 28 // panel height fits the actual content (1 or 2 preset rows)
-    this.rows = [breeding, middle, ...presetRows, settings]
+    if (row.length) {
+      rows.push(row)
+      y += chipH + cgap
+    }
+    // BACK — centred, returns to the main grid
+    const backW = 360
+    y += 8
+    rows.push([{ label: '‹ BACK', kind: 'nav', run: () => this.setView('main'), rect: [(W - backW) / 2, y, backW, 92] }])
+    y += 92 + 22
+    this.h = y
+    this.rows = rows
+  }
+
+  /** Switch between the main grid and the presets popup, rebuilding the layout. */
+  private setView(v: 'main' | 'presets'): void {
+    if (this.view === v) return
+    this.view = v
+    this.cursor = { r: 0, c: 0 }
+    this.rebuild()
   }
 
   // ---- input (called from main's button poll) -----------------------------
@@ -231,6 +285,8 @@ export class WristMenu {
 
   expand(): void {
     this.open = true
+    this.setView('main') // always open to the top of the main grid
+    this.cursor = { r: 0, c: 0 }
   }
 
   collapse(): void {
@@ -247,6 +303,8 @@ export class WristMenu {
   click(): void {
     if (!this.open) {
       this.open = true
+      this.setView('main')
+      this.cursor = { r: 0, c: 0 }
       return
     }
     this.rows[this.cursor.r][this.cursor.c].run()
@@ -302,9 +360,10 @@ export class WristMenu {
 
   // ---- per-frame ----------------------------------------------------------
 
-  /** Rebuild the grid for the current mode (flame ⇄ bulb) — different preset gallery,
-   * and favourites are hidden in bulb mode. Cheap; only runs on an actual mode change. */
-  private rebuildForMode(): void {
+  /** Rebuild the grid for the current mode + view (the gallery differs by mode, favourites
+   * are hidden in bulb mode, and the popup is a different layout). Resizes the canvas/geometry
+   * if the height changed. Cheap; only runs on a mode or view change. */
+  private rebuild(): void {
     const prevH = this.h
     this.buildGrid(this.actions, this.mode)
     if (this.h !== prevH) {
@@ -321,9 +380,12 @@ export class WristMenu {
   update(dt: number): void {
     this.root.visible = true
     const st = this.getState()
-    if (st.mode !== this.mode) {
+    if (st.mode !== this.mode || st.arAvailable !== this.ar) {
       this.mode = st.mode
-      this.rebuildForMode()
+      this.ar = st.arAvailable
+      this.view = 'main' // a mode/AR change returns to the main grid
+      this.cursor = { r: 0, c: 0 }
+      this.rebuild()
     }
     // force-collapse while two-hand fly-through scaling
     const target = this.isFlyThrough() ? false : this.open
@@ -348,7 +410,7 @@ export class WristMenu {
       // structural snapshot and refreshed on a gentle throttle. Otherwise an open menu would
       // repaint the whole 1024px canvas + re-upload ~3.7MB to the GPU every frame — enough to
       // trip AdaptiveQuality into shedding particles while you're using the menu.
-      const snap = `${st.name}|${st.mode}|${st.morphing}|${st.auto}|${st.passthrough}|${st.arAvailable}|${st.currentPreset}|${this.cursor.r},${this.cursor.c}|${st.accent.join(',')}|${st.particles}|${st.size}|${st.morph}|${st.animation}|${st.saved}|${st.faves}`
+      const snap = `${this.view}|${st.name}|${st.mode}|${st.morphing}|${st.auto}|${st.passthrough}|${st.arAvailable}|${st.currentPreset}|${this.cursor.r},${this.cursor.c}|${st.accent.join(',')}|${st.particles}|${st.size}|${st.splat}|${st.morph}|${st.animation}|${st.saved}|${st.faves}`
       this.perfClock += dt
       const perfDue = this.perfClock >= 0.5 && st.perf !== this.lastPerf
       if (snap !== this.lastSnapshot || perfDue) {
@@ -397,7 +459,8 @@ export class WristMenu {
     ctx.textAlign = 'left'
     ctx.fillStyle = '#eef2ff'
     ctx.font = '600 60px ui-sans-serif, system-ui, sans-serif'
-    ctx.fillText(st.name, 44, 86)
+    const title = this.view === 'presets' ? (st.mode === 'BULB' ? 'BULB PRESETS' : 'FLAME PRESETS') : st.name
+    ctx.fillText(title, 44, 86)
     ctx.textAlign = 'right'
     ctx.font = '500 38px ui-sans-serif, system-ui, sans-serif'
     ctx.fillStyle = st.auto ? accent : st.morphing ? 'rgba(180,200,255,0.85)' : 'rgba(150,165,200,0.6)'
@@ -412,6 +475,13 @@ export class WristMenu {
     ctx.moveTo(44, 150)
     ctx.lineTo(W - 44, 150)
     ctx.stroke()
+
+    // section headers (main view) — small dim uppercase labels above each group
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.font = '700 22px ui-sans-serif, system-ui, sans-serif'
+    ctx.fillStyle = 'rgba(140,170,235,0.55)'
+    for (const s of this.sections) if (s.label) ctx.fillText(s.label, 46, s.y + 17)
 
     // cells
     for (let r = 0; r < this.rows.length; r++) {

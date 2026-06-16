@@ -403,6 +403,8 @@ const SIZE_STEPS = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
 const MORPH_STEPS = [0.8, 1.5, 2.5, 4.0, 7.0]
 const SPIN_STEPS = [0, 0.03, 0.06, 0.12, 0.25]
 const SPIN_LABELS = ['Off', 'Slow', 'Med', 'Fast', 'Spin']
+const SPLAT_STEPS = [1, 0.75, 0.5] // splat-target resolution fractions (overdraw lever)
+const SPLAT_LABELS = ['Full', '¾', '½']
 // honour prefers-reduced-motion: start with no ambient auto-rotation (the user can re-enable
 // spin from the menu). The flame already freezes when settled, so this leaves it still at rest.
 const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
@@ -414,7 +416,8 @@ let userCount = Math.floor(sim.count * PARTICLE_STEPS[pIdx]) // user-set ceiling
 let activeCount = userCount // currently drawn (the thermal guard may dip below this)
 let pointSize = SIZE_STEPS[sIdx]
 let rotationSpeed = SPIN_STEPS[spinIdx]
-let splatScale = 1 // splat-target resolution fraction (1 = full; <1 = cheaper additive fill, upscaled by the tone-map). On-device A/B lever.
+let splatIdx = 0 // index into SPLAT_STEPS (Full by default)
+let splatScale = SPLAT_STEPS[splatIdx] // splat-target resolution fraction (1 = full; <1 = cheaper additive fill, upscaled by the tone-map). Menu cycler + console lever.
 let perfLine = '' // live fps / particle-load / foveation readout for the menu (updated each frame)
 const next = (i: number, len: number): number => (i + 1) % len
 const fmtCount = (n: number): string => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
@@ -442,6 +445,10 @@ const setMorphSpeed = (faster: boolean): void => {
 const cycleAnimation = (): void => {
   spinIdx = next(spinIdx, SPIN_STEPS.length)
   rotationSpeed = SPIN_STEPS[spinIdx]
+}
+const cycleSplat = (): void => {
+  splatIdx = next(splatIdx, SPLAT_STEPS.length)
+  splatScale = SPLAT_STEPS[splatIdx]
 }
 const exitVR = (): void => {
   renderer.xr.getSession()?.end().catch(() => {})
@@ -472,6 +479,7 @@ const menu = new WristMenu(
     currentPreset: sim.mode === 'bulb' ? BULB_GALLERY.indexOf(currentBulb) : GALLERY.indexOf(toGenome),
     particles: fmtCount(userCount),
     size: pointSize.toFixed(1),
+    splat: SPLAT_LABELS[splatIdx],
     morph: `${morphDuration.toFixed(1)}s`,
     animation: SPIN_LABELS[spinIdx],
     saved: `${favorites.length} saved`,
@@ -495,6 +503,7 @@ const menu = new WristMenu(
     deleteFave,
     cycleParticles,
     cycleSize,
+    cycleSplat,
     cycleMorph,
     cycleAnimation,
     togglePassthrough,
@@ -858,6 +867,8 @@ window.addEventListener('resize', () => {
   // low-frequency so it softens rather than aliases; 0.5–0.8 is the range to A/B on-device.
   setSplatScale: (x: number) => {
     splatScale = Math.max(0.25, Math.min(1, x))
+    // snap the menu cycler to the nearest labelled step so the SPLAT readout stays coherent
+    splatIdx = SPLAT_STEPS.reduce((best, s, i) => (Math.abs(s - splatScale) < Math.abs(SPLAT_STEPS[best] - splatScale) ? i : best), 0)
     return `splatScale=${splatScale}`
   },
 }
