@@ -3,7 +3,22 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
-## [0.1.2] - 2026-06-15
+## [0.2.0] - 2026-06-16
+
+A third fractal family joins the bulb engine.
+
+### Added
+- **Kaleidoscopic IFS (KIFS)** — a new distance-estimated formula alongside Mandelbulb and
+  Mandelbox: conditional tetrahedral plane folds wrapped in two rotations, then a scale toward
+  an offset. The two fold-angles + offset + scale span a huge space of cathedral / tree /
+  lattice / snowflake forms. Four curated presets (**Lattice, Cathedral, Snowflake, Thornwood**),
+  plus full random / mutate / morph support — ~30% of randomly generated bulbs are now KIFS.
+- **Living kaleidoscope** — the two fold-angles breathe in quadrature on settled KIFS, so the
+  whole structure slowly turns. KIFS angles also lerp within the family, so morphing between two
+  KIFS genomes melts the kaleidoscope continuously (cross-formula morphs reseed onto the new
+  surface as before).
+
+
 
 A performance pass — measure first, then optimise.
 

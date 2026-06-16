@@ -127,6 +127,8 @@ uniform float uFixedR;     // Mandelbox sphere-fold fixed radius
 uniform float uBound;      // seed / reseed ball radius (per formula)
 uniform float uProjSteps;  // Newton projection steps toward the surface
 uniform float uJitter;     // tangential wander amount
+uniform float uKAngleA;    // KIFS fold rotation A (around X)
+uniform float uKAngleB;    // KIFS fold rotation B (around Z)
 out vec4 outState;
 ${PCG}
 
@@ -180,8 +182,39 @@ vec4 mandelboxDE(vec3 p){
   return vec4(length(z) / max(abs(dr), 1e-6), trapR, trapY, esc);
 }
 
+// Kaleidoscopic IFS (Knighty / Fragmentarium): conditional tetrahedral plane folds
+// wrapped in two rotations, then a scale toward an offset. The two angles + offset +
+// scale span a huge space of cathedral / tree / snowflake forms — and the angles can
+// lerp, so the whole kaleidoscope melts continuously between genomes.
+void kRotX(inout vec3 z, float a){ float s = sin(a), c = cos(a); z.yz = vec2(c*z.y - s*z.z, s*z.y + c*z.z); }
+void kRotZ(inout vec3 z, float a){ float s = sin(a), c = cos(a); z.xy = vec2(c*z.x - s*z.y, s*z.x + c*z.y); }
+
+vec4 kifsDE(vec3 p){
+  vec3 z = p;
+  vec3 off = uJuliaC;               // fold offset (reuses the Julia-C vec3 slot)
+  float s = uScale;                 // per-iteration scale (reuses the Mandelbox scale slot)
+  float dr = 1.0;
+  float trapR = 1e10, trapY = 1e10;
+  for(int i = 0; i < 12; i++){
+    kRotX(z, uKAngleA);
+    z = abs(z);                       // fold into the positive octant
+    if(z.x - z.y < 0.0) z.xy = z.yx;  // Sierpinski plane folds
+    if(z.x - z.z < 0.0) z.xz = z.zx;
+    if(z.y - z.z < 0.0) z.yz = z.zy;
+    kRotZ(z, uKAngleB);
+    z = z * s - off * (s - 1.0);      // scale toward the offset
+    dr *= s;
+    trapR = min(trapR, length(z));
+    trapY = min(trapY, abs(z.y));
+  }
+  // signed DE: bounding sphere (uFixedR) divided by the accumulated derivative
+  float d = (length(z) - uFixedR) / abs(dr);
+  return vec4(d, trapR, trapY, 0.0);  // bounded set — no orbit escape
+}
+
 // dispatch on the selected formula. .x=distance, .yz=orbit traps, .w=escaped (1/0)
 vec4 de(vec3 p){
+  if(uFormula > 1.5) return kifsDE(p);
   return (uFormula > 0.5) ? mandelboxDE(p) : mandelbulbDE(p);
 }
 
@@ -215,7 +248,7 @@ void main(){
   // Newton-project toward the surface. For the box, aim a thin shellEps OUTSIDE the
   // surface (DE>0) — this repels the spurious interior zeros (the core blob) instead of
   // collapsing onto them. For the bulb shellEps=0 (project straight onto the shell).
-  float shellEps = (uFormula > 0.5) ? 0.012 * uBound : 0.0;
+  float shellEps = (abs(uFormula - 1.0) < 0.5) ? 0.012 * uBound : 0.0; // Mandelbox only
   vec4 d = de(pos);
   vec3 n = vec3(0.0, 0.0, 1.0); // surface normal — kept from the final projection step
   for(int i = 0; i < 6; i++){
@@ -236,7 +269,7 @@ void main(){
   col = clamp(d.y * 0.7 + d.z * 0.5, 0.0, 1.0); // orbit-trap banding
 
   // Mandelbox: recycle interior points (orbit never escaped) so they don't pile on the core
-  if(uFormula > 0.5 && d.w < 0.5) pos = randBall(seed, uBound);
+  if(abs(uFormula - 1.0) < 0.5 && d.w < 0.5) pos = randBall(seed, uBound);
   if(dot(pos, pos) > bsq) pos = randBall(seed, uBound);
   outState = vec4(pos, col);
 }

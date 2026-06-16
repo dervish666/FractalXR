@@ -17,14 +17,16 @@ import { makeFullscreenTriangle } from './util'
 import { SEED_FRAG, UPDATE_FRAG, BULB_UPDATE_FRAG, RAW_VERT } from './shaders'
 
 export interface BulbParams {
-  formula: 'mandelbulb' | 'mandelbox'
+  formula: 'mandelbulb' | 'mandelbox' | 'kifs'
   power: number
-  juliaC: Vector3
+  juliaC: Vector3 // also the KIFS fold offset
   mandelbulb: boolean // true = c = p, false = Julia (c = juliaC)
-  scale: number // Mandelbox scale
+  scale: number // Mandelbox / KIFS per-iteration scale
   minR: number // Mandelbox sphere-fold min radius
-  fixedR: number // Mandelbox sphere-fold fixed radius
+  fixedR: number // Mandelbox sphere-fold fixed radius / KIFS bounding-sphere radius
   bound: number // seed / reseed ball radius
+  kAngleA: number // KIFS fold rotation A
+  kAngleB: number // KIFS fold rotation B
   projSteps: number
   jitter: number
   reseedProb: number
@@ -125,6 +127,8 @@ export class Simulation {
         uBound: { value: 1.3 },
         uProjSteps: { value: 3 },
         uJitter: { value: 0.0022 },
+        uKAngleA: { value: 0 },
+        uKAngleB: { value: 0 },
       },
     })
 
@@ -143,7 +147,7 @@ export class Simulation {
 
   setBulbParams(p: Partial<BulbParams>): void {
     const u = this.bulbMat.uniforms
-    if (p.formula !== undefined) u.uFormula.value = p.formula === 'mandelbox' ? 1 : 0
+    if (p.formula !== undefined) u.uFormula.value = p.formula === 'kifs' ? 2 : p.formula === 'mandelbox' ? 1 : 0
     if (p.power !== undefined) u.uPower.value = p.power
     if (p.juliaC !== undefined) (u.uJuliaC.value as Vector3).copy(p.juliaC)
     if (p.mandelbulb !== undefined) u.uMandelbulb.value = p.mandelbulb ? 1 : 0
@@ -151,6 +155,8 @@ export class Simulation {
     if (p.minR !== undefined) u.uMinR.value = p.minR
     if (p.fixedR !== undefined) u.uFixedR.value = p.fixedR
     if (p.bound !== undefined) u.uBound.value = p.bound
+    if (p.kAngleA !== undefined) u.uKAngleA.value = p.kAngleA
+    if (p.kAngleB !== undefined) u.uKAngleB.value = p.kAngleB
     if (p.projSteps !== undefined) u.uProjSteps.value = p.projSteps
     if (p.jitter !== undefined) u.uJitter.value = p.jitter
     if (p.reseedProb !== undefined) u.uReseedProb.value = p.reseedProb

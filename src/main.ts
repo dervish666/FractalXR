@@ -346,7 +346,18 @@ function stepBulbMorph(dtSec: number): void {
 
   // living breath on top of the (possibly morphing) base params
   const t = bulbTime * disp.speed
-  if (disp.formula === 'mandelbox') {
+  if (disp.formula === 'kifs') {
+    // breathe the two fold angles in quadrature — the kaleidoscope slowly turns
+    sim.setBulbParams({
+      formula: 'kifs',
+      scale: disp.scale,
+      fixedR: disp.fixedR,
+      bound: disp.bound,
+      juliaC: bulbC.set(disp.juliaC[0], disp.juliaC[1], disp.juliaC[2]),
+      kAngleA: disp.kAngleA + disp.kAngleBreath * Math.sin(t),
+      kAngleB: disp.kAngleB + disp.kAngleBreath * Math.cos(t * 0.7),
+    })
+  } else if (disp.formula === 'mandelbox') {
     sim.setBulbParams({
       formula: 'mandelbox',
       scale: disp.scale + disp.scaleBreath * Math.sin(t),
