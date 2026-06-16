@@ -3,7 +3,20 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
-## [0.3.0] - 2026-06-16
+## [0.3.1] - 2026-06-16
+
+A splat-overdraw lever for on-device tuning.
+
+### Added
+- **Sub-resolution splat target** (`window.fractal.setSplatScale(s)`, default 1 = unchanged).
+  The additive point cloud can render into a fraction-res HDR target (¼ the fill/bandwidth at
+  0.5 — and the additive glow is the real overdraw cost on the mobile tiler) that the tone-map
+  upscales through a Linear filter. The glow is low-frequency so it softens rather than aliases.
+  Set it in the browser console *before* Enter VR (in-session console isn't reachable), like
+  `setScale`. Desktop-verified on the canvas path; the per-eye XR viewport scaling is the bit to
+  A/B on-device. The HDR target's filter is now Linear (identical at 1:1).
+
+
 
 Seven new flame variations — the create-space just got a lot bigger.
 

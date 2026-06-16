@@ -2,8 +2,8 @@ import {
   Camera,
   GLSL3,
   HalfFloatType,
+  LinearFilter,
   Mesh,
-  NearestFilter,
   NoBlending,
   RawShaderMaterial,
   RGBAFormat,
@@ -24,22 +24,26 @@ export interface ToneParams {
 
 /**
  * Owns the HDR accumulation target (RGBA16F) and the per-eye log-density tone-map
- * pass. The HDR target is sized to the XR framebuffer so the stereo eye viewports
- * line up 1:1 and the tone-map samples each eye's region by gl_FragCoord/fbSize.
+ * pass. The tone-map samples each eye's region by gl_FragCoord/fbSize (full output res).
+ * The splat target can be rendered at a fraction of that (`splatScale`) — the additive
+ * glow is low-frequency, so a half-res splat (¼ the fill/bandwidth, the real overdraw cost)
+ * upscales near-invisibly through the Linear filter. Caller scales the XR eye viewports to
+ * match (see main.ts); at splatScale 1 this is byte-identical to a full-res 1:1 target.
  */
 export class Compositor {
   readonly hdrRT: WebGLRenderTarget
   private scene = new Scene()
   private cam = new Camera()
   private material: RawShaderMaterial
-  private size = new Vector2(2, 2)
+  private size = new Vector2(2, 2) // tone-map output (full) resolution
+  private splatSize = new Vector2(2, 2) // HDR splat target resolution (= size × splatScale)
 
   constructor(params: ToneParams) {
     this.hdrRT = new WebGLRenderTarget(2, 2, {
       type: HalfFloatType,
       format: RGBAFormat,
-      minFilter: NearestFilter,
-      magFilter: NearestFilter,
+      minFilter: LinearFilter, // bilinear upscale when the splat target is sub-res (identical at 1:1)
+      magFilter: LinearFilter,
       depthBuffer: false,
       stencilBuffer: false,
     })
@@ -68,11 +72,15 @@ export class Compositor {
     this.scene.add(mesh)
   }
 
-  /** Resize the HDR target to match the current (XR or canvas) framebuffer. */
-  ensureSize(w: number, h: number): void {
-    if (w === this.size.x && h === this.size.y) return
+  /** Size the tone-map to the full (XR or canvas) framebuffer, and the splat target to
+   *  `splatScale` of it (1 = 1:1). uFbSize stays full so the tone-map outputs at full res. */
+  ensureSize(w: number, h: number, splatScale = 1): void {
+    const sw = Math.max(1, Math.round(w * splatScale))
+    const sh = Math.max(1, Math.round(h * splatScale))
+    if (w === this.size.x && h === this.size.y && sw === this.splatSize.x && sh === this.splatSize.y) return
     this.size.set(w, h)
-    this.hdrRT.setSize(w, h)
+    this.splatSize.set(sw, sh)
+    this.hdrRT.setSize(sw, sh)
     this.material.uniforms.uHdr.value = this.hdrRT.texture
     ;(this.material.uniforms.uFbSize.value as Vector2).set(w, h)
   }

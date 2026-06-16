@@ -10,6 +10,7 @@ import {
   Scene,
   Vector2,
   Vector3,
+  Vector4,
   WebGLRenderer,
 } from 'three'
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js'
@@ -413,6 +414,7 @@ let userCount = Math.floor(sim.count * PARTICLE_STEPS[pIdx]) // user-set ceiling
 let activeCount = userCount // currently drawn (the thermal guard may dip below this)
 let pointSize = SIZE_STEPS[sIdx]
 let rotationSpeed = SPIN_STEPS[spinIdx]
+let splatScale = 1 // splat-target resolution fraction (1 = full; <1 = cheaper additive fill, upscaled by the tone-map). On-device A/B lever.
 let perfLine = '' // live fps / particle-load / foveation readout for the menu (updated each frame)
 const next = (i: number, len: number): number => (i + 1) % len
 const fmtCount = (n: number): string => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`)
@@ -688,6 +690,19 @@ function getRenderSize(out: Vector2): Vector2 {
 // the EXT_disjoint_timer_query extension is unavailable (common in a WebXR session).
 const gpuTimer = new GpuTimer(renderer.getContext() as WebGL2RenderingContext)
 
+// half-res splat support: scale the XR ArrayCamera's per-eye viewports so the stereo eyes land
+// in their (scaled) halves of the sub-res HDR target, then restore them for the full-res tone-map.
+function scaleXrViewports(s: number): Vector4[] {
+  const cams = renderer.xr.getCamera().cameras
+  const saved = cams.map((c) => c.viewport.clone())
+  for (const c of cams) c.viewport.multiplyScalar(s)
+  return saved
+}
+function restoreXrViewports(saved: Vector4[]): void {
+  const cams = renderer.xr.getCamera().cameras
+  cams.forEach((c, i) => c.viewport.copy(saved[i]))
+}
+
 renderer.setAnimationLoop(() => {
   const now = performance.now()
   const dtMs = now - last
@@ -738,19 +753,24 @@ renderer.setAnimationLoop(() => {
 
   const xrRT = renderer.getRenderTarget() // XR framebuffer while presenting, else null (canvas)
   getRenderSize(fbSize)
-  compositor.ensureSize(fbSize.x, fbSize.y)
+  compositor.ensureSize(fbSize.x, fbSize.y, splatScale)
 
   const presenting = renderer.xr.isPresenting
   const cam = presenting ? rigCamera : desktopCamera
   if (!presenting) controls.update()
 
-  // 2. accumulate point splats into the HDR target (per eye while presenting)
+  // 2. accumulate point splats into the HDR target (per eye while presenting).
+  //    At splatScale < 1 the HDR target is sub-res; shrink the XR per-eye viewports to match
+  //    so each eye still lands in its half (desktop's single camera needs none of this — three
+  //    uses the smaller target's full extent). Restored straight after so the tone-map is full-res.
   renderer.setRenderTarget(compositor.hdrRT)
   renderer.clear(true, true, true)
   renderer.autoClear = false
+  const savedViewports = presenting && splatScale !== 1 ? scaleXrViewports(splatScale) : null
   gpuTimer.begin('splat')
   renderer.render(pointsScene, cam)
   gpuTimer.end()
+  if (savedViewports) restoreXrViewports(savedViewports)
 
   // 3. log-density tone-map into the XR framebuffer / canvas (per eye). In MR
   //    passthrough mode applyEnvMode has set clear-alpha to 0 and uPassthrough to 1,
@@ -833,4 +853,11 @@ window.addEventListener('resize', () => {
   setFoveation: (x: number) => renderer.xr.setFoveation(x), // 0..1, live
   setProjSteps: (n: number) => sim.setBulbParams({ projSteps: n }), // bulb DE Newton steps (cost), live
   setIterations: (n: number) => sim.setParams({ iterations: n, reseedProb: 0.0015 }), // flame chaos-game iters/frame
+  // splat-target resolution fraction, live. <1 renders the additive glow into a sub-res HDR
+  // target (¼ the fill at 0.5) that the tone-map upscales — the overdraw lever. The glow is
+  // low-frequency so it softens rather than aliases; 0.5–0.8 is the range to A/B on-device.
+  setSplatScale: (x: number) => {
+    splatScale = Math.max(0.25, Math.min(1, x))
+    return `splatScale=${splatScale}`
+  },
 }
