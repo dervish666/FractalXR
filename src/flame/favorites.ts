@@ -1,6 +1,13 @@
-import type { FlameGenome } from './types'
+import { zeroVariations, type FlameGenome } from './types'
 
 const KEY = 'fractalxr.favorites.v1'
+
+/** Backfill any variation keys added since this favourite was saved (older saves predate
+ *  newer variations), so every transform carries the full weight set the pipeline expects. */
+function normalizeVariations(g: FlameGenome): FlameGenome {
+  for (const t of g.transforms) t.variations = { ...zeroVariations(), ...t.variations }
+  return g
+}
 
 /** Shape guard so a corrupted or older-schema entry can't detonate the morph/encode pipeline
  *  on the first "Faves" press (a TypeError thrown inside the XR render loop kills the session). */
@@ -27,7 +34,7 @@ export function loadFavorites(): FlameGenome[] {
     if (!raw) return []
     const arr = JSON.parse(raw)
     if (!Array.isArray(arr)) return []
-    return (arr as unknown[]).filter(isFlameGenome)
+    return (arr as unknown[]).filter(isFlameGenome).map(normalizeVariations)
   } catch {
     return []
   }

@@ -45,7 +45,9 @@ export function encodeFlame(g: FlameGenome): EncodedFlame {
       acc += Math.max(0, t.weight) / total
       cdf[i] = acc
       color[i] = t.colorIndex
-      for (let v = 0; v < NVAR; v++) varW[i * NVAR + v] = t.variations[VARIATION_NAMES[v]]
+      // `?? 0`: an older-schema genome (e.g. a favourite saved before a variation was added)
+      // lacks the newer keys — undefined would coerce to NaN here and corrupt the transform.
+      for (let v = 0; v < NVAR; v++) varW[i * NVAR + v] = t.variations[VARIATION_NAMES[v]] ?? 0
     } else {
       // padding rows are never selected (cdf already saturated), but must be valid uniforms
       rowX.push(IDENTITY_ROWS[0].clone())

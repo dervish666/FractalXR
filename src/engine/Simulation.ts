@@ -13,6 +13,7 @@ import {
   WebGLRenderTarget,
 } from 'three'
 import type { EncodedFlame } from '../flame/encode'
+import { MAX_TRANSFORMS, NVAR } from '../flame/types'
 import { makeFullscreenTriangle } from './util'
 import { SEED_FRAG, UPDATE_FRAG, BULB_UPDATE_FRAG, RAW_VERT } from './shaders'
 
@@ -102,7 +103,7 @@ export class Simulation {
         uB: { value: [] as Vector3[] },
         uCdf: { value: new Float32Array(8) },
         uColor: { value: new Float32Array(8) },
-        uVar: { value: new Float32Array(40) },
+        uVar: { value: new Float32Array(MAX_TRANSFORMS * NVAR) },
       },
     })
 

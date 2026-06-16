@@ -1,12 +1,17 @@
-// The M0 variation set. bubble3D is a z-injector: at least one z-injecting
+// The variation set. bubble3D is a z-injector: at least one z-injecting
 // variation must be present or a 3D flame collapses to a flat 2D sheet.
-export const VARIATION_NAMES = ['linear3D', 'spherical', 'swirl', 'sinusoidal', 'bubble3D'] as const
+// ORDER IS LOAD-BEARING: encode.ts writes varW[i*NVAR + v] in this order, and the
+// shader's applyVars() dispatches its branches in the SAME order. Append, never reorder.
+export const VARIATION_NAMES = [
+  'linear3D', 'spherical', 'swirl', 'sinusoidal', 'bubble3D',
+  'horseshoe', 'handkerchief', 'disc', 'spiral', 'hyperbolic', 'cylinder', 'eyefish',
+] as const
 export type VariationName = (typeof VARIATION_NAMES)[number]
-export const NVAR = VARIATION_NAMES.length // 5
+export const NVAR = VARIATION_NAMES.length // 12 — keep the shader's `#define NVAR` in sync
 export const MAX_TRANSFORMS = 8
 
 /** Variations that add genuine z-extent. A valid 3D genome needs ≥1 of these with weight > 0. */
-export const Z_INJECTORS: VariationName[] = ['bubble3D', 'sinusoidal', 'spherical']
+export const Z_INJECTORS: VariationName[] = ['bubble3D', 'sinusoidal', 'spherical', 'eyefish']
 
 export type Vec3 = [number, number, number]
 export type VariationWeights = Record<VariationName, number>
@@ -40,5 +45,8 @@ export interface FlameGenome {
 }
 
 export function zeroVariations(): VariationWeights {
-  return { linear3D: 0, spherical: 0, swirl: 0, sinusoidal: 0, bubble3D: 0 }
+  return {
+    linear3D: 0, spherical: 0, swirl: 0, sinusoidal: 0, bubble3D: 0,
+    horseshoe: 0, handkerchief: 0, disc: 0, spiral: 0, hyperbolic: 0, cylinder: 0, eyefish: 0,
+  }
 }

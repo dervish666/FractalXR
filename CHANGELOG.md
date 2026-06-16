@@ -3,7 +3,23 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
-## [0.2.0] - 2026-06-16
+## [0.3.0] - 2026-06-16
+
+Seven new flame variations — the create-space just got a lot bigger.
+
+### Added
+- **7 new flame variations** (`horseshoe`, `handkerchief`, `disc`, `spiral`, `hyperbolic`,
+  `cylinder`, `eyefish`) joining the original five. Each is a classic flam3 form adapted to
+  3D; `eyefish` scales the full vector so it counts as a z-injector. They multiply
+  combinatorially through the existing randomize / mutate / cross-breed / morph pipeline —
+  no new UI, just dramatically more variety in **Create**. The variation set went from 5 to 12.
+
+### Fixed
+- **Older saved favourites survive a growing variation set.** Loading a favourite saved before
+  a variation existed now backfills the missing weights to 0 (and the encoder defaults absent
+  keys), instead of feeding `NaN` into the GPU and corrupting the flame.
+
+
 
 A third fractal family joins the bulb engine.
 

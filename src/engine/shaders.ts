@@ -43,7 +43,7 @@ export const UPDATE_FRAG = /* glsl */ `
 precision highp float;
 precision highp int;
 #define MAXT 8
-#define NVAR 5
+#define NVAR 12
 uniform sampler2D uState;
 uniform float uTexSize;
 uniform float uFrame;
@@ -64,6 +64,15 @@ vec3 vSpherical(vec3 p){ float r2 = dot(p, p) + 1e-9; return p / r2; }
 vec3 vSwirl(vec3 p){ float r2 = p.x*p.x + p.y*p.y; float s = sin(r2), c = cos(r2); return vec3(p.x*s - p.y*c, p.x*c + p.y*s, p.z); }
 vec3 vSinusoidal(vec3 p){ return sin(p); }
 vec3 vBubble(vec3 p){ float r2 = dot(p, p); float f = 4.0 / (r2 + 4.0); return p * f; }
+// Classic flam3 variations (parameter-free), adapted to vec3 — planar ones pass z through;
+// eyefish scales the full 3D vector so it injects z. All radial divides are guarded.
+vec3 vHorseshoe(vec3 p){ float r = length(p.xy) + 1e-9; return vec3((p.x - p.y)*(p.x + p.y)/r, 2.0*p.x*p.y/r, p.z); }
+vec3 vHandkerchief(vec3 p){ float r = length(p.xy); float th = atan(p.y, p.x); return vec3(r*sin(th + r), r*cos(th - r), p.z); }
+vec3 vDisc(vec3 p){ float r = length(p.xy); float th = atan(p.y, p.x); float a = th * 0.31830989; float pr = 3.14159265*r; return vec3(a*sin(pr), a*cos(pr), p.z); }
+vec3 vSpiral(vec3 p){ float r = length(p.xy) + 1e-9; float th = atan(p.y, p.x); return vec3((cos(th) + sin(r))/r, (sin(th) - cos(r))/r, p.z); }
+vec3 vHyperbolic(vec3 p){ float r = length(p.xy) + 1e-9; float th = atan(p.y, p.x); return vec3(sin(th)/r, r*cos(th), p.z); }
+vec3 vCylinder(vec3 p){ return vec3(sin(p.x), p.y, p.z); }
+vec3 vEyefish(vec3 p){ float r = length(p); return p * (2.0 / (r + 1.0)); }
 
 vec3 applyVars(int j, vec3 p){
   vec3 v = vec3(0.0);
@@ -73,6 +82,13 @@ vec3 applyVars(int j, vec3 p){
   w = uVar[j*NVAR + 2]; if(w != 0.0) v += w * vSwirl(p);
   w = uVar[j*NVAR + 3]; if(w != 0.0) v += w * vSinusoidal(p);
   w = uVar[j*NVAR + 4]; if(w != 0.0) v += w * vBubble(p);
+  w = uVar[j*NVAR + 5]; if(w != 0.0) v += w * vHorseshoe(p);
+  w = uVar[j*NVAR + 6]; if(w != 0.0) v += w * vHandkerchief(p);
+  w = uVar[j*NVAR + 7]; if(w != 0.0) v += w * vDisc(p);
+  w = uVar[j*NVAR + 8]; if(w != 0.0) v += w * vSpiral(p);
+  w = uVar[j*NVAR + 9]; if(w != 0.0) v += w * vHyperbolic(p);
+  w = uVar[j*NVAR + 10]; if(w != 0.0) v += w * vCylinder(p);
+  w = uVar[j*NVAR + 11]; if(w != 0.0) v += w * vEyefish(p);
   return v;
 }
 
