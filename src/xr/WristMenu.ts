@@ -370,11 +370,23 @@ export class WristMenu {
       this.panelCanvas.height = this.h
       this.panel.geometry.dispose()
       this.panel.geometry = new PlaneGeometry(0.17, 0.17 * (this.h / W))
+      // Resizing the backing canvas does NOT reliably reallocate the GPU CanvasTexture, so the
+      // panel kept showing the previous menu (ghosted/misscaled) and — because the geometry +
+      // hit-rects DID resize — taps landed on the wrong cells whenever flame↔bulb changed the
+      // height. Recreate the texture so the displayed panel matches its hit-targets. (The old
+      // menu never hit this: its flame/bulb layouts were the same height, so it never resized.)
+      this.panelTex.dispose()
+      this.panelTex = new CanvasTexture(this.panelCanvas)
+      this.panelTex.minFilter = LinearFilter
+      const mat = this.panel.material as MeshBasicMaterial
+      mat.map = this.panelTex
+      mat.needsUpdate = true
     }
     // the new grid may have fewer rows/cells — keep the cursor in bounds
     this.cursor.r = clampInt(this.cursor.r, 0, this.rows.length - 1)
     this.cursor.c = clampInt(this.cursor.c, 0, this.rows[this.cursor.r].length - 1)
     this.lastSnapshot = '' // force a panel redraw
+    this.redrawPanel(this.getState()) // draw immediately so the fresh texture uploads correct content
   }
 
   update(dt: number): void {

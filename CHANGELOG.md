@@ -3,7 +3,16 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
-## [0.5.0] - 2026-06-16
+## [0.5.1] - 2026-06-16
+
+### Fixed
+- **Wrist menu glitching on flame↔bulb switch** — the previous (ghosted) menu showed through and
+  taps landed on the wrong buttons. The new sectioned menu has different heights per mode, so the
+  panel canvas now resizes on a mode switch — but resizing a canvas doesn't reliably reallocate its
+  GPU `CanvasTexture`, leaving a stale/misscaled panel whose drawn buttons no longer matched their
+  (correctly-resized) hit-targets. The texture is now recreated whenever the panel height changes.
+
+
 
 A fourth bulb family — smooth where the others are spiky.
 
