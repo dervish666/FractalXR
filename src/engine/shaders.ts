@@ -228,8 +228,34 @@ vec4 kifsDE(vec3 p){
   return vec4(d, trapR, trapY, 0.0);  // bounded set — no orbit escape
 }
 
+// Quaternion Julia (z → z² + c) sliced to 3D at w=0. Smooth, organic forms — soft where
+// the Mandelbulb is spiky. Analytic Green's-function distance estimate (Hart/IQ): track the
+// running derivative magnitude alongside the orbit. c reuses the Julia-C slot (4th comp = 0).
+vec4 quatSqr(vec4 q){
+  return vec4(q.x * q.x - dot(q.yzw, q.yzw), 2.0 * q.x * q.yzw);
+}
+vec4 quatDE(vec3 p){
+  vec4 z = vec4(p, 0.0);                                   // lift the 3D point into the w=0 slice
+  vec4 c = (uMandelbulb > 0.5) ? z : vec4(uJuliaC, 0.0);   // Julia (fixed c) by default
+  float md2 = 1.0;                                         // running |dz|²
+  float m2 = dot(z, z);
+  float trapR = 1e10, trapY = 1e10;
+  float esc = 0.0;
+  for(int i = 0; i < 11; i++){
+    md2 *= 4.0 * m2;                                       // derivative: dz ← 2·z·dz
+    z = quatSqr(z) + c;
+    m2 = dot(z, z);
+    trapR = min(trapR, length(z.xyz));
+    trapY = min(trapY, abs(z.y));
+    if(m2 > 256.0){ esc = 1.0; break; }
+  }
+  float d = 0.25 * log(m2) * sqrt(m2 / md2);
+  return vec4(d, trapR, trapY, esc);
+}
+
 // dispatch on the selected formula. .x=distance, .yz=orbit traps, .w=escaped (1/0)
 vec4 de(vec3 p){
+  if(uFormula > 2.5) return quatDE(p);
   if(uFormula > 1.5) return kifsDE(p);
   return (uFormula > 0.5) ? mandelboxDE(p) : mandelbulbDE(p);
 }

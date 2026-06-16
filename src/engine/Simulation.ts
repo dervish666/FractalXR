@@ -18,7 +18,7 @@ import { makeFullscreenTriangle } from './util'
 import { SEED_FRAG, UPDATE_FRAG, BULB_UPDATE_FRAG, RAW_VERT } from './shaders'
 
 export interface BulbParams {
-  formula: 'mandelbulb' | 'mandelbox' | 'kifs'
+  formula: 'mandelbulb' | 'mandelbox' | 'kifs' | 'quat'
   power: number
   juliaC: Vector3 // also the KIFS fold offset
   mandelbulb: boolean // true = c = p, false = Julia (c = juliaC)
@@ -148,7 +148,7 @@ export class Simulation {
 
   setBulbParams(p: Partial<BulbParams>): void {
     const u = this.bulbMat.uniforms
-    if (p.formula !== undefined) u.uFormula.value = p.formula === 'kifs' ? 2 : p.formula === 'mandelbox' ? 1 : 0
+    if (p.formula !== undefined) u.uFormula.value = p.formula === 'quat' ? 3 : p.formula === 'kifs' ? 2 : p.formula === 'mandelbox' ? 1 : 0
     if (p.power !== undefined) u.uPower.value = p.power
     if (p.juliaC !== undefined) (u.uJuliaC.value as Vector3).copy(p.juliaC)
     if (p.mandelbulb !== undefined) u.uMandelbulb.value = p.mandelbulb ? 1 : 0

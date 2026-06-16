@@ -368,6 +368,14 @@ function stepBulbMorph(dtSec: number): void {
       mandelbulb: disp.mandelbulb,
       juliaC: bulbC.set(disp.juliaC[0], disp.juliaC[1], disp.juliaC[2]),
     })
+  } else if (disp.formula === 'quat') {
+    // quaternion Julia breathes by orbiting its c constant (the form selector)
+    bulbC.set(
+      disp.juliaC[0] + disp.juliaOrbit * Math.sin(t),
+      disp.juliaC[1] + disp.juliaOrbit * Math.cos(t * 0.8),
+      disp.juliaC[2] + disp.juliaOrbit * Math.sin(t * 0.6),
+    )
+    sim.setBulbParams({ formula: 'quat', juliaC: bulbC, mandelbulb: disp.mandelbulb, bound: disp.bound })
   } else {
     const p = disp.power + disp.powerBreath * Math.sin(t)
     bulbC.set(

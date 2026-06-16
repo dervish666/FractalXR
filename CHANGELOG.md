@@ -3,7 +3,19 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
-## [0.4.0] - 2026-06-16
+## [0.5.0] - 2026-06-16
+
+A fourth bulb family — smooth where the others are spiky.
+
+### Added
+- **Quaternion Julia** — a fourth DE formula (`z → z² + c`, sliced to 3D at w=0) alongside
+  Mandelbulb / Mandelbox / KIFS. Smooth, organic, swirling forms — soft and shell-like where the
+  Mandelbulb is spiky and the KIFS is faceted. Analytic Green's-function distance estimate, no new
+  uniforms (the constant `c` reuses the Julia-C slot; it rides the existing bulb projection path).
+  Four presets (**Quaternion, Mercury, Cobalt, Halcyon**) + full random / mutate / morph; the
+  living breath orbits `c`, and ~20% of randomly generated bulbs are now quaternion Julias.
+
+
 
 Wrist-menu clarity pass.
 

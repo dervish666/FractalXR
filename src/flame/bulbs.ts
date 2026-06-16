@@ -10,7 +10,7 @@ import { blendPalettes } from './morph'
  */
 export interface BulbGenome {
   name: string
-  formula: 'mandelbulb' | 'mandelbox' | 'kifs'
+  formula: 'mandelbulb' | 'mandelbox' | 'kifs' | 'quat'
   power: number // Mandelbulb polynomial power (8 = classic)
   powerBreath: number // Mandelbulb power-breath amplitude
   scale: number // Mandelbox / KIFS per-iteration scale (negative box = architectural look)
@@ -42,6 +42,10 @@ const mbox = (name: string, scale: number, scaleBreath: number, speed: number, p
 const kifs = (name: string, scale: number, offset: Vec3, aA: number, aB: number, breath: number, fixedR: number, speed: number, palette: Vec3[]): BulbGenome => ({
   name, formula: 'kifs', power: 8, powerBreath: 0, scale, scaleBreath: 0, minR: 0.5, fixedR, mandelbulb: true, juliaC: offset, juliaOrbit: 0, kAngleA: aA, kAngleB: aB, kAngleBreath: breath, bound: 2.0, speed, palette,
 })
+// Quaternion Julia: z → z² + c. `c` (the Julia-C slot) picks the form; juliaOrbit gives it life.
+const quat = (name: string, c: Vec3, orbit: number, speed: number, palette: Vec3[]): BulbGenome => ({
+  name, formula: 'quat', power: 8, powerBreath: 0, scale: 2, scaleBreath: 0, minR: 0.5, fixedR: 1, mandelbulb: false, juliaC: c, juliaOrbit: orbit, kAngleA: 0, kAngleB: 0, kAngleBreath: 0, bound: 1.4, speed, palette,
+})
 
 /** Curated bulbs — a spread of Mandelbulb powers + a couple of Mandelboxes. Easy to extend. */
 export const BULB_GALLERY: BulbGenome[] = [
@@ -59,6 +63,10 @@ export const BULB_GALLERY: BulbGenome[] = [
   kifs('Cathedral', 1.9, [0.9, 1.3, 0.6], 0.32, -0.2, 0.1, 0.9, 0.06, MANDELBULBER_PAL),
   kifs('Snowflake', 2.1, [1.0, 0.7, 1.1], -0.42, 0.5, 0.14, 0.8, 0.07, themeColors('Spectrum')),
   kifs('Thornwood', 1.75, [0.6, 1.15, 0.8], 0.6, 0.25, 0.1, 0.85, 0.06, themeColors('Ember')),
+  quat('Quaternion', [-0.45, 0.3, 0.5], 0.05, 0.08, themeColors('Violet')),
+  quat('Mercury', [-0.2, 0.6, 0.2], 0.06, 0.09, themeColors('Ice')),
+  quat('Cobalt', [-0.291, -0.4, 0.339], 0.04, 0.07, themeColors('Neon')),
+  quat('Halcyon', [-0.5, 0.5, 0.0], 0.05, 0.08, themeColors('Spectrum')),
 ]
 
 let serial = 0
@@ -70,12 +78,16 @@ const theme = (): Vec3[] => themeColors(pick(THEMES).name)
 export function randomBulb(): BulbGenome {
   serial++
   const roll = Math.random()
-  if (roll < 0.3) {
+  if (roll < 0.25) {
     // Kaleidoscopic IFS: random scale + fold offset + rotation angles
     const sign = (): number => (Math.random() < 0.5 ? -1 : 1)
     return { name: `Bulb ${serial}`, formula: 'kifs', power: 8, powerBreath: 0, scale: rand(1.6, 2.4), scaleBreath: 0, minR: 0.5, fixedR: rand(0.7, 1.15), mandelbulb: true, juliaC: [rand(0.45, 1.3) * sign(), rand(0.5, 1.4), rand(0.45, 1.2) * sign()], juliaOrbit: 0, kAngleA: rand(-0.7, 0.7), kAngleB: rand(-0.7, 0.7), kAngleBreath: rand(0.05, 0.18), bound: 2.0, speed: rand(0.05, 0.11), palette: theme() }
   }
-  if (roll < 0.6) {
+  if (roll < 0.45) {
+    // Quaternion Julia: random c constant (the form selector), gentle orbit for life
+    return { name: `Bulb ${serial}`, formula: 'quat', power: 8, powerBreath: 0, scale: 2, scaleBreath: 0, minR: 0.5, fixedR: 1, mandelbulb: false, juliaC: [rand(-0.55, 0.55), rand(-0.55, 0.55), rand(-0.55, 0.55)], juliaOrbit: rand(0.03, 0.1), kAngleA: 0, kAngleB: 0, kAngleBreath: 0, bound: 1.4, speed: rand(0.06, 0.1), palette: theme() }
+  }
+  if (roll < 0.65) {
     const scale = rand(-2.2, 2.6)
     return { name: `Bulb ${serial}`, formula: 'mandelbox', power: 8, powerBreath: 0, scale, scaleBreath: rand(0.1, 0.3), minR: rand(0.3, 0.6), fixedR: 1.0, mandelbulb: true, juliaC: [0, 0, 0], juliaOrbit: 0, kAngleA: 0, kAngleB: 0, kAngleBreath: 0, bound: 3.0 + Math.abs(scale), speed: rand(0.06, 0.12), palette: theme() }
   }
