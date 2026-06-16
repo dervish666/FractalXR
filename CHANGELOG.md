@@ -3,7 +3,20 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
-## [0.5.1] - 2026-06-16
+## [0.6.0] - 2026-06-16
+
+Faster preset browsing.
+
+### Changed
+- **Presets are now a floating side panel** to the right of the menu instead of a full-panel
+  takeover, and it **stays open when you pick a variant** — so you can audition several in a row
+  without reopening it. Ray-point + trigger to pick; ✕ Close (or reopening PRESETS) dismisses it.
+
+### Added
+- **Left-thumbstick shortcut with the menu closed**: left/right cycles through the active gallery's
+  presets, up = flame / down = bulb mode. Quick browsing without opening the menu at all.
+
+
 
 ### Fixed
 - **Wrist menu glitching on flame↔bulb switch** — the previous (ghosted) menu showed through and

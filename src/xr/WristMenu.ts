@@ -80,16 +80,25 @@ export class WristMenu {
   readonly root = new Group()
   private panel: Mesh
   private sliver: Mesh
+  private presetPanel: Mesh // the variant picker — a separate panel to the right of the main menu
   private panelCanvas = document.createElement('canvas')
   private sliverCanvas = document.createElement('canvas')
+  private presetCanvas = document.createElement('canvas')
   private panelTex: CanvasTexture
   private sliverTex: CanvasTexture
+  private presetTex: CanvasTexture
   private rows: Cell[][] = []
   private sections: Section[] = [] // labelled group headers for the main view
-  private view: 'main' | 'presets' = 'main' // main grid vs the variant-picker popup
+  private presetRows: Cell[][] = [] // chip grid + close, in the side panel
+  private presetsOpen = false // is the variant-picker side panel showing
+  private presetOpenAmount = 0 // fade/anim for the side panel
+  private presetH = 0 // side-panel canvas height
+  private presetHover = -1 // ray-hovered chip's presetIdx (close = -2, none = -1)
+  private lastPresetSnapshot = ''
   private ar = false // inside an immersive-ar session — gates the PASSTHRU cell onto the system row
   private h = H // panel canvas height — recomputed by buildGrid to fit the current view
   private cursor = { r: 0, c: 0 }
+  private rayCell: Cell | null = null // the cell currently under the pointer ray (either panel)
   private open = false
   private openAmount = 0
   private lastSnapshot = ''
@@ -140,7 +149,17 @@ export class WristMenu {
     const sliverMat = new MeshBasicMaterial({ map: this.sliverTex, transparent: true, depthWrite: false })
     this.sliver = new Mesh(new PlaneGeometry(0.1, 0.1 * (128 / 512)), sliverMat)
 
-    this.root.add(this.panel, this.sliver)
+    // variant-picker side panel — sits to the right of the main panel, sized on first open
+    this.presetCanvas.width = W
+    this.presetCanvas.height = 8 // placeholder; buildPresetPanel sizes it on first open
+    this.presetTex = new CanvasTexture(this.presetCanvas)
+    this.presetTex.minFilter = LinearFilter
+    const presetMat = new MeshBasicMaterial({ map: this.presetTex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 })
+    this.presetPanel = new Mesh(new PlaneGeometry(0.17, 0.17 * (8 / W)), presetMat)
+    this.presetPanel.position.set(0.185, 0, 0) // just right of the main panel (width 0.17, centred at x=0)
+    this.presetPanel.visible = false
+
+    this.root.add(this.panel, this.sliver, this.presetPanel)
     this.root.position.set(0, 0.045, 0.06)
     this.root.rotation.set(MathUtils.degToRad(-50), MathUtils.degToRad(10), 0)
     offHand.add(this.root)
@@ -150,8 +169,7 @@ export class WristMenu {
   }
 
   private buildGrid(a: MenuActions, mode: string): void {
-    if (this.view === 'presets') this.buildPresetsGrid(a, mode)
-    else this.buildMainGrid(a, mode)
+    this.buildMainGrid(a, mode)
   }
 
   /** Main grid: function-grouped sections (Create / Explore / Tune / Keep) + a system row.
@@ -187,7 +205,7 @@ export class WristMenu {
 
     // EXPLORE — browse presets, switch engine, recolour
     section('EXPLORE', [
-      { label: 'PRESETS', sub: 'browse ▸', kind: 'nav', run: () => this.setView('presets') },
+      { label: 'PRESETS', sub: 'browse ▸', kind: 'nav', run: () => this.togglePresets() },
       { label: 'MODE', kind: 'action', valueKey: 'mode', run: a.toggleMode },
       { label: 'RECOLOR', sub: 'theme', kind: 'action', run: a.recolor },
     ])
@@ -227,20 +245,20 @@ export class WristMenu {
     this.rows = rows
   }
 
-  /** Presets popup: a 4-wide grid of every variant in the active gallery + a Back cell.
-   *  Picking one applies it and returns to the main view. */
-  private buildPresetsGrid(a: MenuActions, mode: string): void {
-    const bulb = mode === 'BULB'
+  /** Build the variant-picker SIDE panel: a 4-wide grid of every variant in the active
+   *  gallery + a Close cell. Picking a chip applies it and leaves the panel open (so you can
+   *  audition several). Sizes the side-panel canvas/geometry to fit. */
+  private buildPresetPanel(): void {
+    const bulb = this.mode === 'BULB'
     const names = bulb ? this.bulbPresets : this.flamePresets
-    const action = bulb ? a.morphToBulbPreset : a.morphToPreset
+    const action = bulb ? this.actions.morphToBulbPreset : this.actions.morphToPreset
     const m = 36
     const cols = 4
     const cgap = 14
-    const chipH = 96
+    const chipH = 92
     const cw = (W - 2 * m - (cols - 1) * cgap) / cols
-    this.sections = []
     const rows: Cell[][] = []
-    let y = 168
+    let y = 150 // below the title strip
     let row: Cell[] = []
     names.forEach((name, i) => {
       const col = i % cols
@@ -249,27 +267,44 @@ export class WristMenu {
         row = []
         y += chipH + cgap
       }
-      row.push({ label: name, kind: 'preset', presetIdx: i, run: () => { action(i); this.setView('main') }, rect: [m + col * (cw + cgap), y, cw, chipH] })
+      row.push({ label: name, kind: 'preset', presetIdx: i, run: () => action(i), rect: [m + col * (cw + cgap), y, cw, chipH] }) // STAYS OPEN — no close on pick
     })
     if (row.length) {
       rows.push(row)
       y += chipH + cgap
     }
-    // BACK — centred, returns to the main grid
-    const backW = 360
-    y += 8
-    rows.push([{ label: '‹ BACK', kind: 'nav', run: () => this.setView('main'), rect: [(W - backW) / 2, y, backW, 92] }])
-    y += 92 + 22
-    this.h = y
-    this.rows = rows
+    // CLOSE — centred
+    const closeW = 360
+    y += 10
+    rows.push([{ label: '✕ CLOSE', kind: 'nav', run: () => this.closePresets(), rect: [(W - closeW) / 2, y, closeW, 88] }])
+    y += 88 + 22
+    this.presetRows = rows
+
+    // size the side panel to fit; recreate the texture on a height change (same CanvasTexture
+    // resize footgun the main panel hit — a resized canvas doesn't reliably reallocate the GPU texture)
+    if (y !== this.presetH) {
+      this.presetH = y
+      this.presetCanvas.height = y
+      this.presetPanel.geometry.dispose()
+      this.presetPanel.geometry = new PlaneGeometry(0.17, 0.17 * (y / W))
+      this.presetTex.dispose()
+      this.presetTex = new CanvasTexture(this.presetCanvas)
+      this.presetTex.minFilter = LinearFilter
+      const mat = this.presetPanel.material as MeshBasicMaterial
+      mat.map = this.presetTex
+      mat.needsUpdate = true
+    }
+    this.lastPresetSnapshot = '' // force a redraw
   }
 
-  /** Switch between the main grid and the presets popup, rebuilding the layout. */
-  private setView(v: 'main' | 'presets'): void {
-    if (this.view === v) return
-    this.view = v
-    this.cursor = { r: 0, c: 0 }
-    this.rebuild()
+  /** Toggle the variant-picker side panel (the EXPLORE → PRESETS cell). */
+  private togglePresets(): void {
+    this.presetsOpen = !this.presetsOpen
+    if (this.presetsOpen) this.buildPresetPanel()
+  }
+
+  private closePresets(): void {
+    this.presetsOpen = false
   }
 
   // ---- input (called from main's button poll) -----------------------------
@@ -285,12 +320,12 @@ export class WristMenu {
 
   expand(): void {
     this.open = true
-    this.setView('main') // always open to the top of the main grid
     this.cursor = { r: 0, c: 0 }
   }
 
   collapse(): void {
     this.open = false
+    this.presetsOpen = false // close the side panel with the menu
   }
 
   moveCursor(dx: number, dy: number): void {
@@ -299,15 +334,16 @@ export class WristMenu {
     this.cursor.c = clampInt(this.cursor.c + dx, 0, this.rows[this.cursor.r].length - 1)
   }
 
-  /** Stick-click / trigger-while-hovering: open if collapsed, else run highlighted cell. */
+  /** Stick-click / trigger-while-hovering: open if collapsed, else run the targeted cell —
+   *  the ray-hovered cell (either panel) if the pointer is on one, else the cursor cell. */
   click(): void {
     if (!this.open) {
       this.open = true
-      this.setView('main')
       this.cursor = { r: 0, c: 0 }
       return
     }
-    this.rows[this.cursor.r][this.cursor.c].run()
+    const cell = this.rayCell ?? this.rows[this.cursor.r]?.[this.cursor.c]
+    cell?.run()
   }
 
   get hovered(): boolean {
@@ -318,44 +354,58 @@ export class WristMenu {
     return this._hitDist
   }
 
-  /** Raycast a controller ray against the menu. If it hits a button, move the cursor
-   * there (so trigger/click commits it) and report a hover. Tests the sliver when
-   * collapsed (so pointing at the wrist + trigger opens the menu). */
+  /** Raycast a controller ray against the menu (and the open side panel). Stores the hovered
+   * cell in `rayCell` so trigger/click commits it; for the main panel it also moves the cursor
+   * so the highlight follows the ray. Tests the sliver when collapsed (point at wrist → expand). */
   pointerTest(origin: Vector3, dir: Vector3): boolean {
-    const target = this.open ? this.panel : this.sliver
-    if (!target.visible) {
-      this._hovered = false
-      return false
-    }
+    this.rayCell = null
+    this.presetHover = -1
     this.raycaster.set(origin, dir)
-    const hits = this.raycaster.intersectObject(target, false)
-    if (hits.length === 0) {
-      this._hovered = false
-      return false
-    }
-    this._hitDist = hits[0].distance
+
     if (!this.open) {
-      this._hovered = true // sliver: anywhere on it = "expand"
-      return true
+      if (!this.sliver.visible) return (this._hovered = false)
+      const hits = this.raycaster.intersectObject(this.sliver, false)
+      if (hits.length === 0) return (this._hovered = false)
+      this._hitDist = hits[0].distance
+      return (this._hovered = true) // sliver: anywhere on it = "expand"
     }
-    const uv = hits[0].uv
-    if (uv) {
-      const px = uv.x * W
-      const py = (1 - uv.y) * this.h
-      for (let r = 0; r < this.rows.length; r++) {
-        for (let c = 0; c < this.rows[r].length; c++) {
-          const [x, y, w, h] = this.rows[r][c].rect
+
+    // open: test the main panel + (if showing) the side panel, nearest hit wins
+    const targets: Mesh[] = [this.panel]
+    if (this.presetsOpen && this.presetPanel.visible) targets.push(this.presetPanel)
+    const hits = this.raycaster.intersectObjects(targets, false)
+    if (hits.length === 0 || !hits[0].uv) return (this._hovered = false)
+    this._hitDist = hits[0].distance
+    const { x: ux, y: uy } = hits[0].uv
+
+    if (hits[0].object === this.presetPanel) {
+      const px = ux * W
+      const py = (1 - uy) * this.presetH
+      for (const row of this.presetRows)
+        for (const cell of row) {
+          const [x, y, w, h] = cell.rect
           if (px >= x && px <= x + w && py >= y && py <= y + h) {
-            this.cursor.r = r
-            this.cursor.c = c
-            this._hovered = true
-            return true
+            this.rayCell = cell
+            this.presetHover = cell.presetIdx ?? -2 // chips have an index; close = -2
+            return (this._hovered = true)
           }
         }
-      }
+      return (this._hovered = false)
     }
-    this._hovered = false // on the panel but not on a button
-    return false
+
+    const px = ux * W
+    const py = (1 - uy) * this.h
+    for (let r = 0; r < this.rows.length; r++)
+      for (let c = 0; c < this.rows[r].length; c++) {
+        const [x, y, w, h] = this.rows[r][c].rect
+        if (px >= x && px <= x + w && py >= y && py <= y + h) {
+          this.cursor.r = r
+          this.cursor.c = c
+          this.rayCell = this.rows[r][c]
+          return (this._hovered = true)
+        }
+      }
+    return (this._hovered = false) // on a panel but not on a button
   }
 
   // ---- per-frame ----------------------------------------------------------
@@ -395,13 +445,16 @@ export class WristMenu {
     if (st.mode !== this.mode || st.arAvailable !== this.ar) {
       this.mode = st.mode
       this.ar = st.arAvailable
-      this.view = 'main' // a mode/AR change returns to the main grid
       this.cursor = { r: 0, c: 0 }
       this.rebuild()
+      if (this.presetsOpen) this.buildPresetPanel() // re-fill the side panel with the new gallery
     }
     // force-collapse while two-hand fly-through scaling
     const target = this.isFlyThrough() ? false : this.open
-    if (!target) this.open = false
+    if (!target) {
+      this.open = false
+      this.presetsOpen = false
+    }
 
     this.openAmount = approach(this.openAmount, this.open ? 1 : 0, dt * 8)
     const showPanel = this.openAmount > 0.02
@@ -411,6 +464,20 @@ export class WristMenu {
     this.panel.scale.setScalar(s)
     ;(this.panel.material as MeshBasicMaterial).opacity = this.openAmount
     ;(this.sliver.material as MeshBasicMaterial).opacity = 1 - this.openAmount
+
+    // variant-picker side panel (fades in to the right of the main panel)
+    this.presetOpenAmount = approach(this.presetOpenAmount, this.presetsOpen ? 1 : 0, dt * 10)
+    const showPreset = this.presetOpenAmount > 0.02
+    this.presetPanel.visible = showPreset
+    this.presetPanel.scale.setScalar(s)
+    ;(this.presetPanel.material as MeshBasicMaterial).opacity = this.presetOpenAmount
+    if (showPreset) {
+      const psnap = `${st.mode}|${st.currentPreset}|${this.presetHover}`
+      if (psnap !== this.lastPresetSnapshot) {
+        this.lastPresetSnapshot = psnap
+        this.redrawPresetPanel(st)
+      }
+    }
 
     const sliverSnap = `${st.name}|${st.auto}`
     if (sliverSnap !== this.lastSliverSnapshot) {
@@ -422,7 +489,7 @@ export class WristMenu {
       // structural snapshot and refreshed on a gentle throttle. Otherwise an open menu would
       // repaint the whole 1024px canvas + re-upload ~3.7MB to the GPU every frame — enough to
       // trip AdaptiveQuality into shedding particles while you're using the menu.
-      const snap = `${this.view}|${st.name}|${st.mode}|${st.morphing}|${st.auto}|${st.passthrough}|${st.arAvailable}|${st.currentPreset}|${this.cursor.r},${this.cursor.c}|${st.accent.join(',')}|${st.particles}|${st.size}|${st.splat}|${st.morph}|${st.animation}|${st.saved}|${st.faves}`
+      const snap = `${st.name}|${st.mode}|${st.morphing}|${st.auto}|${st.passthrough}|${st.arAvailable}|${st.currentPreset}|${this.cursor.r},${this.cursor.c}|${st.accent.join(',')}|${st.particles}|${st.size}|${st.splat}|${st.morph}|${st.animation}|${st.saved}|${st.faves}`
       this.perfClock += dt
       const perfDue = this.perfClock >= 0.5 && st.perf !== this.lastPerf
       if (snap !== this.lastSnapshot || perfDue) {
@@ -471,8 +538,7 @@ export class WristMenu {
     ctx.textAlign = 'left'
     ctx.fillStyle = '#eef2ff'
     ctx.font = '600 60px ui-sans-serif, system-ui, sans-serif'
-    const title = this.view === 'presets' ? (st.mode === 'BULB' ? 'BULB PRESETS' : 'FLAME PRESETS') : st.name
-    ctx.fillText(title, 44, 86)
+    ctx.fillText(st.name, 44, 86)
     ctx.textAlign = 'right'
     ctx.font = '500 38px ui-sans-serif, system-ui, sans-serif'
     ctx.fillStyle = st.auto ? accent : st.morphing ? 'rgba(180,200,255,0.85)' : 'rgba(150,165,200,0.6)'
@@ -505,6 +571,41 @@ export class WristMenu {
     }
 
     this.panelTex.needsUpdate = true
+  }
+
+  /** Draw the variant-picker side panel — title + the chip grid (current preset + ray-hover
+   *  highlighted) + Close. Reuses drawCell, so chips match the main panel's look. */
+  private redrawPresetPanel(st: MenuState): void {
+    const ctx = this.presetCanvas.getContext('2d')!
+    const accent = accentCss(st.accent)
+    ctx.clearRect(0, 0, W, this.presetH)
+
+    roundRect(ctx, 8, 8, W - 16, this.presetH - 16, 40)
+    ctx.fillStyle = 'rgba(10,14,22,0.92)'
+    ctx.fill()
+    ctx.lineWidth = 3
+    ctx.strokeStyle = 'rgba(136,170,255,0.5)'
+    ctx.stroke()
+
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'left'
+    ctx.fillStyle = '#eef2ff'
+    ctx.font = '600 52px ui-sans-serif, system-ui, sans-serif'
+    ctx.fillText(st.mode === 'BULB' ? 'BULB PRESETS' : 'FLAME PRESETS', 44, 78)
+    ctx.strokeStyle = 'rgba(136,170,255,0.25)'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(44, 126)
+    ctx.lineTo(W - 44, 126)
+    ctx.stroke()
+
+    for (const row of this.presetRows)
+      for (const cell of row) {
+        const hot = (cell.presetIdx ?? -2) === this.presetHover // chip or close under the ray
+        this.drawCell(ctx, cell, hot, accent, st)
+      }
+
+    this.presetTex.needsUpdate = true
   }
 
   private drawCell(ctx: CanvasRenderingContext2D, cell: Cell, hot: boolean, accent: string, st: MenuState): void {

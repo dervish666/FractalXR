@@ -458,6 +458,17 @@ const cycleSplat = (): void => {
   splatIdx = next(splatIdx, SPLAT_STEPS.length)
   splatScale = SPLAT_STEPS[splatIdx]
 }
+// preset cycling for the closed-menu left-stick shortcut — steps through the active gallery
+let presetIdx = 0
+const cyclePreset = (dir: number): void => {
+  if (sim.mode === 'bulb') {
+    presetIdx = (presetIdx + dir + BULB_GALLERY.length) % BULB_GALLERY.length
+    startBulbMorphTo(BULB_GALLERY[presetIdx])
+  } else {
+    presetIdx = (presetIdx + dir + GALLERY.length) % GALLERY.length
+    startMorphTo(GALLERY[presetIdx])
+  }
+}
 const exitVR = (): void => {
   renderer.xr.getSession()?.end().catch(() => {})
 }
@@ -503,9 +514,13 @@ const menu = new WristMenu(
     recolor,
     morphToPreset: (i) => {
       if (sim.mode === 'bulb') setMode('flame') // picking a flame preset leaves bulb mode
+      presetIdx = i // keep the stick shortcut in sync
       startMorphTo(GALLERY[i])
     },
-    morphToBulbPreset: (i) => startBulbMorphTo(BULB_GALLERY[i]), // bulb-gallery chip (bulb mode only)
+    morphToBulbPreset: (i) => {
+      presetIdx = i
+      startBulbMorphTo(BULB_GALLERY[i])
+    }, // bulb-gallery chip (bulb mode only)
     saveFavorite,
     loadFave,
     deleteFave,
@@ -623,8 +638,16 @@ function pollButtons(): void {
       ay = lpad.axes[1] ?? 0
     }
     if (stickArmed && (Math.abs(ax) > 0.5 || Math.abs(ay) > 0.5)) {
-      if (Math.abs(ax) > Math.abs(ay)) menu.moveCursor(ax > 0 ? 1 : -1, 0)
-      else menu.moveCursor(0, ay > 0 ? 1 : -1)
+      if (menu.isOpen) {
+        // open menu: navigate the cursor grid
+        if (Math.abs(ax) > Math.abs(ay)) menu.moveCursor(ax > 0 ? 1 : -1, 0)
+        else menu.moveCursor(0, ay > 0 ? 1 : -1)
+      } else {
+        // closed menu: quick shortcut — L/R cycles presets, up = flame / down = bulb
+        if (Math.abs(ax) > Math.abs(ay)) cyclePreset(ax > 0 ? 1 : -1)
+        else if (ay < 0 && sim.mode === 'bulb') toggleMode()
+        else if (ay > 0 && sim.mode === 'flame') toggleMode()
+      }
       stickArmed = false
       ;(lpad as unknown as { hapticActuators?: { pulse?: (a: number, b: number) => void }[] }).hapticActuators?.[0]?.pulse?.(0.3, 15)
     }
