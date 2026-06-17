@@ -74,20 +74,26 @@ const rand = (a: number, b: number): number => a + Math.random() * (b - a)
 const pick = <T>(arr: readonly T[]): T => arr[Math.floor(Math.random() * arr.length)]
 const theme = (): Vec3[] => themeColors(pick(THEMES).name)
 
-/** A fresh random bulb — Mandelbulb, Mandelbox or Kaleidoscopic IFS. */
-export function randomBulb(): BulbGenome {
+/** A fresh random bulb. Pass `formula` to stay within a family (callers bias toward the current
+ *  one so morphs lerp smoothly instead of reseed-jumping between formulas); omit for any formula. */
+export function randomBulb(formula?: BulbGenome['formula']): BulbGenome {
   serial++
-  const roll = Math.random()
-  if (roll < 0.25) {
+  const f =
+    formula ??
+    (() => {
+      const roll = Math.random()
+      return roll < 0.25 ? 'kifs' : roll < 0.45 ? 'quat' : roll < 0.65 ? 'mandelbox' : 'mandelbulb'
+    })()
+  if (f === 'kifs') {
     // Kaleidoscopic IFS: random scale + fold offset + rotation angles
     const sign = (): number => (Math.random() < 0.5 ? -1 : 1)
     return { name: `Bulb ${serial}`, formula: 'kifs', power: 8, powerBreath: 0, scale: rand(1.6, 2.4), scaleBreath: 0, minR: 0.5, fixedR: rand(0.7, 1.15), mandelbulb: true, juliaC: [rand(0.45, 1.3) * sign(), rand(0.5, 1.4), rand(0.45, 1.2) * sign()], juliaOrbit: 0, kAngleA: rand(-0.7, 0.7), kAngleB: rand(-0.7, 0.7), kAngleBreath: rand(0.05, 0.18), bound: 2.0, speed: rand(0.05, 0.11), palette: theme() }
   }
-  if (roll < 0.45) {
+  if (f === 'quat') {
     // Quaternion Julia: random c constant (the form selector), gentle orbit for life
     return { name: `Bulb ${serial}`, formula: 'quat', power: 8, powerBreath: 0, scale: 2, scaleBreath: 0, minR: 0.5, fixedR: 1, mandelbulb: false, juliaC: [rand(-0.55, 0.55), rand(-0.55, 0.55), rand(-0.55, 0.55)], juliaOrbit: rand(0.03, 0.1), kAngleA: 0, kAngleB: 0, kAngleBreath: 0, bound: 1.4, speed: rand(0.06, 0.1), palette: theme() }
   }
-  if (roll < 0.65) {
+  if (f === 'mandelbox') {
     const scale = rand(-2.2, 2.6)
     return { name: `Bulb ${serial}`, formula: 'mandelbox', power: 8, powerBreath: 0, scale, scaleBreath: rand(0.1, 0.3), minR: rand(0.3, 0.6), fixedR: 1.0, mandelbulb: true, juliaC: [0, 0, 0], juliaOrbit: 0, kAngleA: 0, kAngleB: 0, kAngleBreath: 0, bound: 3.0 + Math.abs(scale), speed: rand(0.06, 0.12), palette: theme() }
   }

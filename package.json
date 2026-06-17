@@ -1,6 +1,6 @@
 {
   "name": "fractalxr",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "module",
   "description": "WebXR 3D fractal flame generator for the Meta Quest 3",

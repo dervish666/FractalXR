@@ -236,7 +236,9 @@ function stepMorph(dtSec: number): void {
 
 // breeding actions — in bulb mode they morph the cloud toward a new / varied bulb
 const randomize = (): void => {
-  if (sim.mode === 'bulb') startBulbMorphTo(randomBulb())
+  // bulb: keep the current formula half the time so randomise melts (same family) more often
+  // than it reseed-jumps to a different type; the other half gives a genuinely new formula
+  if (sim.mode === 'bulb') startBulbMorphTo(randomBulb(Math.random() < 0.5 ? currentBulb.formula : undefined))
   else startMorphTo(randomGenome(serial++))
 }
 const mutateCurrent = (): void => {
@@ -292,6 +294,8 @@ let currentBulb: BulbGenome = BULB_GALLERY[0] // the bulb currently displayed (m
 let bulbFrom: BulbGenome = BULB_GALLERY[0]
 let bulbTo: BulbGenome = BULB_GALLERY[0]
 let bulbMorphT = 1 // 1 = settled on bulbTo
+let bulbFraming = 1 // the per-bulb apparent-size factor currently baked into flameGroup.scale,
+// kept separate so re-framing on mutate/randomise adjusts by RATIO and preserves the user's grab-scale
 
 /** Snap instantly to a bulb (used on mode-switch / init — no transition). */
 const applyBulb = (b: BulbGenome): void => {
@@ -301,7 +305,9 @@ const applyBulb = (b: BulbGenome): void => {
   bulbMorphT = 1
   palette.setColors(b.palette) // bulbs share the flame palettes
   bulbTime = 0
-  flameGroup.scale.setScalar(0.65 / b.bound) // normalise apparent size across bulb / box
+  // mode-entry / init: snap to the framing default (a clean view; resets any prior grab)
+  bulbFraming = 0.65 / b.bound // normalise apparent size across bulb / box
+  flameGroup.scale.setScalar(bulbFraming)
   updateLabel()
 }
 
@@ -318,8 +324,10 @@ function startBulbMorphTo(b: BulbGenome): void {
   updateLabel()
 }
 
-// auto-cycle: mostly mutate within the family (smooth melt) with the odd random jump (reform)
-const nextAutoBulb = (): BulbGenome => (Math.random() < 0.6 ? mutateBulb(currentBulb) : randomBulb())
+// auto-cycle: mostly mutate within the family (smooth melt); when it does pull a fresh random
+// bulb, usually keep the formula — so the continuous flow rarely reseed-jumps between types
+const nextAutoBulb = (): BulbGenome =>
+  Math.random() < 0.75 ? mutateBulb(currentBulb) : randomBulb(Math.random() < 0.6 ? currentBulb.formula : undefined)
 
 /** Advance the bulb morph + drive the living breath, writing the live DE uniforms. */
 function stepBulbMorph(dtSec: number): void {
@@ -341,7 +349,11 @@ function stepBulbMorph(dtSec: number): void {
       bulbFrom.formula === bulbTo.formula
         ? disp.bound
         : bulbFrom.bound + (bulbTo.bound - bulbFrom.bound) * smoothstep(bulbMorphT)
-    flameGroup.scale.setScalar(0.65 / framingBound)
+    // apply the framing as a RATIO against what's already there, so the user's grab-scale survives
+    // a mutate/randomise (same bound → ratio 1 → no jump; new bound → proportional, not a reset).
+    const framing = 0.65 / framingBound
+    flameGroup.scale.multiplyScalar(framing / bulbFraming)
+    bulbFraming = framing
     palette.setColors(disp.palette)
     if (wasMorphing && bulbMorphT >= 1) updateLabel() // drop the "…morphing" tag
   }

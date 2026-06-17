@@ -3,6 +3,20 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## [0.6.2] - 2026-06-17
+
+### Fixed
+- **Resizing a bulb then mutating/randomising no longer snaps it back to a huge default size.**
+  The per-bulb framing (apparent size) is now applied as a *ratio* on top of your grab-scale rather
+  than overwriting it — so mutate keeps your size exactly, and a formula/size change eases smoothly
+  to the new size instead of jumping.
+
+### Changed
+- **Bulbs jump between formula types far less.** Auto-cycle and the randomise button now usually stay
+  in the current family (Mandelbulb/Mandelbox/KIFS/Quaternion), which melts smoothly, instead of
+  constantly reseed-jumping to a different formula. Mutate already stays in-family; cross-formula
+  changes still happen, just occasionally rather than every other pick.
+
 ## [0.6.1] - 2026-06-17
 
 ### Changed
