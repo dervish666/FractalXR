@@ -3,6 +3,15 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## [0.6.3] - 2026-06-17
+
+### Added
+- **5 wild full-spectrum colour themes** — **Rainbow** (violet→blue→green→yellow→red), **Prism**
+  (bright pastel spectrum), **Vaporwave** (indigo/hot-pink/cyan), **Acid** (clashing neon), and
+  **Iridescent** (oil-slick sheen). Bigger hue travel than the existing mostly-tonal themes; reach
+  them via Recolor (or the right-stick palette step) and they turn up on random flames/bulbs. They
+  show fullest on flames (whose colour coordinate spans the whole palette).
+
 ## [0.6.2] - 2026-06-17
 
 ### Fixed
