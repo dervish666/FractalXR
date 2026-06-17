@@ -117,8 +117,9 @@ const compositor = new Compositor({
 
 // --- mixed-reality (immersive-ar passthrough) -------------------------------
 // `sessionIsAR` is true only while the live session reports a passthrough blend
-// mode. `passthroughOn` is the in-session toggle and defaults OFF, so even an AR
-// session opens in the familiar black void — the user opts into seeing the room.
+// mode. `passthroughOn` is the in-session toggle; an AR session now opens straight
+// into passthrough (room visible) so "Enter MR" goes directly to mixed reality, while
+// VR stays in the black void. The PASSTHRU cell still flips room/void mid-session.
 // `applyEnvMode` is the single source of truth: it drives the GL clear-alpha, the
 // tonemap shader branch, and the fake-floor grid's visibility together.
 let sessionIsAR = false
@@ -141,7 +142,7 @@ const togglePassthrough = (): void => {
 
 renderer.xr.addEventListener('sessionstart', () => {
   sessionIsAR = renderer.xr.getEnvironmentBlendMode() === 'alpha-blend'
-  passthroughOn = false // every session starts in the void
+  passthroughOn = sessionIsAR // AR → straight to passthrough (mixed); VR → void
   applyEnvMode()
 })
 renderer.xr.addEventListener('sessionend', () => {

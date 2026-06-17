@@ -3,6 +3,14 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## [0.6.1] - 2026-06-17
+
+### Changed
+- **"Enter MR" now goes straight to mixed reality** — an immersive-ar session opens with
+  passthrough already on (the room visible), instead of starting in the black void and waiting
+  for a manual PASSTHRU toggle. VR is unchanged (still opens in the void); the PASSTHRU cell still
+  flips room/void mid-session.
+
 ## [0.6.0] - 2026-06-16
 
 Faster preset browsing.
