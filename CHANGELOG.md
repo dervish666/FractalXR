@@ -3,6 +3,15 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## [0.6.4] - 2026-06-19
+
+### Changed
+- **Bulbs now show much more of the colour palette.** The orbit-trap colour coordinate concentrated
+  ~50% of particles in the mid-palette (green/yellow), starving the violet and red ends — so any
+  palette looked low-variety on a bulb. Measured the distribution across Mandelbulb/KIFS/Quaternion
+  and added a histogram-equalising `smoothstep` remap that spreads the dense middle across the whole
+  palette, so a Rainbow bulb actually reads as a rainbow. (Flames were already full-range; unchanged.)
+
 ## [0.6.3] - 2026-06-17
 
 ### Added

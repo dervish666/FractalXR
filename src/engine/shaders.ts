@@ -308,7 +308,10 @@ void main(){
   vec3 t2 = cross(n, t1);
   pos += (t1 * (rnd(seed) * 2.0 - 1.0) + t2 * (rnd(seed) * 2.0 - 1.0)) * uJitter * uBound;
 
-  col = clamp(d.y * 0.7 + d.z * 0.5, 0.0, 1.0); // orbit-trap banding
+  // orbit-trap colour. The raw trap concentrates ~50% of particles in [0.35,0.75] (mid palette),
+  // starving the violet/red ends — so equalise with a smoothstep (≈ the trap's CDF, measured across
+  // mandelbulb/kifs/quat) to spread the dense middle across the whole palette for a fuller spectrum.
+  col = smoothstep(0.15, 0.9, d.y * 0.7 + d.z * 0.5);
 
   // Mandelbox: recycle interior points (orbit never escaped) so they don't pile on the core
   if(abs(uFormula - 1.0) < 0.5 && d.w < 0.5) pos = randBall(seed, uBound);
