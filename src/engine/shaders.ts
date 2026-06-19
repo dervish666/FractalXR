@@ -211,12 +211,20 @@ vec4 kifsDE(vec3 p){
   float s = uScale;                 // per-iteration scale (reuses the Mandelbox scale slot)
   float dr = 1.0;
   float trapR = 1e10, trapY = 1e10;
+  bool tetra = uFormula > 3.5;      // formula 4 = Sierpinski tetrahedron fold; 2 = cubic lattice
   for(int i = 0; i < 12; i++){
     kRotX(z, uKAngleA);
-    z = abs(z);                       // fold into the positive octant
-    if(z.x - z.y < 0.0) z.xy = z.yx;  // Sierpinski plane folds
-    if(z.x - z.z < 0.0) z.xz = z.zx;
-    if(z.y - z.z < 0.0) z.yz = z.zy;
+    if(tetra){
+      // tetrahedral plane folds → the Sierpinski tetrahedron (pyramid)
+      if(z.x + z.y < 0.0) z.xy = -z.yx;
+      if(z.x + z.z < 0.0) z.xz = -z.zx;
+      if(z.y + z.z < 0.0) z.yz = -z.zy;
+    } else {
+      z = abs(z);                     // cubic / octahedral fold (the Lattice form)
+      if(z.x - z.y < 0.0) z.xy = z.yx;
+      if(z.x - z.z < 0.0) z.xz = z.zx;
+      if(z.y - z.z < 0.0) z.yz = z.zy;
+    }
     kRotZ(z, uKAngleB);
     z = z * s - off * (s - 1.0);      // scale toward the offset
     dr *= s;
@@ -255,8 +263,9 @@ vec4 quatDE(vec3 p){
 
 // dispatch on the selected formula. .x=distance, .yz=orbit traps, .w=escaped (1/0)
 vec4 de(vec3 p){
-  if(uFormula > 2.5) return quatDE(p);
-  if(uFormula > 1.5) return kifsDE(p);
+  if(uFormula > 3.5) return kifsDE(p);    // 4 = Sierpinski (tetra fold, branched inside kifsDE)
+  if(uFormula > 2.5) return quatDE(p);    // 3 = Quaternion Julia
+  if(uFormula > 1.5) return kifsDE(p);    // 2 = KIFS (cubic lattice)
   return (uFormula > 0.5) ? mandelboxDE(p) : mandelbulbDE(p);
 }
 

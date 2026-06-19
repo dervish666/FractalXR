@@ -360,10 +360,10 @@ function stepBulbMorph(dtSec: number): void {
 
   // living breath on top of the (possibly morphing) base params
   const t = bulbTime * disp.speed
-  if (disp.formula === 'kifs') {
-    // breathe the two fold angles in quadrature — the kaleidoscope slowly turns
+  if (disp.formula === 'kifs' || disp.formula === 'sierpinski') {
+    // breathe the two fold angles in quadrature — the kaleidoscope / pyramid slowly turns
     sim.setBulbParams({
-      formula: 'kifs',
+      formula: disp.formula,
       scale: disp.scale,
       fixedR: disp.fixedR,
       bound: disp.bound,

@@ -10,7 +10,7 @@ import { blendPalettes } from './morph'
  */
 export interface BulbGenome {
   name: string
-  formula: 'mandelbulb' | 'mandelbox' | 'kifs' | 'quat'
+  formula: 'mandelbulb' | 'mandelbox' | 'kifs' | 'quat' | 'sierpinski'
   power: number // Mandelbulb polynomial power (8 = classic)
   powerBreath: number // Mandelbulb power-breath amplitude
   scale: number // Mandelbox / KIFS per-iteration scale (negative box = architectural look)
@@ -42,6 +42,11 @@ const mbox = (name: string, scale: number, scaleBreath: number, speed: number, p
 const kifs = (name: string, scale: number, offset: Vec3, aA: number, aB: number, breath: number, fixedR: number, speed: number, palette: Vec3[]): BulbGenome => ({
   name, formula: 'kifs', power: 8, powerBreath: 0, scale, scaleBreath: 0, minR: 0.5, fixedR, mandelbulb: true, juliaC: offset, juliaOrbit: 0, kAngleA: aA, kAngleB: aB, kAngleBreath: breath, bound: 2.0, speed, palette,
 })
+// Sierpinski tetrahedron — the same KIFS machinery but a tetrahedral fold (offset (1,1,1),
+// scale 2, no rotation = the classic pyramid; angles bend it into organic tetra forms).
+const sierp = (name: string, offset: Vec3, aA: number, aB: number, breath: number, fixedR: number, speed: number, palette: Vec3[]): BulbGenome => ({
+  name, formula: 'sierpinski', power: 8, powerBreath: 0, scale: 2, scaleBreath: 0, minR: 0.5, fixedR, mandelbulb: true, juliaC: offset, juliaOrbit: 0, kAngleA: aA, kAngleB: aB, kAngleBreath: breath, bound: 2.0, speed, palette,
+})
 // Quaternion Julia: z → z² + c. `c` (the Julia-C slot) picks the form; juliaOrbit gives it life.
 const quat = (name: string, c: Vec3, orbit: number, speed: number, palette: Vec3[]): BulbGenome => ({
   name, formula: 'quat', power: 8, powerBreath: 0, scale: 2, scaleBreath: 0, minR: 0.5, fixedR: 1, mandelbulb: false, juliaC: c, juliaOrbit: orbit, kAngleA: 0, kAngleB: 0, kAngleBreath: 0, bound: 1.4, speed, palette,
@@ -67,6 +72,9 @@ export const BULB_GALLERY: BulbGenome[] = [
   quat('Mercury', [-0.2, 0.6, 0.2], 0.06, 0.09, themeColors('Ice')),
   quat('Cobalt', [-0.291, -0.4, 0.339], 0.04, 0.07, themeColors('Neon')),
   quat('Halcyon', [-0.5, 0.5, 0.0], 0.05, 0.08, themeColors('Spectrum')),
+  sierp('Pyramid', [1, 1, 1], 0, 0, 0.05, 1.0, 0.05, themeColors('Toxic')), // the classic Sierpinski tetrahedron
+  sierp('Tetra', [1, 1, 1], 0.35, 0.2, 0.1, 0.9, 0.06, themeColors('Rainbow')), // rotated
+  sierp('Stellated', [0.9, 1.1, 1.0], -0.35, 0.45, 0.12, 0.85, 0.07, themeColors('Ice')), // organic tetra
 ]
 
 let serial = 0
@@ -82,12 +90,13 @@ export function randomBulb(formula?: BulbGenome['formula']): BulbGenome {
     formula ??
     (() => {
       const roll = Math.random()
-      return roll < 0.25 ? 'kifs' : roll < 0.45 ? 'quat' : roll < 0.65 ? 'mandelbox' : 'mandelbulb'
+      return roll < 0.13 ? 'kifs' : roll < 0.25 ? 'sierpinski' : roll < 0.45 ? 'quat' : roll < 0.65 ? 'mandelbox' : 'mandelbulb'
     })()
-  if (f === 'kifs') {
-    // Kaleidoscopic IFS: random scale + fold offset + rotation angles
+  if (f === 'kifs' || f === 'sierpinski') {
+    // Kaleidoscopic IFS family (cubic or tetrahedral fold): random scale + offset + angles
     const sign = (): number => (Math.random() < 0.5 ? -1 : 1)
-    return { name: `Bulb ${serial}`, formula: 'kifs', power: 8, powerBreath: 0, scale: rand(1.6, 2.4), scaleBreath: 0, minR: 0.5, fixedR: rand(0.7, 1.15), mandelbulb: true, juliaC: [rand(0.45, 1.3) * sign(), rand(0.5, 1.4), rand(0.45, 1.2) * sign()], juliaOrbit: 0, kAngleA: rand(-0.7, 0.7), kAngleB: rand(-0.7, 0.7), kAngleBreath: rand(0.05, 0.18), bound: 2.0, speed: rand(0.05, 0.11), palette: theme() }
+    const sierpinski = f === 'sierpinski'
+    return { name: `Bulb ${serial}`, formula: f, power: 8, powerBreath: 0, scale: sierpinski ? 2 : rand(1.6, 2.4), scaleBreath: 0, minR: 0.5, fixedR: rand(0.7, 1.15), mandelbulb: true, juliaC: sierpinski ? [rand(0.7, 1.2), rand(0.7, 1.2), rand(0.7, 1.2)] : [rand(0.45, 1.3) * sign(), rand(0.5, 1.4), rand(0.45, 1.2) * sign()], juliaOrbit: 0, kAngleA: rand(-0.7, 0.7), kAngleB: rand(-0.7, 0.7), kAngleBreath: rand(0.05, 0.18), bound: 2.0, speed: rand(0.05, 0.11), palette: theme() }
   }
   if (f === 'quat') {
     // Quaternion Julia: random c constant (the form selector), gentle orbit for life

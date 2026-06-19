@@ -3,6 +3,15 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## [0.7.0] - 2026-06-19
+
+### Added
+- **Sierpinski tetrahedron (Pyramid)** — a fifth bulb formula: the classic 3D Sierpinski gasket
+  pyramid with its recursive triangular holes. It's the KIFS machinery with a *tetrahedral* fold
+  (where the existing Lattice uses a cubic one), so it reuses all the same params (no new uniforms)
+  and the two rotation angles bend it into organic tetra forms. Three presets — **Pyramid** (the
+  pure tetrahedron), **Tetra**, **Stellated** — plus random/morph support.
+
 ## [0.6.4] - 2026-06-19
 
 ### Changed
