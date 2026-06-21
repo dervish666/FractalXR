@@ -8,6 +8,8 @@ import {
   Material,
   PerspectiveCamera,
   Scene,
+  SRGBColorSpace,
+  TextureLoader,
   Vector2,
   Vector3,
   Vector4,
@@ -36,6 +38,8 @@ import { GpuTimer } from './engine/GpuTimer'
 import { WorldGrab } from './xr/WorldGrab'
 import { WristMenu } from './xr/WristMenu'
 import { ControlsGuide } from './xr/ControlsGuide'
+import { DomeGallery } from './xr/DomeGallery'
+import type { DomeTile } from './xr/DomeGallery'
 import { createMRButton } from './xr/MRButton'
 
 // Replace the landing overlay with a readable message (no innerHTML — keep the codebase XSS-free).
@@ -497,6 +501,60 @@ overlayScene.add(guide.root)
 // to a stream of newcomers; a quick grab/press makes it vanish for the experienced user.
 renderer.xr.addEventListener('sessionstart', () => window.setTimeout(() => guide.show(), 600))
 
+// --- dome gallery -----------------------------------------------------------
+// a planetarium of pre-baked variation stills you point at to pick. The tile ORDER here MUST
+// match the offline baker's combined order (every flame, then every bulb) so each tile samples
+// the right atlas cell. The atlas (public/thumbs.png) is produced by bake.html.
+const domeTiles: DomeTile[] = [
+  ...GALLERY.map((g, i) => ({ mode: 'flame' as const, index: i, name: g.name })),
+  ...BULB_GALLERY.map((b, i) => ({ mode: 'bulb' as const, index: i, name: b.name })),
+]
+const dome = new DomeGallery(domeTiles)
+overlayScene.add(dome.root)
+new TextureLoader().load(`${import.meta.env.BASE_URL}thumbs.png`, (tex) => {
+  tex.colorSpace = SRGBColorSpace // the baked PNG is gamma-encoded; display it faithfully
+  tex.anisotropy = 4
+  dome.setAtlas(tex)
+})
+
+// "zoom into the one you picked": gently scale the chosen fractal up after selection. Cancelled
+// the instant the user grabs (their fly-through always wins), applied as a RATIO so it composes
+// with the bulb framing / a later grab — same pattern as the bulb re-framing.
+let domeZoomActive = false
+let domeZoomT = 0
+let domeZoomBase = 0.16
+let domeZoomFactor = 2.4
+const DOME_ZOOM_DUR = 1.1 // seconds
+const startDomeZoom = (): void => {
+  domeZoomBase = flameGroup.scale.x
+  domeZoomT = 0
+  domeZoomActive = true
+}
+
+// activate a tile: become that fractal (reusing the menu's morph paths + mode switch), then zoom
+// in and fade the dome out. Cross-mode picks reseed (a visible reform) exactly like the menu chips.
+function selectFromDome(t: DomeTile): void {
+  if (t.mode === 'flame') {
+    if (sim.mode === 'bulb') setMode('flame')
+    presetIdx = t.index
+    startMorphTo(GALLERY[t.index])
+  } else {
+    if (sim.mode !== 'bulb') setMode('bulb')
+    presetIdx = t.index
+    startBulbMorphTo(BULB_GALLERY[t.index])
+  }
+  startDomeZoom()
+  dome.hide()
+}
+
+const toggleDome = (): void => {
+  if (dome.open) dome.hide()
+  else {
+    menu.collapse() // mutually exclusive with the wrist menu + its preset side panel
+    dome.show()
+  }
+}
+
 // in-VR wrist menu (left controller), driven by ray-point + trigger (and thumbstick)
 const menu = new WristMenu(
   controllers[0],
@@ -525,6 +583,7 @@ const menu = new WristMenu(
     toggleMode,
     toggleAuto,
     recolor,
+    toggleDome,
     morphToPreset: (i) => {
       if (sim.mode === 'bulb') setMode('flame') // picking a flame preset leaves bulb mode
       presetIdx = i // keep the stick shortcut in sync
@@ -566,8 +625,17 @@ controllers.forEach((c, i) => {
   ;(c as unknown as Evented).addEventListener('selectstart', () => {
     guide.hide() // any trigger pull dismisses the controls card
     if (i === pointerHand) {
-      if (menu.hovered) menu.click()
-      else randomize()
+      if (menu.hovered) {
+        if (!menu.isOpen && dome.open) dome.hide() // expanding the menu closes the dome (mutual exclusion)
+        menu.click()
+      } else if (dome.hovered) {
+        const picked = dome.pick()
+        if (picked) {
+          selectFromDome(picked)
+          // haptic confirm on the pointer hand
+          ;(inputSources[pointerHand]?.gamepad as unknown as { hapticActuators?: { pulse?: (a: number, b: number) => void }[] })?.hapticActuators?.[0]?.pulse?.(0.4, 25)
+        }
+      } else randomize()
     } else {
       mutateCurrent()
     }
@@ -583,6 +651,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'b') breed()
   else if (k === 'a') toggleAuto()
   else if (k === 'm') toggleMode()
+  else if (k === 'g') toggleDome()
   else if (k >= '1' && k <= '9') {
     const i = Number(k) - 1
     if (i < GALLERY.length) startMorphTo(GALLERY[i])
@@ -633,7 +702,10 @@ function pollButtons(): void {
       if (pressed && !menuBtnPrev[i] && menuBtnInit) {
         guide.hide() // ☰ also dismisses the controls card
         if (menu.isOpen) menu.collapse()
-        else menu.expand()
+        else {
+          if (dome.open) dome.hide() // opening the menu closes the dome (mutual exclusion)
+          menu.expand()
+        }
       }
       menuBtnPrev[i] = pressed
     }
@@ -667,7 +739,10 @@ function pollButtons(): void {
     if (Math.abs(ax) < 0.3 && Math.abs(ay) < 0.3) stickArmed = true
 
     const click = lpad.buttons[3]?.pressed === true
-    if (click && !stickClickWas) menu.click()
+    if (click && !stickClickWas) {
+      if (!menu.isOpen && dome.open) dome.hide() // stick-click opening the menu closes the dome
+      menu.click()
+    }
     stickClickWas = click
   }
 
@@ -725,6 +800,7 @@ renderer.xr.addEventListener('sessionstart', () => {
 const fbSize = new Vector2()
 const menuRayOrigin = new Vector3()
 const menuRayDir = new Vector3()
+const domeCenter = new Vector3()
 let frame = 0
 let settleFrames = 0
 const SETTLE_TAIL = 45 // keep simulating briefly after a morph settles, then freeze
@@ -777,7 +853,9 @@ renderer.setAnimationLoop(() => {
   menuRayOrigin.setFromMatrixPosition(controllers[pointerHand].matrixWorld)
   menuRayDir.set(0, 0, -1).transformDirection(controllers[pointerHand].matrixWorld)
   const onMenu = menu.pointerTest(menuRayOrigin, menuRayDir)
-  rays[pointerHand].scale.z = onMenu ? menu.hitDistance : 5
+  // dome claims the laser only when the menu doesn't (menu-first arbitration over the single ray)
+  const onDome = !onMenu && dome.visible && dome.pointerTest(menuRayOrigin, menuRayDir)
+  rays[pointerHand].scale.z = onMenu ? menu.hitDistance : onDome ? dome.hitDistance : 5
   rays[menuHand].scale.z = 5
 
   // breeding buttons + morph the genome toward the target (auto-generate if enabled)
@@ -790,6 +868,16 @@ renderer.setAnimationLoop(() => {
   if (sim.mode === 'bulb') {
     bulbTime += dtMs / 1000
     stepBulbMorph(dtMs / 1000)
+  }
+
+  // zoom into the dome-picked fractal (gentle scale-up). The user's grab always wins and cancels
+  // it; applied as a ratio so it composes with the bulb framing and any grab-scale already there.
+  if (worldGrab.isGrabbing) domeZoomActive = false
+  if (domeZoomActive) {
+    domeZoomT = Math.min(1, domeZoomT + dtMs / 1000 / DOME_ZOOM_DUR)
+    const target = domeZoomBase * (1 + (domeZoomFactor - 1) * smoothstep(domeZoomT))
+    flameGroup.scale.multiplyScalar(target / flameGroup.scale.x)
+    if (domeZoomT >= 1) domeZoomActive = false
   }
 
   // 1. simulate — only while morphing (or briefly after), then FREEZE so the settled
@@ -811,6 +899,13 @@ renderer.setAnimationLoop(() => {
   const presenting = renderer.xr.isPresenting
   const cam = presenting ? rigCamera : desktopCamera
   if (!presenting) controls.update()
+
+  // dome gallery: anchored at the head in VR (you stand in the middle), at the flame on desktop;
+  // each tile billboards to face the user. Uses the real head camera (the rig camera isn't head-tracked).
+  const headCam = presenting ? renderer.xr.getCamera() : desktopCamera
+  if (presenting) domeCenter.setFromMatrixPosition(headCam.matrixWorld)
+  else domeCenter.copy(flameGroup.position)
+  dome.update(dtMs / 1000, headCam, domeCenter)
 
   // 2. accumulate point splats into the HDR target (per eye while presenting).
   //    At splatScale < 1 the HDR target is sub-res; shrink the XR per-eye viewports to match
@@ -873,6 +968,13 @@ window.addEventListener('resize', () => {
   gallery: GALLERY,
   menu,
   guide,
+  dome,
+  toggleDome,
+  // simulate a dome pick from the desktop console (no controllers): index into domeTiles
+  domePick: (i: number) => selectFromDome(domeTiles[i]),
+  setDomeZoom: (f: number) => {
+    domeZoomFactor = f
+  },
   overlayScene,
   controllers,
   // tuning/dev helpers: read the live genome, and set morph speed (for fast candidate harvesting)

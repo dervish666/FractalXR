@@ -3,6 +3,19 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## [0.8.0] - 2026-06-21
+
+### Added
+- **Dome gallery — a planetarium of variation stills.** Open it from the wrist menu (EXPLORE →
+  DOME) and all 34 built-in variations (13 flames + 21 bulbs) ring you on a 360° dome as still
+  thumbnails. Point the laser at one and pull the trigger: it blooms into the live animated fractal,
+  zooms toward you, and the rest fade away. Reuses the existing morph paths, so activating a tile is
+  the same smooth melt as the preset chips — picking a bulb tile from flame mode switches engines
+  automatically. Each tile billboards to face you; the dome and the wrist menu are mutually exclusive.
+- **Offline thumbnail baker** (`npm run bake`, dev-only). Renders every preset to a still through the
+  real engine and composes a single atlas (`public/thumbs.png`) the dome loads as one texture — so the
+  gallery costs nothing to show in-headset. Re-run it whenever the presets change.
+
 ## [0.7.0] - 2026-06-19
 
 ### Added

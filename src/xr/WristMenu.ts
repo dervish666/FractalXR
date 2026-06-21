@@ -39,6 +39,7 @@ export interface MenuActions {
   toggleMode: () => void
   toggleAuto: () => void
   recolor: () => void
+  toggleDome: () => void // open/close the dome gallery (planetarium of variation stills)
   morphToPreset: (i: number) => void
   morphToBulbPreset: (i: number) => void // bulb-gallery chip (shown only in bulb mode)
   saveFavorite: () => void
@@ -205,6 +206,7 @@ export class WristMenu {
 
     // EXPLORE — browse presets, switch engine, recolour
     section('EXPLORE', [
+      { label: 'DOME', sub: 'gallery ▸', kind: 'nav', run: () => a.toggleDome() },
       { label: 'PRESETS', sub: 'browse ▸', kind: 'nav', run: () => this.togglePresets() },
       { label: 'MODE', kind: 'action', valueKey: 'mode', run: a.toggleMode },
       { label: 'RECOLOR', sub: 'theme', kind: 'action', run: a.recolor },

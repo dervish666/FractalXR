@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FractalXR — thumbnail baker (dev)</title>
+    <style>
+      body { background: #05060a; color: #cfd8ff; font-family: ui-sans-serif, system-ui, sans-serif; margin: 18px; }
+      h1 { font-weight: 600; font-size: 20px; }
+      button { font: inherit; padding: 10px 18px; border-radius: 10px; border: 1px solid #88aaff80; background: #111a2e; color: #eef2ff; cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #status { margin-top: 12px; color: #9fb0d8; }
+      p.note { color: #6b7aa0; max-width: 640px; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h1>FractalXR thumbnail baker</h1>
+    <p class="note">
+      Dev-only. Renders every gallery preset to a still and downloads <code>thumbs.png</code> — then move it into
+      <code>public/</code>. Not included in the production build.
+    </p>
+    <button id="bake">Bake thumbnails → thumbs.png</button>
+    <div id="status">loading…</div>
+    <script type="module" src="/src/bake/bake.ts"></script>
+  </body>
+</html>

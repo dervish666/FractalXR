@@ -1,11 +1,12 @@
 {
   "name": "fractalxr",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "WebXR 3D fractal flame generator for the Meta Quest 3",
   "scripts": {
     "dev": "vite",
+    "bake": "vite --config vite.bake.config.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host"
