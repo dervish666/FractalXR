@@ -38,11 +38,15 @@ const RENDER = 512 // offscreen render size — 2× supersample down into the ti
 const SIZE_BAKE = 768 // sim grid → 589,824 particles (plenty dense for a thumbnail)
 const FLAME_FRAMES = 240 // chaos-game frames from a cold seed (offline — settle generously)
 const BULB_FRAMES = 150 // Newton-DE relaxation converges fast; a still needs no living shimmer
-const FLAME_SCALE = 0.42 // flame model→view scale in the tile (live default is 0.16; bigger fills the cell)
-const BULB_FILL = 1.9 // bulb framing multiplier on 0.65/bound (the live apparent-size normaliser)
+const FLAME_SCALE = 0.34 // flame model→view scale (leaves a transparent margin so the glow fades out, no hard tile edge)
+const BULB_FILL = 1.55 // bulb framing multiplier on 0.65/bound (margin so edge-filling boxes don't clip square)
 const CAM_DIST = 1.6 // camera→fractal distance (mirrors the desktop view: cam −0.7, flame −2.3)
 const VIEW_ROT_X = -0.33 // 3/4 view tilt so symmetric forms (mandelbulbs/boxes) read with 3D depth,
 const VIEW_ROT_Y = 0.52 // not flat pole-on mandalas
+const ALPHA_LO = 0.05 // glow luminance below this → fully transparent (kills faint haze square)
+const ALPHA_HI = 0.5 // glow luminance above this → fully opaque; smoothstep between → soft glow edges
+const VIG_INNER = 0.74 // soft square vignette: full alpha inside this radius, feathered to 0 at the tile
+// edge — guarantees NO hard square even for edge-filling fractals (Mandelboxes, dense KIFS)
 const BULB_TONE = { exposure: 0.34, gamma: 2.4, k2: 55, hiDesat: 0.3 } // bulbs inherit a fixed tone (no per-genome tone)
 
 const items: ({ kind: 'flame'; g: FlameGenome } | { kind: 'bulb'; b: BulbGenome })[] = [
@@ -98,8 +102,7 @@ const atlas = document.createElement('canvas')
 atlas.width = COLS * TILE
 atlas.height = rows * TILE
 const actx = atlas.getContext('2d')!
-actx.fillStyle = '#000'
-actx.fillRect(0, 0, atlas.width, atlas.height)
+actx.clearRect(0, 0, atlas.width, atlas.height) // transparent background — each tile carries its own glow alpha
 
 const tmp = document.createElement('canvas')
 tmp.width = RENDER
@@ -157,6 +160,20 @@ function renderOneFrame(): void {
 function blitToAtlas(k: number): void {
   const buf = new Uint8Array(RENDER * RENDER * 4)
   renderer.readRenderTargetPixels(ldr, 0, 0, RENDER, RENDER, buf)
+  // Derive a STRAIGHT alpha from glow luminance so the opaque-black background becomes transparent:
+  // the fractal floats and its edges fade out (no hard square). RGB is left as the tonemapped glow.
+  for (let p = 0; p < buf.length; p += 4) {
+    const idx = p >> 2
+    const nx = ((idx % RENDER) / (RENDER - 1)) * 2 - 1
+    const ny = (((idx / RENDER) | 0) / (RENDER - 1)) * 2 - 1
+    // square vignette feathering the border to transparent so no tile ever reads as a hard square
+    const vt = Math.min(1, Math.max(0, (Math.max(Math.abs(nx), Math.abs(ny)) - VIG_INNER) / (1 - VIG_INNER)))
+    const vig = 1 - vt * vt * (3 - 2 * vt)
+    const m = Math.max(buf[p], buf[p + 1], buf[p + 2]) / 255
+    const t = Math.min(1, Math.max(0, (m - ALPHA_LO) / (ALPHA_HI - ALPHA_LO)))
+    buf[p + 3] = Math.round(t * t * (3 - 2 * t) * vig * 255) // glow smoothstep × border vignette
+  }
+  tctx.clearRect(0, 0, RENDER, RENDER)
   tctx.putImageData(new ImageData(new Uint8ClampedArray(buf), RENDER, RENDER), 0, 0)
   const col = k % COLS
   const row = (k / COLS) | 0

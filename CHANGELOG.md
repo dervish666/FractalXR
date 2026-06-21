@@ -3,7 +3,14 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
-## [0.8.0] - 2026-06-21
+## [0.8.1] - 2026-06-21
+
+### Changed
+- **Dome thumbnails are now transparent-backed and larger.** They were opaque black squares that
+  read as floating cards; now each thumbnail carries an alpha channel derived from the fractal's own
+  glow (plus a soft border vignette so even edge-filling forms like the Mandelboxes don't clip to a
+  square), so the fractals dissolve into the void — and into your real room in passthrough. Tiles are
+  also much bigger and on a slightly wider dome. (Re-bake with `npm run bake` after preset changes.)
 
 ### Added
 - **Dome gallery — a planetarium of variation stills.** Open it from the wrist menu (EXPLORE →

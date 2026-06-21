@@ -41,8 +41,8 @@ export class DomeGallery {
 
   constructor(
     tiles: DomeTile[],
-    radius = 2.4,
-    tileSize = 0.36,
+    radius = 2.8,
+    tileSize = 0.72, // large tiles; thumbnails are transparent-backed so they blend into the void instead of reading as squares
     minElevDeg = -26,
     maxElevDeg = 46,
   ) {
