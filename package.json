@@ -10,13 +10,16 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
     "preview": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "test:stereo": "vite --config vite.http.config.ts --open /stereo-test.html",
+    "zoom": "vite --config vite.http.config.ts --open /zoom.html"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
-    "three": "^0.184.0"
+    "three": "^0.184.0",
+    "@sparkjsdev/spark": "^2.1.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.42.1",

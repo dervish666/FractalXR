@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FractalXR — relief zoomer spike</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05060a; overflow: hidden; }
+      canvas { display: block; }
+      .hud {
+        position: fixed; left: 14px; bottom: 12px; pointer-events: none;
+        font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #cfd6e4; text-shadow: 0 1px 3px #000a; letter-spacing: 0.02em;
+      }
+      .hud b { color: #7fd3ff; font-weight: 600; }
+      .hud .dim { color: #6b7488; }
+      .hud .clean { color: #7dd87d; }
+      .hud .softening { color: #e2c766; }
+      .hud .blocky { color: #e28f5a; }
+      .hud .mush { color: #e2606a; }
+    </style>
+  </head>
+  <body>
+    <script type="module" src="/src/zoom/spike.ts"></script>
+  </body>
+</html>

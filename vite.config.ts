@@ -1,7 +1,6 @@
 import { defineConfig } from 'vite'
 import basicSsl from '@vitejs/plugin-basic-ssl'
-
-import { cloudflare } from "@cloudflare/vite-plugin";
+import { cloudflare } from '@cloudflare/vite-plugin'
 
 // HTTPS is required for WebXR (secure context). Two ways to reach the Quest:
 //   1. LAN:  open https://<your-mac-LAN-ip>:5173 in the Quest Browser and accept
@@ -15,4 +14,11 @@ export default defineConfig({
     port: 5173,
   },
   base: './', // relative paths so static-host deploys work from any subpath
+  build: {
+    rollupOptions: {
+      // zoom.html is a second entry point: the relief zoomer, its own renderer and its own
+      // WebXR session, sharing only the shader helpers and the palette with the main app.
+      input: { main: 'index.html', zoom: 'zoom.html' },
+    },
+  },
 })

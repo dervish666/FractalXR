@@ -1,0 +1,261 @@
+// GLSL for the escape-time relief renderer.
+//
+// Two passes:
+//   FIELD  — one Mandelbrot/Julia evaluation per texel into an RGBA16F tile. Re-runs only
+//            when the complex window moves, so a still view costs nothing per frame.
+//   RELIEF — per eye, ray-march that tile as a height field inside a slab. Cheap texture
+//            fetches, so both eyes get true parallax instead of a flat poster.
+
+// ---- field pass (raw fullscreen, GLSL ES 3.00) -----------------------------
+export const FIELD_FRAG = /* glsl */ `
+precision highp float;
+precision highp int;
+
+uniform vec2  uCenterHi;     // complex-plane centre, float32 head
+uniform vec2  uCenterLo;     // ...and the double-precision tail we can still salvage
+uniform float uScale;        // half-width of the window, in complex units
+uniform float uRes;          // field texture resolution (square)
+uniform int   uMaxIter;
+uniform vec2  uJuliaC;
+uniform float uJulia;        // 1 = Julia (c fixed, z0 = pixel), 0 = Mandelbrot
+uniform float uRidge;        // 0 = terraces from iteration count, 1 = ridges from distance
+uniform float uTerraceGamma;
+uniform float uRidgeWidth;   // ridge falloff, measured in field texels (zoom-invariant)
+uniform float uColorCycles;
+uniform float uColorShift;
+uniform int   uSamples;      // sub-texel grid per side: 1 while moving, 3 once settled
+uniform float uInvert;       // 0 = set stands proud, 1 = set is the pit and the filigree incises
+
+out vec4 outField;
+
+const float ESC2 = 65536.0;        // escape radius squared (256²) — large radius, smooth count
+const float LOG_ESC = 5.5451774;   // log(256)
+
+vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
+
+// The escape-time core, deliberately isolated: swapping in perturbation (CPU reference orbit
+// + fp32 delta iteration) for unlimited zoom depth replaces this function and nothing else.
+// Returns (smoothIter, distanceEstimate, insideFlag).
+vec3 escape(vec2 c, vec2 z0){
+  vec2 z = z0;
+  vec2 dz = vec2(1.0, 0.0);                              // dz/dc — feeds the distance estimate
+  vec2 addC = (uJulia > 0.5) ? vec2(0.0) : vec2(1.0, 0.0);
+  float m2 = dot(z, z);
+  int n = 0;
+  for(int i = 0; i < uMaxIter; i++){
+    dz = 2.0 * cmul(z, dz) + addC;
+    z  = cmul(z, z) + c;
+    m2 = dot(z, z);
+    n = i + 1;
+    if(m2 > ESC2) break;
+  }
+  if(m2 <= ESC2) return vec3(float(uMaxIter), 0.0, 1.0); // never escaped — inside the set
+  float lm = log(m2) * 0.5;                              // log|z|
+  float s  = float(n) - log2(lm / LOG_ESC);              // fractional iteration count
+  float de = sqrt(m2) * lm / max(1e-20, length(dz));     // Milnor/Koebe distance to the set
+  return vec3(s, de, 0.0);
+}
+
+void main(){
+  float pixel = 2.0 * uScale / uRes;      // complex units per field texel
+
+  // Supersample. Near the boundary the escape count changes faster than one texel, so a
+  // single sample per texel is pure aliasing — it is what puts salt-and-pepper across the
+  // filigree. Averaging s and the distance estimate (not the derived height/colour, which
+  // are non-linear and hue-wrapping) is what actually resolves it.
+  float sumS = 0.0, sumDE = 0.0, sumIn = 0.0;
+  float inv = 1.0 / float(uSamples);
+  for(int sy = 0; sy < 3; sy++){
+    if(sy >= uSamples) break;
+    for(int sx = 0; sx < 3; sx++){
+      if(sx >= uSamples) break;
+      vec2 jit = (vec2(float(sx), float(sy)) + 0.5) * inv - 0.5;
+      vec2 uv  = (gl_FragCoord.xy + jit) / uRes;
+      vec2 d   = (uv * 2.0 - 1.0) * uScale;
+      // add the tail before the head: the small terms survive the round into the head's
+      // exponent, which stops the grid drifting as you pan. It buys no extra zoom depth.
+      vec2 p   = (d + uCenterLo) + uCenterHi;
+      vec3 e   = escape((uJulia > 0.5) ? uJuliaC : p, (uJulia > 0.5) ? p : vec2(0.0));
+      sumS  += e.x;
+      sumDE += e.y;
+      sumIn += e.z;
+    }
+  }
+  float w  = inv * inv;
+  float s  = sumS * w;
+  float de = sumDE * w;
+  float ins = sumIn * w;                  // fractional — gives the set an antialiased edge
+
+  float t     = pow(clamp(s / float(uMaxIter), 0.0, 1.0), uTerraceGamma);
+  float ridge = exp(-(de / pixel) / max(0.001, uRidgeWidth));
+  float h     = clamp(mix(t, ridge, uRidge), 0.0, 1.0);
+  h = mix(h, 1.0 - h, uInvert);           // flip the relief: mesa becomes chasm, ridges become grooves
+
+  // cycle on log(iterations) so the palette keeps moving at every zoom depth
+  float ci = fract(uColorShift + uColorCycles * log(1.0 + s) * 0.15);
+
+  outField = vec4(h, ci, ins, clamp(s / float(uMaxIter), 0.0, 1.0));
+}
+`
+
+// ---- height-range reduction (raw fullscreen, 4x4 per pass) -----------------
+export const REDUCE_FRAG = /* glsl */ `
+precision highp float;
+uniform sampler2D uSrc;
+uniform int uFirst;          // 1 = reading the field (height is .r), 0 = reading (min, max)
+out vec4 outRange;
+void main(){
+  ivec2 o = ivec2(gl_FragCoord.xy) * 4;
+  float lo =  1e30;
+  float hi = -1e30;
+  for(int y = 0; y < 4; y++){
+    for(int x = 0; x < 4; x++){
+      vec4 s = texelFetch(uSrc, o + ivec2(x, y), 0);
+      lo = min(lo, s.r);
+      hi = max(hi, (uFirst == 1) ? s.r : s.g);   // .g is the colour index on the first pass
+    }
+  }
+  outRange = vec4(lo, hi, 0.0, 1.0);
+}
+`
+
+// ---- relief pass (ShaderMaterial + GLSL3; three declares the built-in uniforms) ----
+export const RELIEF_VERT = /* glsl */ `
+out vec3 vLocal;
+out vec3 vEyeLocal;
+void main(){
+  vLocal = position;
+  // cameraPosition is set per sub-camera, so each eye marches from its own origin
+  vEyeLocal = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`
+
+export const RELIEF_FRAG = /* glsl */ `
+precision highp float;
+
+in vec3 vLocal;
+in vec3 vEyeLocal;
+
+uniform sampler2D uField;
+uniform sampler2D uPalette;
+uniform vec3  uHalf;         // slab half-extents, metres
+uniform float uRes;          // field resolution
+uniform int   uSteps;        // march steps through the slab
+uniform vec3  uLightDir;
+uniform float uNormalWidth;  // gradient baseline, in texels
+uniform float uShadow;
+uniform float uSpecular;
+uniform float uAmbient;
+uniform float uExposure;
+uniform vec3  uInsideColor;
+uniform float uHeightLo;     // measured range of the tile, stretched across the full slab
+uniform float uHeightHi;
+
+// re-declared here so the hit point can be written to the depth buffer; three sets both
+// per object and per (sub-)camera, so they are correct for each eye.
+uniform mat4 projectionMatrix;
+uniform mat4 modelViewMatrix;
+
+out vec4 outColor;
+
+vec2  uvOf(vec3 p){ return p.xy / (2.0 * uHalf.xy) + 0.5; }
+float heightAt(vec2 uv){
+  float h = texture(uField, clamp(uv, 0.0, 1.0)).r;
+  return clamp((h - uHeightLo) / max(1e-4, uHeightHi - uHeightLo), 0.0, 1.0);
+}
+// Lift the base a hair off the slab floor. At height exactly 0 the surface sits ON the bottom
+// face, where the march's below-surface test never fires, and the region renders as a hole
+// straight through the panel. An inverted set (interior height 0) does exactly that.
+float surfZ(vec2 uv){ return -uHalf.z + (0.006 + 0.994 * heightAt(uv)) * 2.0 * uHalf.z; }
+
+// ray/AABB slab test, guarded against axis-parallel rays
+vec2 slab(vec3 ro, vec3 rd){
+  vec3 s = vec3(rd.x < 0.0 ? -1.0 : 1.0, rd.y < 0.0 ? -1.0 : 1.0, rd.z < 0.0 ? -1.0 : 1.0);
+  vec3 inv = s / max(abs(rd), vec3(1e-6));
+  vec3 a = (-uHalf - ro) * inv;
+  vec3 b = ( uHalf - ro) * inv;
+  vec3 lo = min(a, b), hi = max(a, b);
+  return vec2(max(max(lo.x, lo.y), lo.z), min(min(hi.x, hi.y), hi.z));
+}
+
+void main(){
+  vec3 ro = vEyeLocal;
+  vec3 rd = normalize(vLocal - vEyeLocal);
+
+  vec2 tt = slab(ro, rd);
+  float tN = max(tt.x, 0.0);
+  float tF = tt.y;
+  if(tF <= tN) discard;
+
+  // Linear march down to the first sample below the surface, then bisect. The step divisor
+  // is uSteps-1 so the LAST sample lands exactly on the exit point: a surface sitting near
+  // the slab floor is otherwise stepped straight over, and the panel shows a hole.
+  float dt = (tF - tN) / float(uSteps - 1);
+  float t = tN, tPrev = tN;
+  bool hit = false;
+  for(int i = 0; i < uSteps; i++){
+    vec3 p = ro + rd * t;
+    if(p.z - surfZ(uvOf(p)) < 0.0){ hit = true; break; }
+    tPrev = t;
+    t += dt;
+  }
+  if(!hit) discard;                    // ray passed clean over the relief — see through it
+
+  float lo = tPrev, hi = t;            // (collapses to tN for a grazing entry through a cliff)
+  for(int i = 0; i < 6; i++){
+    float m = 0.5 * (lo + hi);
+    vec3 p = ro + rd * m;
+    if(p.z - surfZ(uvOf(p)) < 0.0) hi = m; else lo = m;
+  }
+  vec3 hitP = ro + rd * hi;
+  vec2 uv = uvOf(hitP);
+
+  // normal from a wide finite difference: the extra baseline keeps the half-float height
+  // quantisation out of the shading, and softens the relief in a way that flatters it
+  float e = uNormalWidth / uRes;
+  float hL = heightAt(uv - vec2(e, 0.0)), hR = heightAt(uv + vec2(e, 0.0));
+  float hD = heightAt(uv - vec2(0.0, e)), hU = heightAt(uv + vec2(0.0, e));
+  float dzdx = (hR - hL) * uHalf.z / (2.0 * e * uHalf.x);
+  float dzdy = (hU - hD) * uHalf.z / (2.0 * e * uHalf.y);
+  vec3 n = normalize(vec3(-dzdx, -dzdy, 1.0));
+
+  vec4 f = texture(uField, uv);
+  vec3 base = mix(texture(uPalette, vec2(f.g, 0.5)).rgb, uInsideColor, clamp(f.b, 0.0, 1.0));
+
+  vec3 L = normalize(uLightDir);
+  vec3 V = normalize(ro - hitP);
+  vec3 H = normalize(L + V);
+  float ndl  = max(dot(n, L), 0.0);
+  float wrap = ndl * 0.75 + 0.25;                              // half-lambert keeps colour in shadow
+  float spec = pow(max(dot(n, H), 0.0), 48.0) * uSpecular;
+  float rim  = pow(1.0 - max(dot(n, V), 0.0), 3.0);
+
+  float sh = 1.0;
+  if(uShadow > 0.0){
+    vec3 sp = hitP + n * (uHalf.z * 0.02);
+    float sdt = (uHalf.x * 0.6) / 16.0;
+    for(int i = 1; i <= 16; i++){
+      vec3 q = sp + L * (sdt * float(i));
+      if(q.z > uHalf.z || abs(q.x) > uHalf.x || abs(q.y) > uHalf.y) break;
+      if(q.z < surfZ(uvOf(q))){ sh = 1.0 - uShadow; break; }
+    }
+  }
+
+  // cheap cavity term: sit lower than your wider neighbourhood and you go darker
+  float wide = 6.0 * e;
+  float hAvg = 0.25 * (heightAt(uv + vec2(wide, 0.0)) + heightAt(uv - vec2(wide, 0.0))
+                     + heightAt(uv + vec2(0.0, wide)) + heightAt(uv - vec2(0.0, wide)));
+  float ao = clamp(1.0 - 1.7 * max(0.0, hAvg - f.r), 0.22, 1.0);
+
+  vec3 col = base * (uAmbient + wrap * sh * 1.15) * ao
+           + vec3(spec * sh)
+           + base * rim * 0.35;
+  col *= uExposure;
+  col = col / (1.0 + col);                    // soft rolloff so highlights don't clip flat
+  outColor = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
+
+  vec4 clip = projectionMatrix * modelViewMatrix * vec4(hitP, 1.0);
+  gl_FragDepth = 0.5 + 0.5 * (clip.z / clip.w);
+}
+`
