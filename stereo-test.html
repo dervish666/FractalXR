@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>FractalXR — stereo space-handling test</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; padding: 2rem;
+        background: #0b0b10; color: #e8e8f0;
+        font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      h1 { font-size: 1rem; letter-spacing: .06em; text-transform: uppercase; color: #9aa; margin: 0 0 1.4rem; }
+      .row { padding: .8rem 1rem; margin-bottom: .6rem; border-left: 3px solid #444; background: #14141c; }
+      .pass { border-left-color: #3ddc84; }
+      .fail { border-left-color: #ff5252; }
+      .verdict { font-weight: 700; letter-spacing: .04em; }
+      .pass .verdict { color: #3ddc84; }
+      .fail .verdict { color: #ff5252; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: .1rem .9rem; margin: .5rem 0 0; }
+      dt { color: #8890a0; }
+      dd { margin: 0; }
+      .note { color: #8890a0; margin-top: .45rem; font-style: italic; }
+      #summary { margin-top: 1.4rem; padding-top: 1rem; border-top: 1px solid #2a2a36; }
+    </style>
+  </head>
+  <body>
+    <h1>Stereo space-handling test</h1>
+    <p class="note">
+      Tone-mapping through two half-width eye viewports must reproduce the single full-width
+      reference exactly. <code>gl_FragCoord</code> is framebuffer space, so normalising by the
+      viewport instead is correct on a flat screen and wrong in one eye on a headset. The second
+      case below deliberately reintroduces that bug — it must fail loudly, or the first case
+      proves nothing.
+    </p>
+    <div id="out"></div>
+    <div id="summary"></div>
+
+    <script type="module">
+      import { runStereoTest } from '/src/test/stereoTest.ts'
+
+      const out = document.getElementById('out')
+      const summary = document.getElementById('summary')
+
+      const cases = [
+        { label: 'Real compositor — per-eye vs full-width reference', opts: {} },
+        { label: 'Negative control — uFbSize forced to viewport size', opts: { injectBug: true } },
+      ]
+
+      let allPass = true
+      for (const c of cases) {
+        let r, err = null
+        try {
+          r = runStereoTest(c.opts)
+        } catch (e) {
+          err = e
+        }
+        const ok = !err && r.pass
+        allPass = allPass && ok
+        const div = document.createElement('div')
+        div.className = 'row ' + (ok ? 'pass' : 'fail')
+        if (err) {
+          div.innerHTML =
+            `<div class="verdict">ERROR</div><div>${c.label}</div><pre>${String(err && err.stack || err)}</pre>`
+        } else {
+          div.innerHTML = `
+            <div class="verdict">${ok ? 'PASS' : 'FAIL'}</div>
+            <div>${c.label}</div>
+            <dl>
+              <dt>differing px</dt><dd>${r.differing.toLocaleString()} of ${r.total.toLocaleString()}</dd>
+              <dt>max channel delta</dt><dd>${r.maxDelta}</dd>
+              <dt>framebuffer</dt><dd>${r.width}&times;${r.height} (eyes ${r.width / 2}&times;${r.height})</dd>
+            </dl>
+            <div class="note">${r.note}</div>`
+        }
+        out.appendChild(div)
+        // one machine-readable line per case, so the harness can be driven headlessly
+        console.log('STEREO_TEST ' + JSON.stringify(err ? { label: c.label, error: String(err) } : { label: c.label, ...r }))
+      }
+
+      summary.textContent = allPass
+        ? 'ALL PASS — per-eye path matches the reference, and the harness still catches the bug.'
+        : 'FAILURE — see above.'
+      console.log('STEREO_TEST_SUMMARY ' + JSON.stringify({ allPass }))
+    </script>
+  </body>
+</html>

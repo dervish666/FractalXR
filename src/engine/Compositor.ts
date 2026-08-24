@@ -9,6 +9,7 @@ import {
   RGBAFormat,
   Scene,
   Vector2,
+  Vector4,
   WebGLRenderer,
   WebGLRenderTarget,
 } from 'three'
@@ -97,9 +98,21 @@ export class Compositor {
     this.material.uniforms.uPassthrough.value = v
   }
 
-  /** Composite the HDR buffer into `target` (the XR framebuffer, or null = canvas). */
-  tonemap(renderer: WebGLRenderer, target: WebGLRenderTarget | null): void {
+  /** Composite the HDR buffer into `target` (the XR framebuffer, or null = canvas).
+   *
+   *  While presenting, `renderer.render` force-swaps to the XR ArrayCamera and draws this
+   *  fullscreen triangle once per eye with that eye's viewport — which is why the shader
+   *  normalises by `uFbSize` (the FULL framebuffer) and not by the viewport: `gl_FragCoord`
+   *  is framebuffer space, so each eye lands on its own half of the HDR target. Getting that
+   *  distinction wrong is invisible on a flat screen, where the viewport is always at (0,0)
+   *  and the same size as the framebuffer.
+   *
+   *  `viewport` exists so that asymmetry can be exercised off-device (see
+   *  `src/test/stereoTest.ts`); `setRenderTarget` resets the viewport to the target's full
+   *  extent, so it has to be applied after. Omit it and behaviour is exactly as before. */
+  tonemap(renderer: WebGLRenderer, target: WebGLRenderTarget | null, viewport?: Vector4): void {
     renderer.setRenderTarget(target)
+    if (viewport) renderer.setViewport(viewport)
     renderer.render(this.scene, this.cam)
   }
 }
