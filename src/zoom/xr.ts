@@ -7,7 +7,7 @@ import {
   Vector3,
   type WebGLRenderer,
 } from 'three'
-import type { HudPanel } from './HudPanel'
+import type { HudPanel } from '../ui/HudPanel'
 import type { ReliefPanel } from './ReliefPanel'
 
 export interface XrHooks {

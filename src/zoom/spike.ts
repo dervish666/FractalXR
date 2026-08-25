@@ -12,7 +12,7 @@ import { Palette } from '../flame/palette'
 import { THEMES } from '../flame/palettes'
 import { autoMaxIter, DEFAULT_VIEW, FieldPass, precisionUlps, type ZoomView } from './FieldPass'
 import { HeightRange } from './HeightRange'
-import { HudPanel } from './HudPanel'
+import { HudPanel, type HudButton, type HudContent } from '../ui/HudPanel'
 import { ReliefPanel } from './ReliefPanel'
 import { ZoomXR, type XrHooks } from './xr'
 
@@ -65,7 +65,31 @@ const panel = new ReliefPanel(field.rt.texture, palette.texture, field.res, {
   geometryDepth: 1.1, // headroom for the deepest slab the ramp can ask for (0.5 x 2.2)
   steps: STEP_STEPS[stepIdx],
 })
-const hudVR = new HudPanel(1.0)
+const ZOOM_BUTTONS: HudButton[] = [
+  { id: 'res-', label: 'RES −', row: 0, col: 0 },
+  { id: 'res+', label: 'RES +', row: 0, col: 1 },
+  { id: 'iter-', label: 'ITER −', row: 0, col: 2 },
+  { id: 'iter+', label: 'ITER +', row: 0, col: 3 },
+  { id: 'steps-', label: 'STEP −', row: 0, col: 4 },
+  { id: 'steps+', label: 'STEP +', row: 0, col: 5 },
+  { id: 'flat', label: 'FLAT', row: 0, col: 6 },
+  { id: 'depth-', label: 'HIGH −', row: 1, col: 0 },
+  { id: 'depth+', label: 'HIGH +', row: 1, col: 1 },
+  { id: 'curve-', label: 'SHAPE −', row: 1, col: 2 },
+  { id: 'curve+', label: 'SHAPE +', row: 1, col: 3 },
+  { id: 'bands-', label: 'BANDS −', row: 1, col: 4 },
+  { id: 'bands+', label: 'BANDS +', row: 1, col: 5 },
+  { id: 'invert', label: 'INVERT', row: 1, col: 6 },
+  { id: 'relief', label: 'RELIEF', row: 2, col: 0 },
+  { id: 'palette', label: 'COLOUR', row: 2, col: 1 },
+  { id: 'julia', label: 'JULIA', row: 2, col: 2 },
+  { id: 'tex-', label: 'TEXT −', row: 2, col: 3 },
+  { id: 'tex+', label: 'TEXT +', row: 2, col: 4 },
+  { id: 'reset', label: 'RESET', row: 2, col: 5 },
+  { id: 'exit', label: 'EXIT VR', row: 2, col: 6 },
+  { id: 'style', label: 'STYLE', row: 2, col: 7 },
+]
+const hudVR = new HudPanel(ZOOM_BUTTONS, 1.0)
 const heightRange = new HeightRange(field.res)
 let rangeLo = 0
 let rangeHi = 1
@@ -495,7 +519,7 @@ let statT = 0
 let frameMs = 0
 let frameP95 = 0
 
-let lastStats: Parameters<HudPanel['draw']>[0] | null = null
+let lastStats: HudContent | null = null
 
 function updateStats(now: number, dt: number): void {
   frameLog.push(dt * 1000)
@@ -515,34 +539,30 @@ function updateStats(now: number, dt: number): void {
   const ulps = precisionUlps(view, field.res)
   // xr.panelScale IS the mesh scale, in or out of a session — report what is actually drawn
   const depth = panel.material.uniforms.uHalf.value.z * 2 * xr.panelScale
-  const stats = {
-    zoom,
-    iter: view.maxIter,
-    res: field.res,
-    samples: field.samples,
-    fps,
-    frameMs,
-    frameP95,
-    targetHz: renderer.xr.isPresenting ? targetHz : Math.round(fps || 60),
-    depth,
-    panel: xr.panelScale,
-    steps: panel.material.uniforms.uSteps.value as number,
-    ulps,
-    julia: view.julia,
-    invert: view.invert,
-    ridge: view.ridge,
-    theme: THEMES[themeIndex].name,
-    curve: panel.material.uniforms.uHeightCurve.value as number,
-    flat: flatMode,
-    texture: panel.material.uniforms.uTexAmt.value as number,
-    stalk: field.stalk,
-    bands: view.colorCycles,
-    refine: field.refineProgress,
+  const grade = ulps > 8 ? 'clean' : ulps > 4 ? 'softening' : ulps > 1 ? 'blocky' : 'mush'
+  const relief = view.ridge < 0.05 ? 'terrace' : view.ridge > 0.95 ? 'ridge' : 'mixed'
+  const style = field.stalk < 0.05 ? 'marble' : field.stalk > 0.95 ? 'filament' : 'mixed'
+  const period = 1000 / Math.max(1, renderer.xr.isPresenting ? targetHz : 60)
+  const stats: HudContent = {
+    headline: `zoom ${zoom < 1000 ? zoom.toFixed(1) + '×' : zoom.toExponential(2) + '×'}`,
+    metric: `${frameMs.toFixed(1)}ms  p95 ${frameP95.toFixed(1)}ms`,
+    metricOk: frameP95 < period * 1.35,
+    sub: `${fps.toFixed(0)} fps / ${renderer.xr.isPresenting ? targetHz : Math.round(fps || 60)}Hz target`,
+    lines: [
+      `field ${field.res}² · ${field.samples ** 2}x samples · ${view.maxIter} iter · ${panel.material.uniforms.uSteps.value} march`,
+      // kept short deliberately: anything past ~62 characters runs off the panel
+      `panel ${xr.panelScale.toFixed(2)}m · ${flatMode ? 'FLAT' : `high ${depth.toFixed(2)}m`} · shape ${(panel.material.uniforms.uHeightCurve.value as number).toFixed(2)} · bands ${view.colorCycles.toFixed(1)}`,
+      `texture ${(panel.material.uniforms.uTexAmt.value as number).toFixed(2)} ${style} · ${relief}${view.invert ? '·inverted' : ''} · fp32 ${ulps.toFixed(0)} ${grade}`,
+    ],
+    footer: 'trigger drag · stick zoom · grip move · two grips scale',
+    progress: field.refining
+      ? { frac: field.refineProgress, label: `sharpening ${Math.round(field.refineProgress * 100)}%` }
+      : undefined,
+    lit: (id) => (id === 'flat' && flatMode) || (id === 'style' && field.stalk > 0.05),
   }
   lastStats = stats
   hudVR.draw(stats)
 
-  const grade = ulps > 8 ? 'clean' : ulps > 4 ? 'softening' : ulps > 1 ? 'blocky' : 'mush'
   hud.innerHTML = `
     <b>zoom</b> ${zoom < 1000 ? zoom.toFixed(1) : zoom.toExponential(2)}×
     &nbsp; <b>iter</b> ${view.maxIter} (×${ITER_SCALES[iterIdx]})
