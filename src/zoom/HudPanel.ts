@@ -33,6 +33,7 @@ export interface HudStats {
   invert: boolean
   ridge: number
   theme: string
+  flat: boolean
   curve: number
   bands: number
   /** 0..1 while a refined tile is still being assembled band by band, 1 when idle. */
@@ -41,7 +42,7 @@ export interface HudStats {
 
 const W = 1024 // canvas pixels. FIXED — see the resize note on `draw` below.
 const H = 560
-const COLS = 6
+const COLS = 7
 const ROWS = 3
 const PAD = 14
 const BTN_TOP = 250
@@ -56,18 +57,19 @@ export const HUD_BUTTONS: HudButton[] = [
   { id: 'iter+', label: 'ITER +', row: 0, col: 3 },
   { id: 'steps-', label: 'STEP −', row: 0, col: 4 },
   { id: 'steps+', label: 'STEP +', row: 0, col: 5 },
+  { id: 'flat', label: 'FLAT', row: 0, col: 6 },
   { id: 'depth-', label: 'HIGH −', row: 1, col: 0 },
   { id: 'depth+', label: 'HIGH +', row: 1, col: 1 },
   { id: 'curve-', label: 'SHAPE −', row: 1, col: 2 },
   { id: 'curve+', label: 'SHAPE +', row: 1, col: 3 },
   { id: 'bands-', label: 'BANDS −', row: 1, col: 4 },
   { id: 'bands+', label: 'BANDS +', row: 1, col: 5 },
-  { id: 'invert', label: 'INVERT', row: 2, col: 0 },
-  { id: 'relief', label: 'RELIEF', row: 2, col: 1 },
-  { id: 'palette', label: 'COLOUR', row: 2, col: 2 },
-  { id: 'julia', label: 'JULIA', row: 2, col: 3 },
-  { id: 'reset', label: 'RESET', row: 2, col: 4 },
-  { id: 'exit', label: 'EXIT VR', row: 2, col: 5 },
+  { id: 'invert', label: 'INVERT', row: 1, col: 6 },
+  { id: 'relief', label: 'RELIEF', row: 2, col: 0 },
+  { id: 'palette', label: 'COLOUR', row: 2, col: 1 },
+  { id: 'julia', label: 'JULIA', row: 2, col: 2 },
+  { id: 'reset', label: 'RESET', row: 2, col: 5 },
+  { id: 'exit', label: 'EXIT VR', row: 2, col: 6 },
 ]
 
 const btnRect = (b: HudButton): [number, number, number, number] => [
@@ -190,7 +192,7 @@ export class HudPanel {
     c.font = '500 26px ui-monospace, Menlo, monospace'
     const lines = [
       `field ${s.res}² · ${s.samples ** 2}x samples · ${s.iter} iter · ${s.steps} march`,
-      `panel ${s.panel.toFixed(2)}m · high ${s.depth.toFixed(2)}m · shape ${s.curve.toFixed(2)} · bands ${s.bands.toFixed(1)}`,
+      `panel ${s.panel.toFixed(2)}m · ${s.flat ? 'FLAT' : `high ${s.depth.toFixed(2)}m`} · shape ${s.curve.toFixed(2)} · bands ${s.bands.toFixed(1)}`,
       `fp32 ${s.ulps.toFixed(1)} ulps ${grade} · ${
         s.ridge < 0.05 ? 'terrace' : s.ridge > 0.95 ? 'ridge' : 'mixed'
       }${s.invert ? '·inverted' : ''} · ${s.julia ? 'julia' : 'mandelbrot'} · ${s.theme}`,
@@ -216,7 +218,7 @@ export class HudPanel {
     const now = performance.now()
     for (const b of HUD_BUTTONS) {
       const [x, y, w, h] = btnRect(b)
-      const lit = now - (this.flash.get(b.id) ?? -1e9) < 180
+      const lit = now - (this.flash.get(b.id) ?? -1e9) < 180 || (b.id === 'flat' && s.flat)
       const over = this.hot === b.id
       const danger = b.id === 'exit'
       c.fillStyle = lit
@@ -234,7 +236,7 @@ export class HudPanel {
       c.stroke()
 
       c.fillStyle = lit ? '#04070d' : danger ? '#ffb8bd' : '#dbe6f5'
-      c.font = '600 25px ui-monospace, Menlo, monospace'
+      c.font = '600 22px ui-monospace, Menlo, monospace'
       c.textAlign = 'center'
       c.fillText(b.label, x + w / 2, y + h / 2 - 13)
       c.textAlign = 'left'

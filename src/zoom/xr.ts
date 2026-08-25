@@ -28,6 +28,7 @@ const DEADZONE = 0.18
 const TRIGGER = 0
 const SQUEEZE = 1
 const STICK_Y = 3
+const HUD_STANDOFF = 0.2 // metres in front of the slab's front face
 
 interface Hand {
   ctrl: Group
@@ -184,12 +185,15 @@ export class ZoomXR {
    */
   layout(): void {
     this.panel.mesh.scale.setScalar(this.panelScale)
+    // Anchor the slab's FRONT FACE, not its centre. Relief depth ramps with zoom, and a slab
+    // that grows symmetrically sends half that growth straight at your face — over a metre of
+    // it on a 2.4m panel, which is why the panel appeared to move and then swallow you as you
+    // zoomed. Growing backward instead carves the fractal INTO a wall that stays put.
+    this.panel.mesh.position.z = -this.panel.half.z * this.panelScale
     const drop = Math.min(this.panel.half.y * this.panelScale + this.hud.half.y + 0.06, 0.62)
-    // well clear of the slab's front face, so it reads as a control surface in front of the
-    // fractal rather than something embedded in it
-    // half.z is the LIVE eased slab depth, so this has to run every frame or the standoff
-    // freezes and a deepening relief grows out through the HUD.
-    this.hud.mesh.position.set(0, -drop, this.panel.half.z * this.panelScale + 0.45)
+    // Constant standoff from that fixed front face. Keying it to the live slab depth was the
+    // same bug in miniature: the HUD flew toward you as the relief deepened.
+    this.hud.mesh.position.set(0, -drop, HUD_STANDOFF)
     // NEGATIVE: a plane's normal is +Z, and rotating +X tips it DOWN. The HUD sits below eye
     // level, so it has to tip up to face you.
     this.hud.mesh.rotation.x = -0.34
@@ -209,7 +213,6 @@ export class ZoomXR {
       this.pendingPlace = null
       this.placeNow(distance, height)
     }
-    this.layout() // the slab depth eases every frame, so the HUD standoff has to follow it
 
     // Sample every hand ONCE, up front. Edge detection has to happen for every hand on every
     // frame or an early return leaves prevTrigger stale — which is how a trigger released

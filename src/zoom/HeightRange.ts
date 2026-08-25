@@ -56,7 +56,10 @@ export class HeightRange {
     this.build(res)
   }
 
+  private sourceRes = 1024
+
   private build(res: number): void {
+    this.sourceRes = res
     let size = res
     while (size > 32) {
       size = Math.max(1, Math.floor(size / 4))
@@ -95,25 +98,37 @@ export class HeightRange {
     renderer.setRenderTarget(prevRT)
     renderer.xr.enabled = xrWas
 
-    // Percentiles, NOT the absolute extremes. A handful of texels deep in the filigree reach
-    // heights nothing else comes near, and at high field resolution there are more of them —
-    // so an absolute min/max stretches the scale until the whole surface flattens. That is
-    // exactly the "it goes flat at higher resolutions" symptom.
-    const mins: number[] = []
-    const maxs: number[] = []
-    for (let i = 0; i < last.width * last.height; i++) {
+    // Absolute min/max is the wrong statistic: a handful of texels deep in the filigree reach
+    // heights nothing else comes near, and how extreme they get depends on how many texels
+    // there are — so the scale moved every time the resolution changed. Mean and standard
+    // deviation are averages, so they hold still across the ladder. Clamp to the real extremes
+    // so the window can never claim range the tile does not have.
+    let lo = Infinity
+    let hi = -Infinity
+    let sum = 0
+    let sq = 0
+    const n = last.width * last.height
+    for (let i = 0; i < n; i++) {
       const a = this.buf[i * 4]
       const b = this.buf[i * 4 + 1]
-      if (isFinite(a)) mins.push(a)
-      if (isFinite(b)) maxs.push(b)
+      if (a < lo) lo = a
+      if (b > hi) hi = b
+      sum += this.buf[i * 4 + 2]
+      sq += this.buf[i * 4 + 3]
     }
-    if (!mins.length || !maxs.length) return { lo: 0, hi: 1 }
-    mins.sort((x, y) => x - y)
-    maxs.sort((x, y) => x - y)
-    const lo = mins[Math.floor(mins.length * 0.04)]
-    const hi = maxs[Math.min(maxs.length - 1, Math.ceil(maxs.length * 0.96))]
-    if (hi - lo < 1e-4) return { lo: 0, hi: 1 }
-    return { lo, hi }
+    if (!isFinite(lo) || !isFinite(hi) || hi - lo < 1e-4) return { lo: 0, hi: 1 }
+
+    const texels = this.sourceRes * this.sourceRes
+    const mean = sum / texels
+    const variance = Math.max(0, sq / texels - mean * mean)
+    const sigma = Math.sqrt(variance)
+    if (!(sigma > 1e-4)) return { lo, hi } // a nearly uniform tile: nothing to normalise against
+
+    const k = 2.4
+    const outLo = Math.max(lo, mean - k * sigma)
+    const outHi = Math.min(hi, mean + k * sigma)
+    if (outHi - outLo < 1e-4) return { lo, hi }
+    return { lo: outLo, hi: outHi }
   }
 
   dispose(): void {

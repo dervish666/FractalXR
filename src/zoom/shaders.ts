@@ -102,20 +102,35 @@ void main(){
 export const REDUCE_FRAG = /* glsl */ `
 precision highp float;
 uniform sampler2D uSrc;
-uniform int uFirst;          // 1 = reading the field (height is .r), 0 = reading (min, max)
+uniform int uFirst;          // 1 = reading the field (height is .r), 0 = reading a partial reduction
 out vec4 outRange;
+// (min, max, sum, sum of squares). Min and max describe the extremes; the sums give a mean and
+// a standard deviation, and those two are AVERAGES — so unlike the extremes they do not drift
+// as the tile resolution changes. That is what keeps apparent relief height the same when you
+// step the resolution up.
 void main(){
   ivec2 o = ivec2(gl_FragCoord.xy) * 4;
   float lo =  1e30;
   float hi = -1e30;
+  float sum = 0.0;
+  float sq  = 0.0;
   for(int y = 0; y < 4; y++){
     for(int x = 0; x < 4; x++){
       vec4 s = texelFetch(uSrc, o + ivec2(x, y), 0);
-      lo = min(lo, s.r);
-      hi = max(hi, (uFirst == 1) ? s.r : s.g);   // .g is the colour index on the first pass
+      if(uFirst == 1){
+        lo = min(lo, s.r);
+        hi = max(hi, s.r);
+        sum += s.r;
+        sq  += s.r * s.r;
+      } else {
+        lo = min(lo, s.r);
+        hi = max(hi, s.g);
+        sum += s.b;
+        sq  += s.a;
+      }
     }
   }
-  outRange = vec4(lo, hi, 0.0, 1.0);
+  outRange = vec4(lo, hi, sum, sq);
 }
 `
 

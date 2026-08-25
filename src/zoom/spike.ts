@@ -190,7 +190,23 @@ function setIter(delta: number): void {
   pushView()
 }
 
+let flatMode = false
+let depthBeforeFlat = 1
+
+/** Flat mode: the classic 2D fractal, no relief. Also the cheapest thing the app can draw. */
+function setFlat(on: boolean): void {
+  if (on === flatMode) return
+  if (on) {
+    depthBeforeFlat = depthScale
+    depthScale = 0.02 // not exactly zero: the normal is derived from the height gradient
+  } else {
+    depthScale = depthBeforeFlat
+  }
+  flatMode = on
+}
+
 function setDepth(delta: number): void {
+  if (flatMode) setFlat(false) // reaching for height means you want the relief back
   depthScale = Math.max(0.15, Math.min(2.2, depthScale * (delta > 0 ? 1.18 : 1 / 1.18)))
 }
 
@@ -241,7 +257,10 @@ function pressButton(id: string): void {
     case 'julia':
       view.julia = !view.julia
       return pushView()
-    case 'reset': return resetView()
+    case 'flat': return setFlat(!flatMode)
+    case 'reset':
+      setFlat(false)
+      return resetView()
     case 'exit':
       renderer.xr.getSession()?.end()
       return
@@ -391,6 +410,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'j') pressButton('julia')
   else if (k === 'r') pressButton('relief')
   else if (k === 'p') sway = !sway
+  else if (k === 'f') pressButton('flat')
   else if (k === 'x') {
     if (e.shiftKey) crossView = !crossView
     else stereo = !stereo
@@ -479,13 +499,14 @@ function updateStats(now: number, dt: number): void {
     targetHz: renderer.xr.isPresenting ? targetHz : Math.round(fps || 60),
     depth,
     panel: xr.panelScale,
-    steps: panel.steps,
+    steps: panel.material.uniforms.uSteps.value as number,
     ulps,
     julia: view.julia,
     invert: view.invert,
     ridge: view.ridge,
     theme: THEMES[themeIndex].name,
     curve: panel.material.uniforms.uHeightCurve.value as number,
+    flat: flatMode,
     bands: view.colorCycles,
     refine: field.refineProgress,
   }
@@ -498,7 +519,7 @@ function updateStats(now: number, dt: number): void {
     &nbsp; <b>iter</b> ${view.maxIter} (×${ITER_SCALES[iterIdx]})
     &nbsp; <b>frame</b> ${frameMs.toFixed(1)}ms p95 ${frameP95.toFixed(1)}ms
     &nbsp; <b>field</b> ${field.res}²·${field.samples ** 2}x (${field.activeRes}² live)
-    &nbsp; <b>march</b> ${panel.steps}${field.refining ? ` · <b>sharpening ${Math.round(field.refineProgress * 100)}%</b>` : ''}<br>
+    &nbsp; <b>march</b> ${panel.material.uniforms.uSteps.value}${flatMode ? ' flat' : ''}${field.refining ? ` · <b>sharpening ${Math.round(field.refineProgress * 100)}%</b>` : ''}<br>
     <b>fp32</b> ${ulps.toFixed(1)} ulps/texel <span class="${grade}">${grade}</span>
     &nbsp; <b>relief</b> ${view.ridge < 0.05 ? 'terrace' : view.ridge > 0.95 ? 'ridge' : 'mixed'}${view.invert ? '·inverted' : ''}
     &nbsp; <b>high</b> ${depth.toFixed(2)}m
@@ -536,6 +557,13 @@ renderer.setAnimationLoop(() => {
   else placeCamera(now)
 
   easeDepth(dt)
+  // A nearly planar surface is hit on the first or second sample, so the full march is waste.
+  // Read the SETTING (stepIdx), never panel.steps — that is the uniform this line just wrote,
+  // so restoring from it latches whatever flat mode last clamped it to.
+  panel.material.uniforms.uSteps.value = flatMode
+    ? Math.min(STEP_STEPS[stepIdx], 48)
+    : STEP_STEPS[stepIdx]
+  xr.layout() // slab depth eases every frame, and the front-face anchor has to follow it
 
   // settle → refine. The field only ever re-renders when it has to, which is what leaves
   // enough budget for a full-quality tile the moment you stop moving.
@@ -585,6 +613,13 @@ renderer.setAnimationLoop(() => {
   },
   step(t = 0, dt = 1 / 60) {
     easeDepth(dt)
+  // A nearly planar surface is hit on the first or second sample, so the full march is waste.
+  // Read the SETTING (stepIdx), never panel.steps — that is the uniform this line just wrote,
+  // so restoring from it latches whatever flat mode last clamped it to.
+  panel.material.uniforms.uSteps.value = flatMode
+    ? Math.min(STEP_STEPS[stepIdx], 48)
+    : STEP_STEPS[stepIdx]
+  xr.layout() // slab depth eases every frame, and the front-face anchor has to follow it
     placeCamera(t)
     field.render(renderer)
     drawFrame()
