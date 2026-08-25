@@ -62,6 +62,12 @@ export class FieldPass {
   private full: WebGLRenderTarget
   private preview: WebGLRenderTarget
   private active: WebGLRenderTarget
+  private bandRow = 0 // next scanline of the refined pass still to be drawn
+  private banding = false
+  private maxIter = 128
+  /** Explicit, NOT inferred from the sample count: at high resolution the settled tile uses
+   *  1 sample too, so `samples === 1` cannot mean "this is only the preview". */
+  private wantFull = true
   private _res: number
   private _previewRes: number
   private scene = new Scene()
@@ -153,6 +159,7 @@ export class FieldPass {
     }
     this.active = this.full
     this.dirty = true
+    this.banding = false
   }
 
   /** Push a view; the tile re-renders on the next `render` call. */
@@ -165,6 +172,7 @@ export class FieldPass {
     u.uCenterLo.value.set(v.cx - hix, v.cy - hiy)
     u.uScale.value = v.scale
     u.uMaxIter.value = Math.round(v.maxIter)
+    this.maxIter = Math.round(v.maxIter)
     u.uJulia.value = v.julia ? 1 : 0
     u.uJuliaC.value.set(v.juliaCx, v.juliaCy)
     u.uRidge.value = v.ridge
@@ -174,6 +182,7 @@ export class FieldPass {
     u.uColorCycles.value = v.colorCycles
     u.uColorShift.value = v.colorShift
     this.dirty = true
+    this.banding = false // a new view abandons whatever refined tile was half-drawn
   }
 
   /**
@@ -186,6 +195,19 @@ export class FieldPass {
     if (v === this.mat.uniforms.uSamples.value) return
     this.mat.uniforms.uSamples.value = v
     this.dirty = true
+    this.banding = false
+  }
+
+  /** Preview (small tile, drawn in one go) versus settled (full tile, drawn band by band). */
+  setFullQuality(on: boolean): void {
+    if (on === this.wantFull) return
+    this.wantFull = on
+    this.dirty = true
+    this.banding = false
+  }
+
+  get fullQuality(): boolean {
+    return this.wantFull
   }
 
   get samples(): number {
@@ -201,23 +223,97 @@ export class FieldPass {
    * a headset's whole frame budget.
    */
   render(renderer: WebGLRenderer): boolean {
+    if (this.banding) return this.renderBand(renderer)
     if (!this.dirty) return false
-    const previewing = this.samples === 1
-    const target = previewing ? this.preview : this.full
-    const res = previewing ? this._previewRes : this._res
-    this.mat.uniforms.uRes.value = res
 
+    if (!this.wantFull) {
+      this.mat.uniforms.uRes.value = this._previewRes
+      this.drawInto(renderer, this.preview, this._previewRes)
+      this.active = this.preview
+      this.dirty = false
+      return true
+    }
+
+    // Refined pass: start banding rather than submitting it all at once.
+    this.mat.uniforms.uRes.value = this._res
+    this.bandRow = 0
+    this.banding = true
+    this.dirty = false
+    return this.renderBand(renderer)
+  }
+
+  /**
+   * Rows of the refined tile to draw per frame.
+   *
+   * The refined pass at 3072² and 9 samples is hundreds of milliseconds of GPU work in ONE
+   * submission. On a headset that is not a slow frame, it is a hang: the compositor freezes,
+   * and long enough submissions get the context killed outright. Splitting it into scissored
+   * bands trades a freeze for a few busy frames.
+   */
+  private bandRows(): number {
+    // Size a band by the WORK it does, not by the tile height: rows x width x samples² x
+    // iterations. A fixed row count is meaningless when iterations swing by 100x with zoom.
+    const perRow = this._res * this.samples * this.samples * Math.max(1, this.maxIter)
+    return Math.max(1, Math.min(this._res, Math.floor(this.bandBudget / perRow)))
+  }
+
+  /** Work units per band. Tuned so a band is a few ms on a desktop GPU. */
+  bandBudget = 1.5e8
+
+  /** Draw the next band of the refined tile. Returns true while there is still work pending. */
+  private renderBand(renderer: WebGLRenderer): boolean {
+    const rows = Math.min(this.bandRows(), this._res - this.bandRow)
+    this.drawInto(renderer, this.full, this._res, this.bandRow, rows)
+    this.bandRow += rows
+    if (this.bandRow >= this._res) {
+      this.banding = false
+      this.active = this.full // only swap once the whole tile is actually there
+    }
+    return true
+  }
+
+  /** True while a refined tile is still being assembled band by band. */
+  get refining(): boolean {
+    return this.banding
+  }
+
+  /** How far through the refined tile we are, 0..1. */
+  get refineProgress(): number {
+    return this.banding ? this.bandRow / this._res : 1
+  }
+
+  /**
+   * Draw the fullscreen triangle into `target`, optionally restricted to a band of rows.
+   *
+   * The band is bounded by the VIEWPORT, not by the scissor. Scissor is specified as a
+   * per-fragment operation after fragment shading, and on this hardware it behaves that way:
+   * a scissored band of a 3072² tile still ran the whole tile's shader work, 6.3 seconds of
+   * it. A viewport actually limits rasterisation. `gl_FragCoord` stays in absolute framebuffer
+   * space either way, so the shader's `gl_FragCoord.xy / uRes` needs no adjustment.
+   */
+  private drawInto(
+    renderer: WebGLRenderer,
+    target: WebGLRenderTarget,
+    res: number,
+    y = 0,
+    rows = res,
+  ): void {
+    this.mat.uniforms.uRes.value = res
     const prevRT = renderer.getRenderTarget()
     const xrWas = renderer.xr.enabled
+    const autoWas = renderer.autoClear
     renderer.xr.enabled = false // otherwise render() swaps in the XR camera and viewports
-    renderer.setRenderTarget(target)
+    renderer.autoClear = false // the triangle writes every pixel it covers
+    renderer.setRenderTarget(target) // resets the viewport, so set ours AFTER it
+    renderer.setViewport(0, y, res, rows)
+    renderer.setScissorTest(true)
+    renderer.setScissor(0, y, res, rows)
     renderer.render(this.scene, this.cam)
+    renderer.setScissorTest(false)
+    renderer.setViewport(0, 0, res, res)
     renderer.setRenderTarget(prevRT)
+    renderer.autoClear = autoWas
     renderer.xr.enabled = xrWas
-
-    this.active = target
-    this.dirty = false
-    return true
   }
 
   dispose(): void {

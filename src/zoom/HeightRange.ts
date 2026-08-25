@@ -95,13 +95,24 @@ export class HeightRange {
     renderer.setRenderTarget(prevRT)
     renderer.xr.enabled = xrWas
 
-    let lo = Infinity
-    let hi = -Infinity
+    // Percentiles, NOT the absolute extremes. A handful of texels deep in the filigree reach
+    // heights nothing else comes near, and at high field resolution there are more of them —
+    // so an absolute min/max stretches the scale until the whole surface flattens. That is
+    // exactly the "it goes flat at higher resolutions" symptom.
+    const mins: number[] = []
+    const maxs: number[] = []
     for (let i = 0; i < last.width * last.height; i++) {
-      lo = Math.min(lo, this.buf[i * 4])
-      hi = Math.max(hi, this.buf[i * 4 + 1])
+      const a = this.buf[i * 4]
+      const b = this.buf[i * 4 + 1]
+      if (isFinite(a)) mins.push(a)
+      if (isFinite(b)) maxs.push(b)
     }
-    if (!isFinite(lo) || !isFinite(hi) || hi - lo < 1e-4) return { lo: 0, hi: 1 }
+    if (!mins.length || !maxs.length) return { lo: 0, hi: 1 }
+    mins.sort((x, y) => x - y)
+    maxs.sort((x, y) => x - y)
+    const lo = mins[Math.floor(mins.length * 0.04)]
+    const hi = maxs[Math.min(maxs.length - 1, Math.ceil(maxs.length * 0.96))]
+    if (hi - lo < 1e-4) return { lo: 0, hi: 1 }
     return { lo, hi }
   }
 

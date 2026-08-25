@@ -59,6 +59,7 @@ export class ReliefPanel {
         uInsideColor: { value: new Vector3(0.03, 0.02, 0.06) },
         uHeightLo: { value: 0 },
         uHeightHi: { value: 1 },
+        uHeightCurve: { value: 0.9 },
       },
     })
 

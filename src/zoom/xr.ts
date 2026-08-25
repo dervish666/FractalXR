@@ -38,6 +38,9 @@ interface Hand {
   heldButton: string | null
   held: { x: number; y: number } | null
   prevTrigger: boolean
+  trigger: boolean
+  pressedEdge: boolean
+  releasedEdge: boolean
   squeezing: boolean
 }
 
@@ -66,6 +69,8 @@ export class ZoomXR {
   private grabScale0 = 1
   private grabOffset = new Vector3()
   private singleGrab: Hand | null = null
+  private panHand: Hand | null = null
+  private pendingPlace: { distance: number; height: number } | null = null
 
   /** Panel size in metres. The mesh is a unit cube, so this is just its uniform scale. */
   panelScale = 1
@@ -91,6 +96,9 @@ export class ZoomXR {
         heldButton: null,
         held: null,
         prevTrigger: false,
+        trigger: false,
+        pressedEdge: false,
+        releasedEdge: false,
         squeezing: false,
       }
       ctrl.addEventListener('connected', (e) => {
@@ -110,17 +118,61 @@ export class ZoomXR {
     return this.hands.map((h) => h.ctrl)
   }
 
-  /** Park the rig in front of the viewer. Called on session start. */
+  /**
+   * Park the rig in front of the viewer.
+   *
+   * Deferred to the first in-session frame on purpose. `local-floor` on Quest is the
+   * guardian/stage space: its origin and yaw come from room setup, NOT from where you are
+   * standing or facing when the session opens. Writing a fixed (0, h, -d) there drops the
+   * panel at a fixed spot in the room, which is behind you as often as not. The XR camera has
+   * no valid pose until the animation loop runs, hence the deferral rather than doing it in
+   * the sessionstart handler.
+   */
   place(distance: number, height: number): void {
-    this.rig.position.set(0, height, -distance)
-    this.rig.quaternion.identity()
+    this.pendingPlace = { distance, height }
     this.layout()
+  }
+
+  private placeNow(distance: number, height: number): void {
+    const cam = this.renderer.xr.getCamera()
+    this.origin.setFromMatrixPosition(cam.matrixWorld)
+    this.dir.set(0, 0, -1).transformDirection(cam.matrixWorld)
+    this.dir.y = 0 // yaw only: nobody wants the panel pitched to match how they held their head
+    if (this.dir.lengthSq() < 1e-6) this.dir.set(0, 0, -1)
+    this.dir.normalize()
+    this.rig.position.set(
+      this.origin.x + this.dir.x * distance,
+      height,
+      this.origin.z + this.dir.z * distance,
+    )
+    this.rig.rotation.set(0, Math.atan2(this.dir.x, this.dir.z) + Math.PI, 0) // face the viewer
+    this.layout()
+  }
+
+  /** Clear every gesture baseline. Without this the first grip of the NEXT session snaps the
+   *  rig to an offset captured in the last one. */
+  resetGestures(): void {
+    this.grabDist0 = 0
+    this.singleGrab = null
+    this.panHand = null
+    this.pendingPlace = null
+    for (const h of this.hands) {
+      h.mode = 'none'
+      h.heldButton = null
+      h.held = null
+      h.prevTrigger = false
+      h.trigger = false
+      h.pressedEdge = h.releasedEdge = false
+      h.squeezing = false
+    }
+    this.hud.setHover(null)
   }
 
   /** Back to the desktop framing: rig at the origin, camera orbits it. */
   reset(): void {
     this.rig.position.set(0, 0, 0)
     this.rig.quaternion.identity()
+    this.resetGestures()
   }
 
   /**
@@ -135,8 +187,12 @@ export class ZoomXR {
     const drop = Math.min(this.panel.half.y * this.panelScale + this.hud.half.y + 0.06, 0.62)
     // well clear of the slab's front face, so it reads as a control surface in front of the
     // fractal rather than something embedded in it
+    // half.z is the LIVE eased slab depth, so this has to run every frame or the standoff
+    // freezes and a deepening relief grows out through the HUD.
     this.hud.mesh.position.set(0, -drop, this.panel.half.z * this.panelScale + 0.45)
-    this.hud.mesh.rotation.x = 0.34 // tilt it up toward the face
+    // NEGATIVE: a plane's normal is +Z, and rotating +X tips it DOWN. The HUD sits below eye
+    // level, so it has to tip up to face you.
+    this.hud.mesh.rotation.x = -0.34
   }
 
   private ray(h: Hand): void {
@@ -148,11 +204,36 @@ export class ZoomXR {
   /** Drive one XR frame. No-op outside a session. */
   update(dt: number): void {
     if (!this.renderer.xr.isPresenting) return
+    if (this.pendingPlace) {
+      const { distance, height } = this.pendingPlace
+      this.pendingPlace = null
+      this.placeNow(distance, height)
+    }
+    this.layout() // the slab depth eases every frame, so the HUD standoff has to follow it
 
-    // --- grips first: they take a hand out of pointing duty --------------------
-    for (const h of this.hands) h.squeezing = h.src?.gamepad?.buttons[SQUEEZE]?.pressed === true
+    // Sample every hand ONCE, up front. Edge detection has to happen for every hand on every
+    // frame or an early return leaves prevTrigger stale — which is how a trigger released
+    // during a grip fires a HUD button (EXIT VR among them) frames later.
+    for (const h of this.hands) {
+      const pad = h.src?.gamepad
+      h.squeezing = pad?.buttons[SQUEEZE]?.pressed === true
+      const trigger = pad?.buttons[TRIGGER]?.pressed === true
+      h.pressedEdge = trigger && !h.prevTrigger
+      h.releasedEdge = !trigger && h.prevTrigger
+      h.trigger = trigger
+      h.prevTrigger = trigger
+      if (h.squeezing) {
+        // a gripping hand is not pointing: drop whatever it was holding, and drop it silently
+        if (this.panHand === h) this.panHand = null
+        h.mode = 'none'
+        h.heldButton = null
+        h.held = null
+      }
+    }
+
     const gripping = this.hands.filter((h) => h.squeezing)
 
+    // --- two grips: scale and carry -------------------------------------------
     if (gripping.length === 2) {
       this.ray(gripping[0])
       this.a.copy(this.origin)
@@ -170,10 +251,13 @@ export class ZoomXR {
       this.rig.position.copy(this.rigPos0).add(mid).sub(this.mid0)
       this.layout()
       this.singleGrab = null
-      return // both hands are busy; nothing else this frame
+      for (const h of this.hands) h.laser.visible = false
+      this.hud.setHover(null)
+      return
     }
     this.grabDist0 = 0
 
+    // --- one grip: carry -------------------------------------------------------
     if (gripping.length === 1) {
       const h = gripping[0]
       this.ray(h)
@@ -186,12 +270,11 @@ export class ZoomXR {
       this.singleGrab = null
     }
 
-    // --- pointing -------------------------------------------------------------
+    // --- pointing --------------------------------------------------------------
     let hovered: string | null = null
     for (const h of this.hands) {
-      const pad = h.src?.gamepad
-      if (!pad || h.squeezing) {
-        h.laser.visible = !h.squeezing
+      if (!h.src?.gamepad || h.squeezing) {
+        h.laser.visible = false
         continue
       }
       h.laser.visible = true
@@ -202,30 +285,28 @@ export class ZoomXR {
       const button = onHud ? this.hud.buttonAt(this.local) : null
       if (button) hovered = button
 
-      const trigger = pad.buttons[TRIGGER]?.pressed === true
-      const pressed = trigger && !h.prevTrigger
-      const released = !trigger && h.prevTrigger
-      h.prevTrigger = trigger
-
-      if (pressed) {
+      if (h.pressedEdge) {
         if (button) {
           h.mode = 'hud'
           h.heldButton = button
-        } else if (!onHud) {
+        } else if (!onHud && this.panHand === null) {
+          // one hand pans at a time; two hands both re-anchoring cancel each other out
           h.mode = 'pan'
+          this.panHand = h
           h.held = this.hooks.complexAtRay(this.origin, this.dir)
         }
       }
 
-      if (released) {
+      if (h.releasedEdge) {
         // fire on release, and only if the ray is still on the button it went down on
         if (h.mode === 'hud' && h.heldButton && h.heldButton === button) this.hooks.press(h.heldButton)
+        if (this.panHand === h) this.panHand = null
         h.mode = 'none'
         h.heldButton = null
         h.held = null
       }
 
-      if (trigger && h.mode === 'pan') {
+      if (h.trigger && h.mode === 'pan') {
         const here = this.hooks.complexAtRay(this.origin, this.dir)
         if (here && h.held) {
           this.hooks.panBy(h.held.x - here.x, h.held.y - here.y)
@@ -237,6 +318,7 @@ export class ZoomXR {
       }
 
       // thumbstick Y zooms about wherever the ray lands
+      const pad = h.src.gamepad
       const stick = pad.axes.length > STICK_Y ? pad.axes[STICK_Y] : (pad.axes[1] ?? 0)
       if (Math.abs(stick) > DEADZONE && h.mode !== 'hud') {
         const k = (Math.sign(stick) * (Math.abs(stick) - DEADZONE)) / (1 - DEADZONE)

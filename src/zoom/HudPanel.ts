@@ -1,5 +1,6 @@
 import {
   CanvasTexture,
+  SRGBColorSpace,
   DoubleSide,
   LinearFilter,
   Mesh,
@@ -32,12 +33,16 @@ export interface HudStats {
   invert: boolean
   ridge: number
   theme: string
+  curve: number
+  bands: number
+  /** 0..1 while a refined tile is still being assembled band by band, 1 when idle. */
+  refine: number
 }
 
 const W = 1024 // canvas pixels. FIXED — see the resize note on `draw` below.
-const H = 460
+const H = 560
 const COLS = 6
-const ROWS = 2
+const ROWS = 3
 const PAD = 14
 const BTN_TOP = 250
 const BTN_H = (H - BTN_TOP - PAD) / ROWS - PAD
@@ -51,12 +56,18 @@ export const HUD_BUTTONS: HudButton[] = [
   { id: 'iter+', label: 'ITER +', row: 0, col: 3 },
   { id: 'steps-', label: 'STEP −', row: 0, col: 4 },
   { id: 'steps+', label: 'STEP +', row: 0, col: 5 },
-  { id: 'invert', label: 'INVERT', row: 1, col: 0 },
-  { id: 'relief', label: 'RELIEF', row: 1, col: 1 },
-  { id: 'palette', label: 'COLOUR', row: 1, col: 2 },
-  { id: 'julia', label: 'JULIA', row: 1, col: 3 },
-  { id: 'reset', label: 'RESET', row: 1, col: 4 },
-  { id: 'exit', label: 'EXIT VR', row: 1, col: 5 },
+  { id: 'depth-', label: 'HIGH −', row: 1, col: 0 },
+  { id: 'depth+', label: 'HIGH +', row: 1, col: 1 },
+  { id: 'curve-', label: 'SHAPE −', row: 1, col: 2 },
+  { id: 'curve+', label: 'SHAPE +', row: 1, col: 3 },
+  { id: 'bands-', label: 'BANDS −', row: 1, col: 4 },
+  { id: 'bands+', label: 'BANDS +', row: 1, col: 5 },
+  { id: 'invert', label: 'INVERT', row: 2, col: 0 },
+  { id: 'relief', label: 'RELIEF', row: 2, col: 1 },
+  { id: 'palette', label: 'COLOUR', row: 2, col: 2 },
+  { id: 'julia', label: 'JULIA', row: 2, col: 3 },
+  { id: 'reset', label: 'RESET', row: 2, col: 4 },
+  { id: 'exit', label: 'EXIT VR', row: 2, col: 5 },
 ]
 
 const btnRect = (b: HudButton): [number, number, number, number] => [
@@ -86,6 +97,9 @@ export class HudPanel {
   private texture: CanvasTexture
   private hot: string | null = null
   private flash = new Map<string, number>()
+  /** Set whenever something visible changed, so hover and press feedback are not stuck at the
+   *  stats refresh rate — a 180ms flash inside a 250ms redraw is invisible most of the time. */
+  needsRedraw = true
   readonly half: Vector3
 
   constructor(widthMetres = 0.9) {
@@ -98,6 +112,8 @@ export class HudPanel {
     this.texture = new CanvasTexture(this.canvas)
     this.texture.minFilter = LinearFilter
     this.texture.magFilter = LinearFilter
+    this.texture.generateMipmaps = false // nothing samples them, and they are rebuilt per redraw
+    this.texture.colorSpace = SRGBColorSpace
 
     const h = (widthMetres * H) / W
     this.half = new Vector3(widthMetres / 2, h / 2, 0)
@@ -133,12 +149,15 @@ export class HudPanel {
 
   /** Highlight the button the ray is over (null clears). */
   setHover(id: string | null): void {
+    if (id === this.hot) return
     this.hot = id
+    this.needsRedraw = true
   }
 
   /** Briefly light a button that was just pressed. */
   press(id: string): void {
     this.flash.set(id, performance.now())
+    this.needsRedraw = true
   }
 
   draw(s: HudStats): void {
@@ -171,19 +190,28 @@ export class HudPanel {
     c.font = '500 26px ui-monospace, Menlo, monospace'
     const lines = [
       `field ${s.res}² · ${s.samples ** 2}x samples · ${s.iter} iter · ${s.steps} march`,
-      `panel ${s.panel.toFixed(2)}m · relief ${s.depth.toFixed(2)}m · ${
+      `panel ${s.panel.toFixed(2)}m · high ${s.depth.toFixed(2)}m · shape ${s.curve.toFixed(2)} · bands ${s.bands.toFixed(1)}`,
+      `fp32 ${s.ulps.toFixed(1)} ulps ${grade} · ${
         s.ridge < 0.05 ? 'terrace' : s.ridge > 0.95 ? 'ridge' : 'mixed'
-      }${s.invert ? ' · inverted' : ''}`,
-      `fp32 ${s.ulps.toFixed(1)} ulps/texel ${grade} · ${s.julia ? 'julia' : 'mandelbrot'} · ${s.theme}`,
+      }${s.invert ? '·inverted' : ''} · ${s.julia ? 'julia' : 'mandelbrot'} · ${s.theme}`,
     ]
     lines.forEach((t, i) => {
       c.fillStyle = i === 2 && grade === 'mush' ? '#e2606a' : '#9fb0c8'
       c.fillText(t, PAD + 6, 106 + i * 38)
     })
 
-    c.fillStyle = '#5d6a80'
-    c.font = '500 21px ui-monospace, Menlo, monospace'
-    c.fillText('trigger drag · stick zoom · grip move · two grips scale', PAD + 6, 222)
+    if (s.refine < 1) {
+      // say so, or a busy few frames just reads as the app hanging
+      c.fillStyle = '#e2c766'
+      c.font = '600 21px ui-monospace, Menlo, monospace'
+      c.fillText(`sharpening ${Math.round(s.refine * 100)}%`, PAD + 6, 222)
+      c.fillStyle = 'rgba(226,199,102,0.85)'
+      c.fillRect(PAD + 200, 226, (W - PAD * 2 - 210) * s.refine, 8)
+    } else {
+      c.fillStyle = '#5d6a80'
+      c.font = '500 21px ui-monospace, Menlo, monospace'
+      c.fillText('trigger drag · stick zoom · grip move · two grips scale', PAD + 6, 222)
+    }
 
     const now = performance.now()
     for (const b of HUD_BUTTONS) {
@@ -213,6 +241,8 @@ export class HudPanel {
     }
 
     this.texture.needsUpdate = true
+    // keep redrawing while a press flash is still fading
+    this.needsRedraw = [...this.flash.values()].some((t) => now - t < 220)
   }
 
   dispose(): void {

@@ -69,6 +69,7 @@ const hudVR = new HudPanel(1.0)
 const heightRange = new HeightRange(field.res)
 let rangeLo = 0
 let rangeHi = 1
+let rangePending = false
 
 // Depth ramps with zoom, in panel-local units. At the widest view the structures are large
 // and smooth, so a deep extrusion reads as a lumpy blob; once there is fine detail to carve,
@@ -84,7 +85,14 @@ const targetDepth = (): number => {
 }
 
 const view: ZoomView = { ...DEFAULT_VIEW }
-const REFINE_SAMPLES = 3
+/**
+ * Supersampling for the settled tile, by resolution.
+ *
+ * Supersampling and resolution fix the SAME problem — an escape count that changes faster
+ * than one texel. Once the tile is 3072² the texels are small enough to resolve it on their
+ * own, so 9x on top is nearly all waste, and it is 9x of the most expensive pass in the app.
+ */
+const refineSamples = (res: number): number => (res >= 3072 ? 1 : res >= 1536 ? 2 : 3)
 const REFINE_DELAY = 0.22 // seconds of stillness before the tile is re-rendered antialiased
 let lastMove = 0
 let stereo = false
@@ -97,6 +105,7 @@ const SEP = 0.064
 const pushView = (): void => {
   view.maxIter = autoMaxIter(view.scale, DEFAULT_VIEW.scale, ITER_SCALES[iterIdx])
   field.setSamples(1) // preview quality while it is moving
+  field.setFullQuality(false)
   field.setView(view)
   lastMove = performance.now() / 1000
 }
@@ -160,7 +169,15 @@ function setRes(delta: number): void {
   // setResolution disposes the old target, so anything holding its texture must be re-pointed
   panel.material.uniforms.uField.value = field.rt.texture
   panel.material.uniforms.uRes.value = field.activeRes
-  pushView()
+  // A long enough GPU submission can get the context killed outright. That used to be reachable
+// here by pressing a button at the top of the resolution ladder; the field pass is banded now,
+// but a dead context must still say so rather than leaving a frozen picture.
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault()
+  hud.innerHTML = '<b class="mush">WebGL context lost.</b> Reload the page. If it keeps happening, drop RES or ITER.'
+})
+
+pushView()
 }
 
 function setSteps(delta: number): void {
@@ -170,6 +187,20 @@ function setSteps(delta: number): void {
 
 function setIter(delta: number): void {
   iterIdx = Math.max(0, Math.min(ITER_SCALES.length - 1, iterIdx + delta))
+  pushView()
+}
+
+function setDepth(delta: number): void {
+  depthScale = Math.max(0.15, Math.min(2.2, depthScale * (delta > 0 ? 1.18 : 1 / 1.18)))
+}
+
+function setCurve(delta: number): void {
+  const u = panel.material.uniforms.uHeightCurve
+  u.value = Math.max(0, Math.min(2, u.value + delta * 0.25))
+}
+
+function setBands(delta: number): void {
+  view.colorCycles = Math.max(0.3, Math.min(30, view.colorCycles * (delta > 0 ? 1.25 : 1 / 1.25)))
   pushView()
 }
 
@@ -194,6 +225,12 @@ function pressButton(id: string): void {
     case 'iter+': return setIter(1)
     case 'steps-': return setSteps(-1)
     case 'steps+': return setSteps(1)
+    case 'depth-': return setDepth(-1)
+    case 'depth+': return setDepth(1)
+    case 'curve-': return setCurve(-1)
+    case 'curve+': return setCurve(1)
+    case 'bands-': return setBands(-1)
+    case 'bands+': return setBands(1)
     case 'invert':
       view.invert = !view.invert
       return pushView()
@@ -411,10 +448,16 @@ let statT = 0
 let frameMs = 0
 let frameP95 = 0
 
+let lastStats: Parameters<HudPanel['draw']>[0] | null = null
+
 function updateStats(now: number, dt: number): void {
   frameLog.push(dt * 1000)
   if (frameLog.length > 180) frameLog.shift()
-  if (now - statT < 0.25) return
+  if (now - statT < 0.25) {
+    // hover and press feedback must not wait for the next stats tick
+    if (hudVR.needsRedraw && lastStats) hudVR.draw(lastStats)
+    return
+  }
   statT = now
   const sorted = [...frameLog].sort((a, b) => a - b)
   frameMs = sorted[Math.floor(sorted.length * 0.5)] ?? 0
@@ -442,7 +485,11 @@ function updateStats(now: number, dt: number): void {
     invert: view.invert,
     ridge: view.ridge,
     theme: THEMES[themeIndex].name,
+    curve: panel.material.uniforms.uHeightCurve.value as number,
+    bands: view.colorCycles,
+    refine: field.refineProgress,
   }
+  lastStats = stats
   hudVR.draw(stats)
 
   const grade = ulps > 8 ? 'clean' : ulps > 4 ? 'softening' : ulps > 1 ? 'blocky' : 'mush'
@@ -451,15 +498,18 @@ function updateStats(now: number, dt: number): void {
     &nbsp; <b>iter</b> ${view.maxIter} (×${ITER_SCALES[iterIdx]})
     &nbsp; <b>frame</b> ${frameMs.toFixed(1)}ms p95 ${frameP95.toFixed(1)}ms
     &nbsp; <b>field</b> ${field.res}²·${field.samples ** 2}x (${field.activeRes}² live)
-    &nbsp; <b>march</b> ${panel.steps}<br>
+    &nbsp; <b>march</b> ${panel.steps}${field.refining ? ` · <b>sharpening ${Math.round(field.refineProgress * 100)}%</b>` : ''}<br>
     <b>fp32</b> ${ulps.toFixed(1)} ulps/texel <span class="${grade}">${grade}</span>
     &nbsp; <b>relief</b> ${view.ridge < 0.05 ? 'terrace' : view.ridge > 0.95 ? 'ridge' : 'mixed'}${view.invert ? '·inverted' : ''}
-    &nbsp; <b>depth</b> ${depth.toFixed(2)}m
+    &nbsp; <b>high</b> ${depth.toFixed(2)}m
+    &nbsp; <b>shape</b> ${(panel.material.uniforms.uHeightCurve.value as number).toFixed(2)}
+    &nbsp; <b>bands</b> ${view.colorCycles.toFixed(1)}
     &nbsp; <b>glide</b> ${autoRate.toFixed(3)}/s${autoZoom ? (autoZoom < 0 ? ' in' : ' out') : ' off'}${stereo ? (crossView ? ' · cross' : ' · parallel') : ''}
     &nbsp; <b>${view.julia ? 'julia' : 'mandelbrot'}</b>
     &nbsp; <b>${THEMES[themeIndex].name}</b><br>
     <span class="dim">drag pan · wheel zoom · shift-drag orbit · z/shift-z auto-zoom · 9 0 glide ·
-    q w field res · a s iterations · e d march steps · i invert · r relief · j julia · x stereo ·
+    q w field res · a s iterations · e d march steps · - = height · ; ' shape · , . bands ·
+    i invert · r relief · j julia · x stereo ·
     shift-x cross/parallel · p sway · [ ] palette · - = depth · , . colour · space reset</span>`
 }
 
@@ -489,17 +539,23 @@ renderer.setAnimationLoop(() => {
 
   // settle → refine. The field only ever re-renders when it has to, which is what leaves
   // enough budget for a full-quality tile the moment you stop moving.
-  if (now - lastMove > REFINE_DELAY) field.setSamples(REFINE_SAMPLES)
+  if (now - lastMove > REFINE_DELAY) {
+    field.setSamples(refineSamples(field.res))
+    field.setFullQuality(true)
+  }
   const rendered = field.render(renderer)
   if (rendered) {
     // the active target alternates between the preview and full tiles, so rebind every time
     panel.material.uniforms.uField.value = field.rt.texture
     panel.material.uniforms.uRes.value = field.activeRes
-    if (field.samples >= REFINE_SAMPLES) {
-      const r = heightRange.compute(renderer, field.fullRt)
-      rangeLo = r.lo
-      rangeHi = r.hi
-    }
+    // the reduction ends in a synchronous readback, which stalls the pipeline — so never run
+    // it in the same frame as the band that finished the tile
+    if (field.fullQuality && !field.refining) rangePending = true
+  } else if (rangePending) {
+    rangePending = false
+    const r = heightRange.compute(renderer, field.fullRt)
+    rangeLo = r.lo
+    rangeHi = r.hi
   }
   const hu = panel.material.uniforms
   const ease = 1 - Math.exp(-6 * dt)
@@ -546,6 +602,7 @@ renderer.setAnimationLoop(() => {
     sway = false
   },
   range: () => ({ lo: rangeLo, hi: rangeHi }),
+  refineSamples: () => refineSamples(field.res),
   measureRange() {
     const r = heightRange.compute(renderer, field.fullRt)
     rangeLo = r.lo

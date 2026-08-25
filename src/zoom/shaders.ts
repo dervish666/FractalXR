@@ -151,6 +151,7 @@ uniform float uExposure;
 uniform vec3  uInsideColor;
 uniform float uHeightLo;     // measured range of the tile, stretched across the full slab
 uniform float uHeightHi;
+uniform float uHeightCurve;  // 0 = linear, up to 2 = hard S-curve
 
 // re-declared here so the hit point can be written to the depth buffer; three sets both
 // per object and per (sub-)camera, so they are correct for each eye.
@@ -162,7 +163,18 @@ out vec4 outColor;
 vec2  uvOf(vec3 p){ return p.xy / (2.0 * uHalf.xy) + 0.5; }
 float heightAt(vec2 uv){
   float h = texture(uField, clamp(uv, 0.0, 1.0)).r;
-  return clamp((h - uHeightLo) / max(1e-4, uHeightHi - uHeightLo), 0.0, 1.0);
+  float t = clamp((h - uHeightLo) / max(1e-4, uHeightHi - uHeightLo), 0.0, 1.0);
+  // An S-curve steepens the MIDDLE of the range and flattens both ends. The set interior sits
+  // at one end and the far exterior at the other, both of them large and smooth; the filigree
+  // is the band between. So this spends the slab on the fractal instead of on its two
+  // plateaus, which is what stops the interesting part getting lost.
+  float s1 = t * t * (3.0 - 2.0 * t);
+  t = mix(t, s1, min(uHeightCurve, 1.0));
+  if(uHeightCurve > 1.0){
+    float s2 = t * t * (3.0 - 2.0 * t);
+    t = mix(t, s2, uHeightCurve - 1.0);
+  }
+  return t;
 }
 // Lift the base a hair off the slab floor. At height exactly 0 the surface sits ON the bottom
 // face, where the march's below-surface test never fires, and the region renders as a hole
