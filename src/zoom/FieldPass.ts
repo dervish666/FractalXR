@@ -59,25 +59,22 @@ export const DEFAULT_VIEW: ZoomView = {
  *   R = height 0..1 · G = palette index, negative = inside · B = inside flag · A = iter fraction
  */
 export class FieldPass {
-  readonly rt: WebGLRenderTarget
-  readonly res: number
+  private full: WebGLRenderTarget
+  private preview: WebGLRenderTarget
+  private active: WebGLRenderTarget
+  private _res: number
+  private _previewRes: number
   private scene = new Scene()
   private cam = new Camera()
   private mat: RawShaderMaterial
   private dirty = true
 
-  constructor(res = 1024) {
-    this.res = res
-    this.rt = new WebGLRenderTarget(res, res, {
-      type: HalfFloatType,
-      format: RGBAFormat,
-      minFilter: LinearFilter,
-      magFilter: LinearFilter,
-      wrapS: ClampToEdgeWrapping,
-      wrapT: ClampToEdgeWrapping,
-      depthBuffer: false,
-      stencilBuffer: false,
-    })
+  constructor(res = 1024, previewRes = 768) {
+    this._res = res
+    this._previewRes = Math.min(previewRes, res)
+    this.full = FieldPass.makeTarget(res)
+    this.preview = FieldPass.makeTarget(this._previewRes)
+    this.active = this.full
 
     this.mat = new RawShaderMaterial({
       glslVersion: GLSL3,
@@ -104,6 +101,58 @@ export class FieldPass {
       },
     })
     this.scene.add(new Mesh(makeFullscreenTriangle(), this.mat))
+  }
+
+  /** The full (settled) tile resolution. */
+  get res(): number {
+    return this._res
+  }
+
+  /** The target the last `render` actually wrote, and the one to sample from. */
+  get rt(): WebGLRenderTarget {
+    return this.active
+  }
+
+  /** The full-resolution target — the only one the height reduction ever runs on. */
+  get fullRt(): WebGLRenderTarget {
+    return this.full
+  }
+
+  /** Resolution of the tile currently bound, which is the preview one while you are moving. */
+  get activeRes(): number {
+    return this.active === this.full ? this._res : this._previewRes
+  }
+
+  private static makeTarget(res: number): WebGLRenderTarget {
+    return new WebGLRenderTarget(res, res, {
+      type: HalfFloatType, // linear filtering of half-float is core in WebGL2, unlike float32
+      format: RGBAFormat,
+      minFilter: LinearFilter,
+      magFilter: LinearFilter,
+      wrapS: ClampToEdgeWrapping,
+      wrapT: ClampToEdgeWrapping,
+      depthBuffer: false,
+      stencilBuffer: false,
+    })
+  }
+
+  /**
+   * Re-allocate the tile at a new resolution. The old target is disposed, so the caller MUST
+   * re-point anything holding `rt.texture` (the relief material's uField) at the new one.
+   * Returns the texture to rebind.
+   */
+  setResolution(res: number): void {
+    if (res === this._res) return
+    this.full.dispose()
+    this._res = res
+    this.full = FieldPass.makeTarget(res)
+    if (this._previewRes > res) {
+      this.preview.dispose()
+      this._previewRes = res
+      this.preview = FieldPass.makeTarget(res)
+    }
+    this.active = this.full
+    this.dirty = true
   }
 
   /** Push a view; the tile re-renders on the next `render` call. */
@@ -143,22 +192,37 @@ export class FieldPass {
     return this.mat.uniforms.uSamples.value as number
   }
 
-  /** Re-render the tile if the view moved. Returns true if it actually did any work. */
+  /**
+   * Re-render the tile if the view moved. Returns true if it actually did any work.
+   *
+   * While you are moving this writes a SMALLER preview tile, and only the settled pass pays
+   * for the full resolution. That split is what lets the full tile be 3072² at all: a moving
+   * frame pays for the field AND the march, and at full res the field alone is several times
+   * a headset's whole frame budget.
+   */
   render(renderer: WebGLRenderer): boolean {
     if (!this.dirty) return false
+    const previewing = this.samples === 1
+    const target = previewing ? this.preview : this.full
+    const res = previewing ? this._previewRes : this._res
+    this.mat.uniforms.uRes.value = res
+
     const prevRT = renderer.getRenderTarget()
     const xrWas = renderer.xr.enabled
     renderer.xr.enabled = false // otherwise render() swaps in the XR camera and viewports
-    renderer.setRenderTarget(this.rt)
+    renderer.setRenderTarget(target)
     renderer.render(this.scene, this.cam)
     renderer.setRenderTarget(prevRT)
     renderer.xr.enabled = xrWas
+
+    this.active = target
     this.dirty = false
     return true
   }
 
   dispose(): void {
-    this.rt.dispose()
+    this.full.dispose()
+    this.preview.dispose()
     this.mat.dispose()
   }
 }
@@ -175,8 +239,13 @@ export function precisionUlps(view: ZoomView, res: number): number {
   return (2 * view.scale) / res / ulp
 }
 
-/** Iteration budget grows with depth — shallow views waste nothing, deep ones stay detailed. */
-export function autoMaxIter(scale: number, base = 1.5): number {
+/**
+ * Iteration budget grows with depth, so shallow views waste nothing and deep ones stay
+ * detailed. `mult` is the runtime ITER lever: the field only re-renders when the view moves,
+ * so a big multiplier costs pan/zoom responsiveness rather than steady-state frame rate,
+ * which is why the ceiling is set high enough to actually hurt if you ask for it.
+ */
+export function autoMaxIter(scale: number, base = 1.5, mult = 1): number {
   const zoom = Math.max(1, base / scale)
-  return Math.min(2400, Math.round(128 + 90 * Math.log2(zoom)))
+  return Math.min(24000, Math.round((192 + 120 * Math.log2(zoom)) * mult))
 }

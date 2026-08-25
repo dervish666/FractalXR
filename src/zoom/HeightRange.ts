@@ -31,10 +31,32 @@ export class HeightRange {
   private levels: WebGLRenderTarget[] = []
   private scene = new Scene()
   private cam = new Camera()
-  private mat: RawShaderMaterial
-  private buf: Float32Array
+  private mat!: RawShaderMaterial
+  private buf!: Float32Array
 
   constructor(res: number) {
+    this.build(res)
+
+    this.mat = new RawShaderMaterial({
+      glslVersion: GLSL3,
+      vertexShader: RAW_VERT,
+      fragmentShader: REDUCE_FRAG,
+      depthTest: false,
+      depthWrite: false,
+      blending: NoBlending,
+      uniforms: { uSrc: { value: null }, uFirst: { value: 1 } },
+    })
+    this.scene.add(new Mesh(makeFullscreenTriangle(), this.mat))
+  }
+
+  /** Rebuild the reduction pyramid for a new field resolution. */
+  setResolution(res: number): void {
+    for (const l of this.levels) l.dispose()
+    this.levels = []
+    this.build(res)
+  }
+
+  private build(res: number): void {
     let size = res
     while (size > 32) {
       size = Math.max(1, Math.floor(size / 4))
@@ -51,17 +73,6 @@ export class HeightRange {
     }
     const last = this.levels[this.levels.length - 1]
     this.buf = new Float32Array(last.width * last.height * 4)
-
-    this.mat = new RawShaderMaterial({
-      glslVersion: GLSL3,
-      vertexShader: RAW_VERT,
-      fragmentShader: REDUCE_FRAG,
-      depthTest: false,
-      depthWrite: false,
-      blending: NoBlending,
-      uniforms: { uSrc: { value: null }, uFirst: { value: 1 } },
-    })
-    this.scene.add(new Mesh(makeFullscreenTriangle(), this.mat))
   }
 
   /** Min/max height in the tile, ignoring the extreme tails so one stray texel can't set the scale. */
