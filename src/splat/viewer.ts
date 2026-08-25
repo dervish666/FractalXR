@@ -66,7 +66,18 @@ let splat: SplatMesh | null = null
 let busy = false
 let lastReport = 'starting'
 let progress: { frac: number; label: string } | undefined
-let size = 0.6 // metres-ish; the cloud spans ~2 units
+const size = 0.6 // metres-ish; the cloud spans ~2 units
+
+/** Orientation presets for the loaded cloud, cycled by the FLIP button. */
+const FLIPS: { label: string; rot: [number, number, number] }[] = [
+  { label: 'as loaded', rot: [0, 0, 0] },
+  { label: 'x180', rot: [Math.PI, 0, 0] },
+  { label: 'z180', rot: [0, 0, Math.PI] },
+]
+let flipIdx = 0
+const applyFlip = (): void => {
+  if (splat) splat.rotation.set(...FLIPS[flipIdx].rot)
+}
 
 const ray = new THREE.Raycaster()
 const hooks: SplatXrHooks = {
@@ -82,18 +93,22 @@ const hooks: SplatXrHooks = {
   },
 }
 const xr = new SplatXR(renderer, content, hudVR, hooks)
-scene.add(xr.rig)
+scene.add(xr.grabRig)
+scene.add(xr.hudRig)
 for (const c of xr.controllers) scene.add(c) // controllers track the room, not the sculpture
 
-// desktop framing: the rig sits where the old fixed placement put it
+// desktop framing
 const PLACE = new THREE.Vector3(0, 1.4, -1.4)
-xr.rig.position.copy(PLACE)
-xr.layout()
+xr.grabRig.position.copy(PLACE)
+xr.hudRig.position.set(PLACE.x, PLACE.y - 0.55, PLACE.z + 0.55)
+hudVR.mesh.rotation.set(-0.42, 0, 0)
 
 renderer.xr.addEventListener('sessionstart', () => xr.place(1.5, 1.35))
 renderer.xr.addEventListener('sessionend', () => {
   xr.reset()
-  xr.rig.position.copy(PLACE)
+  xr.grabRig.position.copy(PLACE)
+  xr.hudRig.position.set(PLACE.x, PLACE.y - 0.55, PLACE.z + 0.55)
+  xr.hudRig.rotation.set(0, 0, 0)
 })
 
 function pressButton(id: string): void {
@@ -111,18 +126,18 @@ function pressButton(id: string): void {
     case 'spin':
       xr.spin = xr.spin === 0 ? 0.25 : 0
       return
-    case 'size-':
-    case 'size+':
-      size = Math.max(0.1, Math.min(4, size * (id === 'size+' ? 1.25 : 1 / 1.25)))
-      if (splat) splat.scale.setScalar(size)
+    case 'flip':
+      // Which way up 3DGS data sits depends on the exporter, and getting it wrong reads as
+      // "mirrored" even though a 180° turn is a rotation. A button beats me guessing from here.
+      flipIdx = (flipIdx + 1) % FLIPS.length
+      applyFlip()
+      return
+    case 'recentre':
+      xr.recentre()
       return
     case 'reset':
-      size = 0.6
-      xr.scale = 1
-      xr.spin = 0
-      content.rotation.set(0, 0, 0)
-      if (splat) splat.scale.setScalar(size)
-      xr.layout()
+      xr.reset()
+      applyFlip()
       return
     case 'exit':
       renderer.xr.getSession()?.end()
@@ -152,7 +167,7 @@ async function generate(): Promise<void> {
     splat = new SplatMesh({ fileBytes: ply, fileType: SplatFileType.PLY })
     splat.position.copy(PLACE)
     splat.scale.setScalar(size) // the cloud spans ~2 units
-    splat.rotation.z = Math.PI // 3DGS data is Y-down; flip it upright
+    applyFlip()
     content.add(splat)
 
     const ready = (splat as unknown as { initialized?: Promise<unknown> }).initialized
@@ -217,13 +232,13 @@ renderer.setAnimationLoop(() => {
       metricOk: !busy,
       sub: lastReport,
       lines: [
-        `size ${size.toFixed(2)} · rig ${xr.scale.toFixed(2)}x · ${xr.spin ? 'spinning' : 'still'}`,
-        'grip to move · two grips to grow · stick to scale and spin',
+        `scale ${xr.scale.toFixed(2)}x · ${FLIPS[flipIdx].label} · ${xr.spin ? 'spinning' : 'still'}`,
+        'one grip moves and turns it · two grips grow it',
         'grow it enough and you can walk inside it',
       ],
       footer: 'trigger a button · REBUILD after changing the count',
       progress,
-      lit: (id) => id === 'spin' && xr.spin !== 0,
+      lit: (id) => (id === 'spin' && xr.spin !== 0) || (id === 'flip' && flipIdx !== 0),
     }
     hudVR.draw(stats)
   }

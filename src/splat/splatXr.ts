@@ -9,14 +9,15 @@ import {
   type WebGLRenderer,
 } from 'three'
 import type { HudButton, HudPanel } from '../ui/HudPanel'
+import { WorldGrab } from '../xr/WorldGrab'
 
 export const SPLAT_BUTTONS: HudButton[] = [
   { id: 'count-', label: 'FEWER', row: 0, col: 0 },
   { id: 'count+', label: 'MORE', row: 0, col: 1 },
   { id: 'regen', label: 'REBUILD', row: 0, col: 2 },
   { id: 'spin', label: 'SPIN', row: 0, col: 3 },
-  { id: 'size-', label: 'SIZE −', row: 1, col: 0 },
-  { id: 'size+', label: 'SIZE +', row: 1, col: 1 },
+  { id: 'flip', label: 'FLIP', row: 1, col: 0 },
+  { id: 'recentre', label: 'RECENTRE', row: 1, col: 1 },
   { id: 'reset', label: 'RESET', row: 1, col: 2 },
   { id: 'exit', label: 'EXIT VR', row: 1, col: 3 },
 ]
@@ -30,10 +31,8 @@ export interface SplatXrHooks {
 const TRIGGER = 0
 const SQUEEZE = 1
 const STICK_X = 2
-const STICK_Y = 3
 const DEADZONE = 0.18
 const HUD_DROP = 0.55
-const HUD_STANDOFF = 0.25
 
 interface Hand {
   ctrl: Object3D
@@ -64,22 +63,17 @@ interface Hand {
  * is the guardian space, not where you happen to be standing.
  */
 export class SplatXR {
-  readonly rig = new Group()
-  scale = 1
+  /** Grabbable: holds the sculpture, and WorldGrab owns its transform entirely. */
+  readonly grabRig = new Group()
+  /** NOT grabbable: the control panel stays put and stays a readable size. */
+  readonly hudRig = new Group()
   spin = 0 // radians/sec of idle yaw
 
   private hands: Hand[] = []
+  private grab: WorldGrab
   private origin = new Vector3()
   private dir = new Vector3()
   private local = new Vector3()
-  private a = new Vector3()
-  private b = new Vector3()
-  private mid0 = new Vector3()
-  private rigPos0 = new Vector3()
-  private grabDist0 = 0
-  private grabScale0 = 1
-  private grabOffset = new Vector3()
-  private singleGrab: Hand | null = null
   private pendingPlace: { distance: number; height: number } | null = null
 
   constructor(
@@ -88,8 +82,9 @@ export class SplatXR {
     private hud: HudPanel,
     private hooks: SplatXrHooks,
   ) {
-    this.rig.add(content)
-    this.rig.add(hud.mesh)
+    this.grabRig.add(content)
+    this.hudRig.add(hud.mesh)
+
     for (let i = 0; i < 2; i++) {
       const ctrl = renderer.xr.getController(i)
       const laser = makeLaser()
@@ -116,30 +111,46 @@ export class SplatXR {
       })
       this.hands.push(hand)
     }
+
+    // The same grab the main app uses for the point cloud, so the two do not want different
+    // muscle memory: one grip translates AND rotates rigidly with the hand, two grips add
+    // uniform scale. It listens to squeezestart/squeezeend on the controllers itself.
+    this.grab = new WorldGrab(this.hands.map((h) => h.ctrl), this.grabRig)
   }
 
   get controllers(): Object3D[] {
     return this.hands.map((h) => h.ctrl)
   }
 
-  /** Park the rig in front of the viewer, on the first in-session frame. */
+  get scale(): number {
+    return this.grabRig.scale.x
+  }
+
+  get isGrabbing(): boolean {
+    return this.grab.isGrabbing
+  }
+
+  /** Park both rigs in front of the viewer, on the first in-session frame. */
   place(distance = 1.5, height = 1.35): void {
     this.pendingPlace = { distance, height }
-    this.layout()
+  }
+
+  /** Put the sculpture back in front of you without disturbing its scale or spin. */
+  recentre(): void {
+    this.place()
   }
 
   reset(): void {
-    this.rig.position.set(0, 0, 0)
-    this.rig.quaternion.identity()
-    this.scale = 1
+    this.grabRig.position.set(0, 0, 0)
+    this.grabRig.quaternion.identity()
+    this.grabRig.scale.setScalar(1)
+    this.content.rotation.set(0, 0, 0)
+    this.spin = 0
     this.resetGestures()
-    this.layout()
   }
 
-  /** Clear every gesture baseline, or the first grip of the NEXT session snaps the rig. */
+  /** Clear the pointing state. WorldGrab recaptures on its own squeeze events. */
   resetGestures(): void {
-    this.grabDist0 = 0
-    this.singleGrab = null
     this.pendingPlace = null
     for (const h of this.hands) {
       h.mode = 'none'
@@ -150,15 +161,6 @@ export class SplatXR {
       h.squeezing = false
     }
     this.hud.setHover(null)
-  }
-
-  layout(): void {
-    this.content.scale.setScalar(this.scale)
-    // fixed standoff: keying it to the content's size sends the HUD at your face as it grows
-    this.hud.mesh.position.set(0, -HUD_DROP, HUD_STANDOFF)
-    // NEGATIVE: a plane's normal is +Z and rotating +X tips it DOWN, so a HUD below eye level
-    // has to tip up to face you
-    this.hud.mesh.rotation.x = -0.34
   }
 
   private ray(h: Hand): void {
@@ -174,13 +176,26 @@ export class SplatXR {
     this.dir.y = 0 // yaw only
     if (this.dir.lengthSq() < 1e-6) this.dir.set(0, 0, -1)
     this.dir.normalize()
-    this.rig.position.set(
+    const yaw = Math.atan2(this.dir.x, this.dir.z) + Math.PI
+
+    this.grabRig.position.set(
       this.origin.x + this.dir.x * distance,
       height,
       this.origin.z + this.dir.z * distance,
     )
-    this.rig.rotation.set(0, Math.atan2(this.dir.x, this.dir.z) + Math.PI, 0)
-    this.layout()
+    this.grabRig.rotation.set(0, yaw, 0)
+
+    // the panel sits nearer and lower, and never scales with the sculpture
+    this.hudRig.position.set(
+      this.origin.x + this.dir.x * (distance * 0.55),
+      height - HUD_DROP,
+      this.origin.z + this.dir.z * (distance * 0.55),
+    )
+    this.hudRig.rotation.set(0, yaw, 0)
+    this.hud.mesh.position.set(0, 0, 0)
+    // NEGATIVE: a plane's normal is +Z and rotating +X tips it DOWN, so a panel below eye
+    // level has to tip up to face you
+    this.hud.mesh.rotation.set(-0.42, 0, 0)
   }
 
   update(dt: number): void {
@@ -191,7 +206,7 @@ export class SplatXR {
       this.placeNow(distance, height)
     }
     if (this.spin !== 0) this.content.rotation.y += this.spin * dt
-    this.layout()
+    this.grab.update()
 
     // sample every hand ONCE, before any branch, so edge state can never go stale
     for (const h of this.hands) {
@@ -206,42 +221,6 @@ export class SplatXR {
         h.mode = 'none'
         h.heldButton = null
       }
-    }
-    const gripping = this.hands.filter((h) => h.squeezing)
-
-    if (gripping.length === 2) {
-      this.ray(gripping[0])
-      this.a.copy(this.origin)
-      this.ray(gripping[1])
-      this.b.copy(this.origin)
-      const dist = this.a.distanceTo(this.b)
-      const mid = this.a.clone().lerp(this.b, 0.5)
-      if (this.grabDist0 === 0) {
-        this.grabDist0 = Math.max(0.05, dist)
-        this.grabScale0 = this.scale
-        this.mid0.copy(mid)
-        this.rigPos0.copy(this.rig.position)
-      }
-      this.scale = Math.max(0.1, Math.min(20, this.grabScale0 * (dist / this.grabDist0)))
-      this.rig.position.copy(this.rigPos0).add(mid).sub(this.mid0)
-      this.layout()
-      this.singleGrab = null
-      for (const h of this.hands) h.laser.visible = false
-      this.hud.setHover(null)
-      return
-    }
-    this.grabDist0 = 0
-
-    if (gripping.length === 1) {
-      const h = gripping[0]
-      this.ray(h)
-      if (this.singleGrab !== h) {
-        this.singleGrab = h
-        this.grabOffset.copy(this.rig.position).sub(this.origin)
-      }
-      this.rig.position.copy(this.origin).add(this.grabOffset)
-    } else {
-      this.singleGrab = null
     }
 
     let hovered: string | null = null
@@ -269,12 +248,6 @@ export class SplatXR {
         h.heldButton = null
       }
 
-      const sy = pad.axes.length > STICK_Y ? pad.axes[STICK_Y] : 0
-      if (Math.abs(sy) > DEADZONE && h.mode !== 'hud') {
-        const k = (Math.sign(sy) * (Math.abs(sy) - DEADZONE)) / (1 - DEADZONE)
-        this.scale = Math.max(0.1, Math.min(20, this.scale * Math.exp(-k * 1.1 * dt)))
-        this.layout()
-      }
       const sx = pad.axes.length > STICK_X ? pad.axes[STICK_X] : 0
       if (Math.abs(sx) > DEADZONE && h.mode !== 'hud') {
         const k = (Math.sign(sx) * (Math.abs(sx) - DEADZONE)) / (1 - DEADZONE)
