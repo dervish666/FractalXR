@@ -18,7 +18,7 @@ export default defineConfig({
     rollupOptions: {
       // zoom.html is a second entry point: the relief zoomer, its own renderer and its own
       // WebXR session, sharing only the shader helpers and the palette with the main app.
-      input: { main: 'index.html', zoom: 'zoom.html' },
+      input: { main: 'index.html', zoom: 'zoom.html', splat: 'splat.html' },
     },
   },
 })

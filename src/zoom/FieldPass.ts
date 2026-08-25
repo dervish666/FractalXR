@@ -104,7 +104,7 @@ export class FieldPass {
         uColorShift: { value: 0.1 },
         uSamples: { value: 1 },
         uTexOn: { value: 1 },
-        uStalk: { value: 0 },
+        uStalk: { value: 0.5 }, // both: marbled flow plus filaments
         uStalkWidth: { value: 0.12 },
         uInvert: { value: 0 },
       },

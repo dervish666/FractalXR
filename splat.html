@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FractalXR — splat viewer (POC)</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #05060a; }
+      #status {
+        position: fixed; top: 10px; left: 12px; z-index: 10; color: #9fb0d8;
+        font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; pointer-events: none;
+        text-shadow: 0 1px 2px #000;
+      }
+      #track {
+        position: fixed; top: 32px; left: 12px; z-index: 10; width: 320px; height: 4px;
+        background: rgba(127, 211, 255, 0.15); border-radius: 2px; pointer-events: none;
+      }
+      #bar {
+        height: 100%; width: 0; background: #7fd3ff; border-radius: 2px;
+        transition: width 0.12s linear, opacity 0.3s;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">starting…</div>
+    <div id="track"><div id="bar"></div></div>
+    <!-- Generates the splat cloud in-page (workers) and renders it in WebXR via Spark. -->
+    <script type="module" src="/src/splat/viewer.ts"></script>
+  </body>
+</html>

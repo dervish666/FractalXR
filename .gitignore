@@ -12,3 +12,7 @@ dist/
 !.dev.vars.example
 .env*
 !.env.example
+
+# Generated splat clouds. The bulb/flame exports run to 26-65MB each and the viewer now
+# builds them in the browser, so there is nothing to track — see src/splat/build.ts.
+*.ply
