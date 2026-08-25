@@ -35,6 +35,8 @@ export interface HudStats {
   theme: string
   flat: boolean
   texture: number
+  /** 0 = marbled, 1 = filaments, between = both. */
+  stalk: number
   curve: number
   bands: number
   /** 0..1 while a refined tile is still being assembled band by band, 1 when idle. */
@@ -43,7 +45,7 @@ export interface HudStats {
 
 const W = 1024 // canvas pixels. FIXED — see the resize note on `draw` below.
 const H = 560
-const COLS = 7
+const COLS = 8
 const ROWS = 3
 const PAD = 14
 const BTN_TOP = 250
@@ -71,6 +73,7 @@ export const HUD_BUTTONS: HudButton[] = [
   { id: 'julia', label: 'JULIA', row: 2, col: 2 },
   { id: 'tex-', label: 'TEXT −', row: 2, col: 3 },
   { id: 'tex+', label: 'TEXT +', row: 2, col: 4 },
+  { id: 'style', label: 'STYLE', row: 2, col: 7 },
   { id: 'reset', label: 'RESET', row: 2, col: 5 },
   { id: 'exit', label: 'EXIT VR', row: 2, col: 6 },
 ]
@@ -195,7 +198,9 @@ export class HudPanel {
     c.font = '500 26px ui-monospace, Menlo, monospace'
     const lines = [
       `field ${s.res}² · ${s.samples ** 2}x samples · ${s.iter} iter · ${s.steps} march`,
-      `panel ${s.panel.toFixed(2)}m · ${s.flat ? 'FLAT' : `high ${s.depth.toFixed(2)}m`} · shape ${s.curve.toFixed(2)} · bands ${s.bands.toFixed(1)} · texture ${s.texture.toFixed(2)}`,
+      `panel ${s.panel.toFixed(2)}m · ${s.flat ? 'FLAT' : `high ${s.depth.toFixed(2)}m`} · shape ${s.curve.toFixed(2)} · bands ${s.bands.toFixed(1)} · texture ${s.texture.toFixed(2)} ${
+        s.stalk < 0.05 ? 'marble' : s.stalk > 0.95 ? 'filament' : 'mixed'
+      }`,
       `fp32 ${s.ulps.toFixed(1)} ulps ${grade} · ${
         s.ridge < 0.05 ? 'terrace' : s.ridge > 0.95 ? 'ridge' : 'mixed'
       }${s.invert ? '·inverted' : ''} · ${s.julia ? 'julia' : 'mandelbrot'} · ${s.theme}`,
@@ -221,7 +226,7 @@ export class HudPanel {
     const now = performance.now()
     for (const b of HUD_BUTTONS) {
       const [x, y, w, h] = btnRect(b)
-      const lit = now - (this.flash.get(b.id) ?? -1e9) < 180 || (b.id === 'flat' && s.flat)
+      const lit = now - (this.flash.get(b.id) ?? -1e9) < 180 || (b.id === 'flat' && s.flat) || (b.id === 'style' && s.stalk > 0.05)
       const over = this.hot === b.id
       const danger = b.id === 'exit'
       c.fillStyle = lit

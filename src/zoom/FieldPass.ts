@@ -104,6 +104,8 @@ export class FieldPass {
         uColorShift: { value: 0.1 },
         uSamples: { value: 1 },
         uTexOn: { value: 1 },
+        uStalk: { value: 0 },
+        uStalkWidth: { value: 0.12 },
         uInvert: { value: 0 },
       },
     })
@@ -205,6 +207,19 @@ export class FieldPass {
     this.wantFull = on
     this.dirty = true
     this.banding = false
+  }
+
+  /** Exterior texture character: 0 = marbled TIA, 1 = Pickover filaments. Interior is unaffected. */
+  setStalk(v: number): void {
+    const x = Math.max(0, Math.min(1, v))
+    if (x === this.mat.uniforms.uStalk.value) return
+    this.mat.uniforms.uStalk.value = x
+    this.dirty = true
+    this.banding = false
+  }
+
+  get stalk(): number {
+    return this.mat.uniforms.uStalk.value as number
   }
 
   /** Skip the orbit-texture accumulation when nothing is going to read it. */

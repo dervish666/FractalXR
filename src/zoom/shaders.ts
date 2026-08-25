@@ -25,6 +25,8 @@ uniform float uColorCycles;
 uniform float uColorShift;
 uniform int   uSamples;      // sub-texel grid per side: 1 while moving, 3 once settled
 uniform float uTexOn;        // 1 = accumulate the orbit texture, 0 = skip it entirely
+uniform float uStalk;        // exterior texture character: 0 = marbled TIA, 1 = Pickover filaments
+uniform float uStalkWidth;   // how thin the filaments are
 uniform float uInvert;       // 0 = set stands proud, 1 = set is the pit and the filigree incises
 
 out vec4 outField;
@@ -54,7 +56,8 @@ vec4 escape(vec2 c, vec2 z0){
   float sum = 0.0;   // running TIA up to n
   float sumPrev = 0.0; // ...and up to n-1, so the result can be interpolated smoothly
   float count = 0.0;
-  float minR2 = 1e30; // closest the orbit ever comes to the origin — the interior's texture
+  float minR2 = 1e30;   // closest the orbit ever comes to the origin — the interior's texture
+  float minAxis = 1e30; // ...and closest to either axis — Pickover stalks, the filament look
   int n = 0;
   for(int i = 0; i < uMaxIter; i++){
     vec2 zp = z;
@@ -68,6 +71,10 @@ vec4 escape(vec2 c, vec2 z0){
     // turning the texture off gets the original speed back exactly.
     // Skip the first couple of steps too: they are dominated by the seed and only add noise.
     if(uTexOn > 0.5 && i > 1){
+      // Pickover cross stalks: how near the orbit ever passes either axis. Cheap (two abs, two
+      // min) and, unlike a distance in the c-plane, scale-free — the orbit lives in the escape
+      // region whatever the zoom, so one threshold works at every depth.
+      minAxis = min(minAxis, min(abs(z.x), abs(z.y)));
       float azp2 = dot(zp, zp);                          // |zp²| = |zp|²
       float lo = abs(azp2 - ac);
       float hi = azp2 + ac;
@@ -92,7 +99,9 @@ vec4 escape(vec2 c, vec2 z0){
   // interpolate between the two running averages by the fractional escape, or the texture
   // bands as hard as the raw iteration count does
   float tia = mix(avg0, avg1, clamp(s - floor(s), 0.0, 1.0));
-  return vec4(s, de, 0.0, tia);
+  // near the axis = bright filament, falling off over uStalkWidth
+  float stalk = 1.0 - clamp(minAxis / max(1e-4, uStalkWidth), 0.0, 1.0);
+  return vec4(s, de, 0.0, mix(tia, stalk, uStalk));
 }
 
 void main(){

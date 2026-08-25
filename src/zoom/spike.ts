@@ -228,6 +228,15 @@ function setTexture(delta: number): void {
   if (next > 0.001) pushView()
 }
 
+const STALK_STEPS = [0, 0.5, 1] // marble → both → filaments
+
+/** Cycle the exterior texture's character. The interior keeps its own trap either way. */
+function cycleStyle(): void {
+  const i = STALK_STEPS.indexOf(field.stalk)
+  field.setStalk(STALK_STEPS[(i + 1) % STALK_STEPS.length] ?? 0)
+  pushView()
+}
+
 function setBands(delta: number): void {
   view.colorCycles = Math.max(0.3, Math.min(30, view.colorCycles * (delta > 0 ? 1.25 : 1 / 1.25)))
   pushView()
@@ -262,6 +271,7 @@ function pressButton(id: string): void {
     case 'bands+': return setBands(1)
     case 'tex-': return setTexture(-1)
     case 'tex+': return setTexture(1)
+    case 'style': return cycleStyle()
     case 'invert':
       view.invert = !view.invert
       return pushView()
@@ -427,6 +437,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'p') sway = !sway
   else if (k === 'f') pressButton('flat')
   else if (k === 'k' || k === 'l') pressButton(k === 'l' ? 'tex+' : 'tex-')
+  else if (k === 'y') pressButton('style')
   else if (k === 'x') {
     if (e.shiftKey) crossView = !crossView
     else stereo = !stereo
@@ -524,6 +535,7 @@ function updateStats(now: number, dt: number): void {
     curve: panel.material.uniforms.uHeightCurve.value as number,
     flat: flatMode,
     texture: panel.material.uniforms.uTexAmt.value as number,
+    stalk: field.stalk,
     bands: view.colorCycles,
     refine: field.refineProgress,
   }
@@ -542,12 +554,12 @@ function updateStats(now: number, dt: number): void {
     &nbsp; <b>high</b> ${depth.toFixed(2)}m
     &nbsp; <b>shape</b> ${(panel.material.uniforms.uHeightCurve.value as number).toFixed(2)}
     &nbsp; <b>bands</b> ${view.colorCycles.toFixed(1)}
-    &nbsp; <b>texture</b> ${(panel.material.uniforms.uTexAmt.value as number).toFixed(2)}
+    &nbsp; <b>texture</b> ${(panel.material.uniforms.uTexAmt.value as number).toFixed(2)} ${field.stalk < 0.05 ? 'marble' : field.stalk > 0.95 ? 'filament' : 'mixed'}
     &nbsp; <b>glide</b> ${autoRate.toFixed(3)}/s${autoZoom ? (autoZoom < 0 ? ' in' : ' out') : ' off'}${stereo ? (crossView ? ' · cross' : ' · parallel') : ''}
     &nbsp; <b>${view.julia ? 'julia' : 'mandelbrot'}</b>
     &nbsp; <b>${THEMES[themeIndex].name}</b><br>
     <span class="dim">drag pan · wheel zoom · shift-drag orbit · z/shift-z auto-zoom · 9 0 glide ·
-    q w field res · a s iterations · e d march steps · - = height · ; ' shape · , . bands · k l texture ·
+    q w field res · a s iterations · e d march steps · - = height · ; ' shape · , . bands · k l texture · y style ·
     i invert · r relief · j julia · x stereo ·
     shift-x cross/parallel · p sway · [ ] palette · - = depth · , . colour · space reset</span>`
 }
