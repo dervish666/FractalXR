@@ -44,7 +44,7 @@ export class HeightRange {
       depthTest: false,
       depthWrite: false,
       blending: NoBlending,
-      uniforms: { uSrc: { value: null }, uFirst: { value: 1 } },
+      uniforms: { uSrc: { value: null }, uFirst: { value: 1 }, uChannel: { value: 0 } },
     })
     this.scene.add(new Mesh(makeFullscreenTriangle(), this.mat))
   }
@@ -79,7 +79,7 @@ export class HeightRange {
   }
 
   /** Min/max height in the tile, ignoring the extreme tails so one stray texel can't set the scale. */
-  compute(renderer: WebGLRenderer, field: WebGLRenderTarget): { lo: number; hi: number } {
+  compute(renderer: WebGLRenderer, field: WebGLRenderTarget, channel = 0): { lo: number; hi: number } {
     const prevRT = renderer.getRenderTarget()
     const xrWas = renderer.xr.enabled
     renderer.xr.enabled = false
@@ -88,6 +88,7 @@ export class HeightRange {
     for (let i = 0; i < this.levels.length; i++) {
       this.mat.uniforms.uSrc.value = src.texture
       this.mat.uniforms.uFirst.value = i === 0 ? 1 : 0
+      this.mat.uniforms.uChannel.value = channel
       renderer.setRenderTarget(this.levels[i])
       renderer.render(this.scene, this.cam)
       src = this.levels[i]

@@ -24,6 +24,7 @@ uniform float uRidgeWidth;   // ridge falloff, measured in field texels (zoom-in
 uniform float uColorCycles;
 uniform float uColorShift;
 uniform int   uSamples;      // sub-texel grid per side: 1 while moving, 3 once settled
+uniform float uTexOn;        // 1 = accumulate the orbit texture, 0 = skip it entirely
 uniform float uInvert;       // 0 = set stands proud, 1 = set is the pit and the filigree incises
 
 out vec4 outField;
@@ -35,25 +36,63 @@ vec2 cmul(vec2 a, vec2 b){ return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
 
 // The escape-time core, deliberately isolated: swapping in perturbation (CPU reference orbit
 // + fp32 delta iteration) for unlimited zoom depth replaces this function and nothing else.
-// Returns (smoothIter, distanceEstimate, insideFlag).
-vec3 escape(vec2 c, vec2 z0){
+//
+// Returns (smoothIter, distanceEstimate, insideFlag, triangleInequalityAverage).
+//
+// The fourth channel is the texture. Iteration count is near-constant across the big smooth
+// regions, which is exactly why they look dead: there is no signal there to colour or shade.
+// But the ORBIT still moves, and the triangle inequality average measures where each step
+// lands between the bounds |z²|-|c| and |z²|+|c| that the triangle inequality allows. It
+// varies richly precisely where the escape count does not — so it puts marbled structure into
+// the flats without touching the boundary detail.
+vec4 escape(vec2 c, vec2 z0){
   vec2 z = z0;
   vec2 dz = vec2(1.0, 0.0);                              // dz/dc — feeds the distance estimate
   vec2 addC = (uJulia > 0.5) ? vec2(0.0) : vec2(1.0, 0.0);
+  float ac = length((uJulia > 0.5) ? uJuliaC : c);       // |c|, the width of the allowed band
   float m2 = dot(z, z);
+  float sum = 0.0;   // running TIA up to n
+  float sumPrev = 0.0; // ...and up to n-1, so the result can be interpolated smoothly
+  float count = 0.0;
+  float minR2 = 1e30; // closest the orbit ever comes to the origin — the interior's texture
   int n = 0;
   for(int i = 0; i < uMaxIter; i++){
+    vec2 zp = z;
     dz = 2.0 * cmul(z, dz) + addC;
     z  = cmul(z, z) + c;
     m2 = dot(z, z);
+    minR2 = min(minR2, m2);
     n = i + 1;
+    // Roughly doubles the cost of the inner loop (a sqrt plus a handful of ops on a body of
+    // about fifteen), so it is gated on a uniform — uniform control flow, no divergence, and
+    // turning the texture off gets the original speed back exactly.
+    // Skip the first couple of steps too: they are dominated by the seed and only add noise.
+    if(uTexOn > 0.5 && i > 1){
+      float azp2 = dot(zp, zp);                          // |zp²| = |zp|²
+      float lo = abs(azp2 - ac);
+      float hi = azp2 + ac;
+      float t = (sqrt(m2) - lo) / max(1e-12, hi - lo);
+      sumPrev = sum;
+      sum += clamp(t, 0.0, 1.0);
+      count += 1.0;
+    }
     if(m2 > ESC2) break;
   }
-  if(m2 <= ESC2) return vec3(float(uMaxIter), 0.0, 1.0); // never escaped — inside the set
+  float avg1 = count > 0.0 ? sum / count : 0.0;
+  float avg0 = count > 1.0 ? sumPrev / (count - 1.0) : avg1;
+
+  // Inside the set, TIA barely varies — the orbit is bounded and the average washes out, which
+  // is why the interior stays a dead flat plate. The classic orbit trap works there instead:
+  // how close the orbit ever came to the origin. Nominally 0..1, same band as TIA, so the two
+  // share one normalisation.
+  if(m2 <= ESC2) return vec4(float(uMaxIter), 0.0, 1.0, clamp(sqrt(minR2), 0.0, 1.0));
   float lm = log(m2) * 0.5;                              // log|z|
   float s  = float(n) - log2(lm / LOG_ESC);              // fractional iteration count
   float de = sqrt(m2) * lm / max(1e-20, length(dz));     // Milnor/Koebe distance to the set
-  return vec3(s, de, 0.0);
+  // interpolate between the two running averages by the fractional escape, or the texture
+  // bands as hard as the raw iteration count does
+  float tia = mix(avg0, avg1, clamp(s - floor(s), 0.0, 1.0));
+  return vec4(s, de, 0.0, tia);
 }
 
 void main(){
@@ -63,7 +102,7 @@ void main(){
   // single sample per texel is pure aliasing — it is what puts salt-and-pepper across the
   // filigree. Averaging s and the distance estimate (not the derived height/colour, which
   // are non-linear and hue-wrapping) is what actually resolves it.
-  float sumS = 0.0, sumDE = 0.0, sumIn = 0.0;
+  float sumS = 0.0, sumDE = 0.0, sumIn = 0.0, sumTia = 0.0;
   float inv = 1.0 / float(uSamples);
   for(int sy = 0; sy < 3; sy++){
     if(sy >= uSamples) break;
@@ -75,16 +114,18 @@ void main(){
       // add the tail before the head: the small terms survive the round into the head's
       // exponent, which stops the grid drifting as you pan. It buys no extra zoom depth.
       vec2 p   = (d + uCenterLo) + uCenterHi;
-      vec3 e   = escape((uJulia > 0.5) ? uJuliaC : p, (uJulia > 0.5) ? p : vec2(0.0));
+      vec4 e   = escape((uJulia > 0.5) ? uJuliaC : p, (uJulia > 0.5) ? p : vec2(0.0));
       sumS  += e.x;
       sumDE += e.y;
       sumIn += e.z;
+      sumTia += e.w;
     }
   }
   float w  = inv * inv;
   float s  = sumS * w;
   float de = sumDE * w;
   float ins = sumIn * w;                  // fractional — gives the set an antialiased edge
+  float tia = sumTia * w;
 
   float t     = pow(clamp(s / float(uMaxIter), 0.0, 1.0), uTerraceGamma);
   float ridge = exp(-(de / pixel) / max(0.001, uRidgeWidth));
@@ -94,7 +135,7 @@ void main(){
   // cycle on log(iterations) so the palette keeps moving at every zoom depth
   float ci = fract(uColorShift + uColorCycles * log(1.0 + s) * 0.15);
 
-  outField = vec4(h, ci, ins, clamp(s / float(uMaxIter), 0.0, 1.0));
+  outField = vec4(h, ci, ins, clamp(tia, 0.0, 1.0));
 }
 `
 
@@ -102,7 +143,8 @@ void main(){
 export const REDUCE_FRAG = /* glsl */ `
 precision highp float;
 uniform sampler2D uSrc;
-uniform int uFirst;          // 1 = reading the field (height is .r), 0 = reading a partial reduction
+uniform int uFirst;          // 1 = reading the field, 0 = reading a partial reduction
+uniform int uChannel;        // which field channel to measure: 0 = height, 3 = orbit texture
 out vec4 outRange;
 // (min, max, sum, sum of squares). Min and max describe the extremes; the sums give a mean and
 // a standard deviation, and those two are AVERAGES — so unlike the extremes they do not drift
@@ -118,10 +160,11 @@ void main(){
     for(int x = 0; x < 4; x++){
       vec4 s = texelFetch(uSrc, o + ivec2(x, y), 0);
       if(uFirst == 1){
-        lo = min(lo, s.r);
-        hi = max(hi, s.r);
-        sum += s.r;
-        sq  += s.r * s.r;
+        float v = s[uChannel];
+        lo = min(lo, v);
+        hi = max(hi, v);
+        sum += v;
+        sq  += v * v;
       } else {
         lo = min(lo, s.r);
         hi = max(hi, s.g);
@@ -167,6 +210,10 @@ uniform vec3  uInsideColor;
 uniform float uHeightLo;     // measured range of the tile, stretched across the full slab
 uniform float uHeightHi;
 uniform float uHeightCurve;  // 0 = linear, up to 2 = hard S-curve
+uniform float uTexAmt;       // orbit-trap texture: colour modulation, 0..1
+uniform float uTexBump;      // ...and how much it perturbs the surface normal
+uniform float uTexLo;        // measured range of the orbit texture across the tile
+uniform float uTexHi;
 
 // re-declared here so the hit point can be written to the depth buffer; three sets both
 // per object and per (sub-)camera, so they are correct for each eye.
@@ -176,6 +223,13 @@ uniform mat4 modelViewMatrix;
 out vec4 outColor;
 
 vec2  uvOf(vec3 p){ return p.xy / (2.0 * uHalf.xy) + 0.5; }
+// Raw TIA clusters in a narrow band, so unnormalised it is a faint wash. Stretching it over
+// the range actually present in the tile is what turns it from a tint into a texture.
+float tiaAt(vec2 uv){
+  float t = texture(uField, clamp(uv, 0.0, 1.0)).a;
+  return clamp((t - uTexLo) / max(1e-4, uTexHi - uTexLo), 0.0, 1.0);
+}
+
 float heightAt(vec2 uv){
   float h = texture(uField, clamp(uv, 0.0, 1.0)).r;
   float t = clamp((h - uHeightLo) / max(1e-4, uHeightHi - uHeightLo), 0.0, 1.0);
@@ -248,7 +302,23 @@ void main(){
   vec3 n = normalize(vec3(-dzdx, -dzdy, 1.0));
 
   vec4 f = texture(uField, uv);
-  vec3 base = mix(texture(uPalette, vec2(f.g, 0.5)).rgb, uInsideColor, clamp(f.b, 0.0, 1.0));
+
+  // The orbit-trap texture. It carries structure through the big smooth regions, where the
+  // escape count is flat and there is otherwise nothing for the light to catch. Two effects:
+  // a small palette shift plus a luminance modulation, and a fine bump on the surface normal.
+  // The bump is the one that matters — a flat region with a constant normal is lit uniformly,
+  // which is precisely what makes it read as dead.
+  float tex = clamp((f.a - uTexLo) / max(1e-4, uTexHi - uTexLo), 0.0, 1.0);
+  if(uTexBump > 0.0){
+    float tL = tiaAt(uv - vec2(e, 0.0)), tR = tiaAt(uv + vec2(e, 0.0));
+    float tD = tiaAt(uv - vec2(0.0, e)), tU = tiaAt(uv + vec2(0.0, e));
+    vec2 g = vec2(tR - tL, tU - tD) / (2.0 * e);
+    n = normalize(n - vec3(g, 0.0) * uTexBump);
+  }
+
+  float idx = fract(f.g + uTexAmt * 0.10 * (tex - 0.5));
+  vec3 base = mix(texture(uPalette, vec2(idx, 0.5)).rgb, uInsideColor, clamp(f.b, 0.0, 1.0));
+  base *= mix(1.0, 0.45 + 1.15 * tex, uTexAmt);
 
   vec3 L = normalize(uLightDir);
   vec3 V = normalize(ro - hitP);

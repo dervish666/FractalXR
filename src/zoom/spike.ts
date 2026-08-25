@@ -215,6 +215,19 @@ function setCurve(delta: number): void {
   u.value = Math.max(0, Math.min(2, u.value + delta * 0.25))
 }
 
+/**
+ * Orbit-trap texture strength. Drives colour modulation and surface bump together, since
+ * separating them just gives two sliders that only look right in the same place.
+ */
+function setTexture(delta: number): void {
+  const u = panel.material.uniforms
+  const next = Math.max(0, Math.min(1.6, (u.uTexAmt.value as number) + delta * 0.15))
+  u.uTexAmt.value = next
+  u.uTexBump.value = next * 0.05
+  field.setTextureOn(next > 0.001) // stop paying for the orbit statistic nobody is reading
+  if (next > 0.001) pushView()
+}
+
 function setBands(delta: number): void {
   view.colorCycles = Math.max(0.3, Math.min(30, view.colorCycles * (delta > 0 ? 1.25 : 1 / 1.25)))
   pushView()
@@ -247,6 +260,8 @@ function pressButton(id: string): void {
     case 'curve+': return setCurve(1)
     case 'bands-': return setBands(-1)
     case 'bands+': return setBands(1)
+    case 'tex-': return setTexture(-1)
+    case 'tex+': return setTexture(1)
     case 'invert':
       view.invert = !view.invert
       return pushView()
@@ -411,6 +426,7 @@ addEventListener('keydown', (e) => {
   else if (k === 'r') pressButton('relief')
   else if (k === 'p') sway = !sway
   else if (k === 'f') pressButton('flat')
+  else if (k === 'k' || k === 'l') pressButton(k === 'l' ? 'tex+' : 'tex-')
   else if (k === 'x') {
     if (e.shiftKey) crossView = !crossView
     else stereo = !stereo
@@ -507,6 +523,7 @@ function updateStats(now: number, dt: number): void {
     theme: THEMES[themeIndex].name,
     curve: panel.material.uniforms.uHeightCurve.value as number,
     flat: flatMode,
+    texture: panel.material.uniforms.uTexAmt.value as number,
     bands: view.colorCycles,
     refine: field.refineProgress,
   }
@@ -525,11 +542,12 @@ function updateStats(now: number, dt: number): void {
     &nbsp; <b>high</b> ${depth.toFixed(2)}m
     &nbsp; <b>shape</b> ${(panel.material.uniforms.uHeightCurve.value as number).toFixed(2)}
     &nbsp; <b>bands</b> ${view.colorCycles.toFixed(1)}
+    &nbsp; <b>texture</b> ${(panel.material.uniforms.uTexAmt.value as number).toFixed(2)}
     &nbsp; <b>glide</b> ${autoRate.toFixed(3)}/s${autoZoom ? (autoZoom < 0 ? ' in' : ' out') : ' off'}${stereo ? (crossView ? ' · cross' : ' · parallel') : ''}
     &nbsp; <b>${view.julia ? 'julia' : 'mandelbrot'}</b>
     &nbsp; <b>${THEMES[themeIndex].name}</b><br>
     <span class="dim">drag pan · wheel zoom · shift-drag orbit · z/shift-z auto-zoom · 9 0 glide ·
-    q w field res · a s iterations · e d march steps · - = height · ; ' shape · , . bands ·
+    q w field res · a s iterations · e d march steps · - = height · ; ' shape · , . bands · k l texture ·
     i invert · r relief · j julia · x stereo ·
     shift-x cross/parallel · p sway · [ ] palette · - = depth · , . colour · space reset</span>`
 }
@@ -581,9 +599,14 @@ renderer.setAnimationLoop(() => {
     if (field.fullQuality && !field.refining) rangePending = true
   } else if (rangePending) {
     rangePending = false
-    const r = heightRange.compute(renderer, field.fullRt)
+    const r = heightRange.compute(renderer, field.fullRt, 0)
     rangeLo = r.lo
     rangeHi = r.hi
+    // the orbit texture needs its own range: raw TIA sits in a narrow band and reads as a
+    // faint tint until it is stretched over what the tile actually contains
+    const t = heightRange.compute(renderer, field.fullRt, 3)
+    panel.material.uniforms.uTexLo.value = t.lo
+    panel.material.uniforms.uTexHi.value = t.hi
   }
   const hu = panel.material.uniforms
   const ease = 1 - Math.exp(-6 * dt)
@@ -639,12 +662,15 @@ renderer.setAnimationLoop(() => {
   range: () => ({ lo: rangeLo, hi: rangeHi }),
   refineSamples: () => refineSamples(field.res),
   measureRange() {
-    const r = heightRange.compute(renderer, field.fullRt)
+    const r = heightRange.compute(renderer, field.fullRt, 0)
     rangeLo = r.lo
     rangeHi = r.hi
     panel.material.uniforms.uHeightLo.value = r.lo
     panel.material.uniforms.uHeightHi.value = r.hi
-    return r
+    const t = heightRange.compute(renderer, field.fullRt, 3)
+    panel.material.uniforms.uTexLo.value = t.lo
+    panel.material.uniforms.uTexHi.value = t.hi
+    return { ...r, tex: t }
   },
 }
 

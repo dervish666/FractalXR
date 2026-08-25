@@ -103,6 +103,7 @@ export class FieldPass {
         uColorCycles: { value: 1.6 },
         uColorShift: { value: 0.1 },
         uSamples: { value: 1 },
+        uTexOn: { value: 1 },
         uInvert: { value: 0 },
       },
     })
@@ -202,6 +203,15 @@ export class FieldPass {
   setFullQuality(on: boolean): void {
     if (on === this.wantFull) return
     this.wantFull = on
+    this.dirty = true
+    this.banding = false
+  }
+
+  /** Skip the orbit-texture accumulation when nothing is going to read it. */
+  setTextureOn(on: boolean): void {
+    const v = on ? 1 : 0
+    if (v === this.mat.uniforms.uTexOn.value) return
+    this.mat.uniforms.uTexOn.value = v
     this.dirty = true
     this.banding = false
   }

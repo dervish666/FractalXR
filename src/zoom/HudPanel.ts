@@ -34,6 +34,7 @@ export interface HudStats {
   ridge: number
   theme: string
   flat: boolean
+  texture: number
   curve: number
   bands: number
   /** 0..1 while a refined tile is still being assembled band by band, 1 when idle. */
@@ -68,6 +69,8 @@ export const HUD_BUTTONS: HudButton[] = [
   { id: 'relief', label: 'RELIEF', row: 2, col: 0 },
   { id: 'palette', label: 'COLOUR', row: 2, col: 1 },
   { id: 'julia', label: 'JULIA', row: 2, col: 2 },
+  { id: 'tex-', label: 'TEXT −', row: 2, col: 3 },
+  { id: 'tex+', label: 'TEXT +', row: 2, col: 4 },
   { id: 'reset', label: 'RESET', row: 2, col: 5 },
   { id: 'exit', label: 'EXIT VR', row: 2, col: 6 },
 ]
@@ -192,7 +195,7 @@ export class HudPanel {
     c.font = '500 26px ui-monospace, Menlo, monospace'
     const lines = [
       `field ${s.res}² · ${s.samples ** 2}x samples · ${s.iter} iter · ${s.steps} march`,
-      `panel ${s.panel.toFixed(2)}m · ${s.flat ? 'FLAT' : `high ${s.depth.toFixed(2)}m`} · shape ${s.curve.toFixed(2)} · bands ${s.bands.toFixed(1)}`,
+      `panel ${s.panel.toFixed(2)}m · ${s.flat ? 'FLAT' : `high ${s.depth.toFixed(2)}m`} · shape ${s.curve.toFixed(2)} · bands ${s.bands.toFixed(1)} · texture ${s.texture.toFixed(2)}`,
       `fp32 ${s.ulps.toFixed(1)} ulps ${grade} · ${
         s.ridge < 0.05 ? 'terrace' : s.ridge > 0.95 ? 'ridge' : 'mixed'
       }${s.invert ? '·inverted' : ''} · ${s.julia ? 'julia' : 'mandelbrot'} · ${s.theme}`,

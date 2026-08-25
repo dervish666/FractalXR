@@ -60,6 +60,10 @@ export class ReliefPanel {
         uHeightLo: { value: 0 },
         uHeightHi: { value: 1 },
         uHeightCurve: { value: 0.9 },
+        uTexAmt: { value: 1.0 },
+        uTexBump: { value: 0.05 },
+        uTexLo: { value: 0 },
+        uTexHi: { value: 1 },
       },
     })
 
