@@ -43,6 +43,60 @@ body {
   opacity: 0.75;
 }
 
+/* Mode cards — the three apps of the site as links. #overlay ignores pointer events so it
+   never blocks orbiting, so the cards opt back in. */
+#overlay .modes-label {
+  margin-top: 1.1rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+#modes {
+  pointer-events: auto;
+  margin-top: 0.55rem;
+  display: grid;
+  gap: 0.5rem;
+  max-width: 24rem;
+}
+.mode-card {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.6rem 0.8rem;
+  text-decoration: none;
+  color: inherit;
+  background: rgba(10, 14, 26, 0.72);
+  border: 1px solid rgba(136, 170, 255, 0.28);
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.mode-card:hover,
+.mode-card:focus-visible {
+  border-color: rgba(122, 215, 255, 0.85);
+  background: rgba(16, 24, 44, 0.85);
+}
+.mc-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #cfe3ff;
+}
+.mc-sub {
+  font-size: 0.8rem;
+  opacity: 0.72;
+}
+.mc-here {
+  justify-self: start;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #7dd87d;
+  border: 1px solid rgba(125, 216, 125, 0.5);
+  border-radius: 99px;
+  padding: 0.05rem 0.45rem;
+}
+
 /* Desktop keyboard hint — surfaces the browser controls for visitors without a
    headset (most of them). Fades back once they've started playing (.used). */
 #desk-controls {

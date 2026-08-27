@@ -52,6 +52,8 @@ export interface MenuActions {
   cycleAnimation: () => void
   togglePassthrough: () => void
   showGuide: () => void
+  visitZoom: () => void // leave for /zoom (ends the session and navigates)
+  visitSplat: () => void // leave for /splat
   exitVR: () => void
 }
 
@@ -228,6 +230,14 @@ export class WristMenu {
         { label: 'FAVES', kind: 'action', valueKey: 'faves', run: a.loadFave },
         { label: 'DELETE', sub: 'fave', kind: 'action', run: a.deleteFave },
       ])
+
+    // VISIT — the other two modes. These leave the page entirely (session ends, browser
+    // navigates), so they live in their own section rather than beside cells that keep
+    // you in the app.
+    section('VISIT', [
+      { label: 'ZOOM', sub: 'relief dive', kind: 'action', run: a.visitZoom },
+      { label: 'SPLAT', sub: 'walk-in cloud', kind: 'action', run: a.visitSplat },
+    ])
 
     // SYSTEM — Help + (Passthru, MR sessions only) + Exit, centred and set apart from the grid.
     // Passthrough is meaningless outside an immersive-ar session, so it only takes a slot there.

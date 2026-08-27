@@ -13,6 +13,7 @@ import { THEMES } from '../flame/palettes'
 import { autoMaxIter, DEFAULT_VIEW, FieldPass, precisionUlps, type ZoomView } from './FieldPass'
 import { HeightRange } from './HeightRange'
 import { HudPanel, type HudButton, type HudContent } from '../ui/HudPanel'
+import { nextMode, switchMode } from '../modes'
 import { ReliefPanel } from './ReliefPanel'
 import { ZoomXR, type XrHooks } from './xr'
 
@@ -88,6 +89,7 @@ const ZOOM_BUTTONS: HudButton[] = [
   { id: 'reset', label: 'RESET', row: 2, col: 5 },
   { id: 'exit', label: 'EXIT VR', row: 2, col: 6 },
   { id: 'style', label: 'STYLE', row: 2, col: 7 },
+  { id: 'mode', label: 'MODE ▸', row: 3, col: 0 },
 ]
 const hudVR = new HudPanel(ZOOM_BUTTONS, 1.0)
 const heightRange = new HeightRange(field.res)
@@ -312,6 +314,11 @@ function pressButton(id: string): void {
       return resetView()
     case 'exit':
       renderer.xr.getSession()?.end()
+      return
+    case 'mode':
+      // HUD button or stick click: flames → zoom → splat → flames. Ends the session and
+      // navigates — see switchMode.
+      switchMode(renderer, nextMode('zoom'))
       return
   }
 }

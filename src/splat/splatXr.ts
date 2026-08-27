@@ -21,6 +21,7 @@ export const SPLAT_BUTTONS: HudButton[] = [
   { id: 'reset', label: 'RESET', row: 1, col: 2 },
   { id: 'exit', label: 'EXIT VR', row: 1, col: 3 },
   { id: 'inside', label: 'INSIDE', row: 2, col: 0 },
+  { id: 'mode', label: 'MODE ▸', row: 2, col: 1 },
 ]
 
 export interface SplatXrHooks {
@@ -31,6 +32,7 @@ export interface SplatXrHooks {
 
 const TRIGGER = 0
 const SQUEEZE = 1
+const STICK_CLICK = 3
 const STICK_X = 2
 const STICK_Y = 3
 const DEADZONE = 0.18
@@ -50,6 +52,7 @@ interface Hand {
   pressedEdge: boolean
   releasedEdge: boolean
   squeezing: boolean
+  stickWas: boolean
 }
 
 /**
@@ -105,6 +108,7 @@ export class SplatXR {
         pressedEdge: false,
         releasedEdge: false,
         squeezing: false,
+        stickWas: false,
       }
       ctrl.addEventListener('connected', (e) => {
         hand.src = (e as unknown as { data: XRInputSource }).data
@@ -177,6 +181,7 @@ export class SplatXR {
       h.trigger = false
       h.pressedEdge = h.releasedEdge = false
       h.squeezing = false
+      h.stickWas = false
     }
     this.hud.setHover(null)
   }
@@ -245,6 +250,11 @@ export class SplatXR {
       h.releasedEdge = !trigger && h.prevTrigger
       h.trigger = trigger
       h.prevTrigger = trigger
+      // thumbstick click cycles modes (the one spare face button here); it is also on the
+      // HUD as MODE ▸. Edge-detected here where every hand is sampled unconditionally.
+      const stick = pad?.buttons[STICK_CLICK]?.pressed === true
+      if (stick && !h.stickWas) this.hooks.press('mode')
+      h.stickWas = stick
       if (h.squeezing) {
         h.mode = 'none'
         h.heldButton = null

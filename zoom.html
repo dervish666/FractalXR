@@ -18,9 +18,18 @@
       .hud .softening { color: #e2c766; }
       .hud .blocky { color: #e28f5a; }
       .hud .mush { color: #e2606a; }
+      #mode-nav {
+        position: fixed; top: 12px; right: 14px; z-index: 10; pointer-events: auto;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #9fb0d8; text-shadow: 0 1px 3px #000a;
+      }
+      #mode-nav a { color: #7fd3ff; text-decoration: none; }
+      #mode-nav a:hover { text-decoration: underline; }
+      #mode-nav .here { color: #7dd87d; }
     </style>
   </head>
   <body>
+    <nav id="mode-nav"><a href="/">flames</a> · <span class="here">zoom</span> · <a href="/splat">splat</a></nav>
     <script type="module" src="/src/zoom/spike.ts"></script>
   </body>
 </html>

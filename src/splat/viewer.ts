@@ -15,6 +15,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { SparkRenderer, SplatMesh, SplatFileType } from '@sparkjsdev/spark'
 import { buildBulbSplats } from './build'
 import { HudPanel, type HudContent } from '../ui/HudPanel'
+import { nextMode, switchMode } from '../modes'
 import { SPLAT_BUTTONS, SplatXR, type SplatXrHooks } from './splatXr'
 
 const statusEl = document.getElementById('status') as HTMLDivElement
@@ -138,6 +139,11 @@ function pressButton(id: string): void {
     case 'inside':
       xr.inside()
       return
+    case 'mode':
+      // HUD button or stick click: flames → zoom → splat → flames. Ends the session and
+      // navigates — see switchMode.
+      switchMode(renderer, nextMode('splat'))
+      return
     case 'reset':
       xr.reset()
       applyFlip()
@@ -241,7 +247,7 @@ renderer.setAnimationLoop(() => {
       lines: [
         `scale ${xr.scale.toFixed(2)}x · ${FLIPS[flipIdx].label} · ${xr.spin ? 'spinning' : 'still'}`,
         'one grip moves it · two grips grow it · stick Y resizes',
-        'push it big and walk in, or press INSIDE',
+        'push it big and walk in, or press INSIDE · stick click = MODE',
       ],
       footer: 'trigger a button · REBUILD after changing the count',
       progress,

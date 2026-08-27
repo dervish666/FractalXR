@@ -3,6 +3,25 @@
 All notable changes to FractalXR are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## [Unreleased]
+
+### Added
+- **The three modes are now one site with mode switching.** The landing page explains what
+  FractalXR is and links all three modes (flames / relief zoom / splat); the zoom and splat
+  pages carry a corner nav back to the others. In-headset, the zoomer and splat viewer get a
+  MODE ▸ HUD button *and* thumbstick-click to cycle flames → zoom → splat (leaving the page,
+  session ends and the next mode opens flat), and the main app's wrist menu gains a VISIT
+  section (ZOOM / SPLAT) since every face button there is already spoken for.
+
+### Fixed
+- **Splat viewer: two-grip grab now grows the sculpture toward you** instead of swinging it
+  around a ~2m lever arm (the splat was double-placed, once inside its rig and once by the
+  rig itself). Grabs are also one frame of controller lag tighter.
+- **Splat viewer: stick Y resizes about the sculpture's centre**, and a new INSIDE button
+  centres it on your head at 5× so you can jump straight in.
+- **Splat viewer: the HUD no longer reads as flipped** when you zoom in past its plane — it
+  yaws to track your head instead of showing its mirrored back.
+
 ## [0.8.1] - 2026-06-21
 
 ### Changed

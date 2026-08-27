@@ -19,11 +19,20 @@
         height: 100%; width: 0; background: #7fd3ff; border-radius: 2px;
         transition: width 0.12s linear, opacity 0.3s;
       }
+      #mode-nav {
+        position: fixed; top: 10px; right: 12px; z-index: 10;
+        font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #9fb0d8; text-shadow: 0 1px 2px #000;
+      }
+      #mode-nav a { color: #7fd3ff; text-decoration: none; }
+      #mode-nav a:hover { text-decoration: underline; }
+      #mode-nav .here { color: #7dd87d; }
     </style>
   </head>
   <body>
     <div id="status">starting…</div>
     <div id="track"><div id="bar"></div></div>
+    <nav id="mode-nav"><a href="/">flames</a> · <a href="/zoom">zoom</a> · <span class="here">splat</span></nav>
     <!-- Generates the splat cloud in-page (workers) and renders it in WebXR via Spark. -->
     <script type="module" src="/src/splat/viewer.ts"></script>
   </body>

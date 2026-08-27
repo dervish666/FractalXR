@@ -41,6 +41,7 @@ import { ControlsGuide } from './xr/ControlsGuide'
 import { DomeGallery } from './xr/DomeGallery'
 import type { DomeTile } from './xr/DomeGallery'
 import { createMRButton } from './xr/MRButton'
+import { switchMode } from './modes'
 
 // Replace the landing overlay with a readable message (no innerHTML — keep the codebase XSS-free).
 function showFatal(msg: string, hint: string): void {
@@ -603,6 +604,8 @@ const menu = new WristMenu(
     cycleAnimation,
     togglePassthrough,
     showGuide: () => guide.show(),
+    visitZoom: () => switchMode(renderer, 'zoom'),
+    visitSplat: () => switchMode(renderer, 'splat'),
     exitVR,
   },
   () => worldGrab.gripCount >= 2,

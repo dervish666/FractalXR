@@ -27,6 +27,7 @@ const ZOOM_RATE = 1.9 // octaves/sec at full thumbstick deflection
 const DEADZONE = 0.18
 const TRIGGER = 0
 const SQUEEZE = 1
+const STICK_CLICK = 3
 const STICK_Y = 3
 const HUD_STANDOFF = 0.2 // metres in front of the slab's front face
 
@@ -43,6 +44,7 @@ interface Hand {
   pressedEdge: boolean
   releasedEdge: boolean
   squeezing: boolean
+  stickWas: boolean
 }
 
 /**
@@ -101,6 +103,7 @@ export class ZoomXR {
         pressedEdge: false,
         releasedEdge: false,
         squeezing: false,
+        stickWas: false,
       }
       ctrl.addEventListener('connected', (e) => {
         hand.src = (e as unknown as { data: XRInputSource }).data
@@ -165,6 +168,7 @@ export class ZoomXR {
       h.trigger = false
       h.pressedEdge = h.releasedEdge = false
       h.squeezing = false
+      h.stickWas = false
     }
     this.hud.setHover(null)
   }
@@ -225,6 +229,11 @@ export class ZoomXR {
       h.releasedEdge = !trigger && h.prevTrigger
       h.trigger = trigger
       h.prevTrigger = trigger
+      // thumbstick click is the one spare face button here: cycles to the next mode (also
+      // on the HUD as MODE ▸). Sampled in this unconditional loop so the edge never goes stale.
+      const stick = pad?.buttons[STICK_CLICK]?.pressed === true
+      if (stick && !h.stickWas) this.hooks.press('mode')
+      h.stickWas = stick
       if (h.squeezing) {
         // a gripping hand is not pointing: drop whatever it was holding, and drop it silently
         if (this.panHand === h) this.panHand = null
