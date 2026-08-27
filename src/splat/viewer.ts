@@ -135,6 +135,9 @@ function pressButton(id: string): void {
     case 'recentre':
       xr.recentre()
       return
+    case 'inside':
+      xr.inside()
+      return
     case 'reset':
       xr.reset()
       applyFlip()
@@ -165,7 +168,11 @@ async function generate(): Promise<void> {
       splat.dispose?.()
     }
     splat = new SplatMesh({ fileBytes: ply, fileType: SplatFileType.PLY })
-    splat.position.copy(PLACE)
+    // Centred in the rig, never offset: the rig owns placement (PLACE on desktop, place()
+    // in VR). An offset here double-placed the sculpture ~1.4m above and beyond the rig
+    // origin, and WorldGrab's two-grip scale then swung that lever arm instead of growing
+    // the sculpture toward you.
+    splat.position.set(0, 0, 0)
     splat.scale.setScalar(size) // the cloud spans ~2 units
     applyFlip()
     content.add(splat)
@@ -233,8 +240,8 @@ renderer.setAnimationLoop(() => {
       sub: lastReport,
       lines: [
         `scale ${xr.scale.toFixed(2)}x · ${FLIPS[flipIdx].label} · ${xr.spin ? 'spinning' : 'still'}`,
-        'one grip moves and turns it · two grips grow it',
-        'grow it enough and you can walk inside it',
+        'one grip moves it · two grips grow it · stick Y resizes',
+        'push it big and walk in, or press INSIDE',
       ],
       footer: 'trigger a button · REBUILD after changing the count',
       progress,

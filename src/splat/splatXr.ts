@@ -20,6 +20,7 @@ export const SPLAT_BUTTONS: HudButton[] = [
   { id: 'recentre', label: 'RECENTRE', row: 1, col: 1 },
   { id: 'reset', label: 'RESET', row: 1, col: 2 },
   { id: 'exit', label: 'EXIT VR', row: 1, col: 3 },
+  { id: 'inside', label: 'INSIDE', row: 2, col: 0 },
 ]
 
 export interface SplatXrHooks {
@@ -31,8 +32,12 @@ export interface SplatXrHooks {
 const TRIGGER = 0
 const SQUEEZE = 1
 const STICK_X = 2
+const STICK_Y = 3
 const DEADZONE = 0.18
 const HUD_DROP = 0.55
+const SCALE_RATE = 1.4 // octaves/sec at full stick deflection
+const SCALE_MIN = 0.05
+const SCALE_MAX = 50
 
 interface Hand {
   ctrl: Object3D
@@ -140,6 +145,19 @@ export class SplatXR {
     this.place()
   }
 
+  /**
+   * Jump straight into the sculpture: centre it on your head and grow it around you. The
+   * one-press version of "grow it and walk in" — inside a Mandelbulb cloud the surface is
+   * all around you, which is the money shot this viewer exists for.
+   */
+  inside(): void {
+    const cam = this.renderer.xr.getCamera()
+    this.origin.setFromMatrixPosition(cam.matrixWorld)
+    this.grabRig.position.copy(this.origin)
+    this.grabRig.scale.setScalar(Math.max(this.grabRig.scale.x, 5))
+    this.resetGestures()
+  }
+
   reset(): void {
     this.grabRig.position.set(0, 0, 0)
     this.grabRig.quaternion.identity()
@@ -208,6 +226,16 @@ export class SplatXR {
     if (this.spin !== 0) this.content.rotation.y += this.spin * dt
     this.grab.update()
 
+    // The HUD stays put but always yaws to face you. Fixed yaw plus its DoubleSide material
+    // meant that walking past its plane — easy once you are inside a grown sculpture — showed
+    // its mirrored back, which read as the panel "flipping over".
+    const cam = this.renderer.xr.getCamera()
+    this.origin.setFromMatrixPosition(cam.matrixWorld)
+    const dx = this.origin.x - this.hudRig.position.x
+    const dz = this.origin.z - this.hudRig.position.z
+    if (dx * dx + dz * dz > 1e-6) this.hudRig.rotation.y = Math.atan2(dx, dz)
+    this.hudRig.updateMatrixWorld(true)
+
     // sample every hand ONCE, before any branch, so edge state can never go stale
     for (const h of this.hands) {
       const pad = h.src?.gamepad
@@ -252,6 +280,15 @@ export class SplatXR {
       if (Math.abs(sx) > DEADZONE && h.mode !== 'hud') {
         const k = (Math.sign(sx) * (Math.abs(sx) - DEADZONE)) / (1 - DEADZONE)
         this.content.rotation.y += k * 1.4 * dt
+      }
+
+      // stick Y resizes about the sculpture's centre (the rig origin). Stick up grows it:
+      // WebXR stick Y is -1 at the top, same convention the wrist menu uses for morph speed.
+      const sy = pad.axes.length > STICK_Y ? pad.axes[STICK_Y] : (pad.axes[1] ?? 0)
+      if (Math.abs(sy) > DEADZONE && h.mode !== 'hud') {
+        const k = (Math.sign(sy) * (Math.abs(sy) - DEADZONE)) / (1 - DEADZONE)
+        const s = this.grabRig.scale.x * Math.pow(2, -k * SCALE_RATE * dt)
+        this.grabRig.scale.setScalar(Math.min(SCALE_MAX, Math.max(SCALE_MIN, s)))
       }
     }
     this.hud.setHover(hovered)

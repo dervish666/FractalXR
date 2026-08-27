@@ -95,6 +95,9 @@ export class WorldGrab {
   /** Call each frame, after controller world matrices are up to date. */
   update(): void {
     if (!this.active || this.grabbing.length === 0) return
+    // Recompose from the pose the XR manager just wrote, not from last render's matrixWorld:
+    // that is a full frame of grab lag on every hand movement otherwise.
+    for (const c of this.grabbing) c.updateMatrixWorld()
     if (!this.gripFrame(this.G)) return
     this.out.copy(this.G).multiply(this.g0inv).multiply(this.m0)
     this.out.decompose(this.target.position, this.target.quaternion, this.target.scale)
