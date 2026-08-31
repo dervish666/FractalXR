@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://mt66bt06c4dd"
+path="res://.godot/imported/resolve.glsl-ae29cdbb0d8569046d723e1e4ca90811.res"
+
+[deps]
+
+source_file="res://experiments/atomic_splat/resolve.glsl"
+dest_files=["res://.godot/imported/resolve.glsl-ae29cdbb0d8569046d723e1e4ca90811.res"]
+
+[params]
+

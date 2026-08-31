@@ -1,0 +1,54 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 1
+background_color = Color(0, 0, 0, 1)
+ambient_light_source = 0
+tonemap_mode = 3
+tonemap_exposure = 1.0
+tonemap_white = 2.0
+glow_enabled = true
+glow_intensity = 0.45
+glow_strength = 1.0
+glow_bloom = 0.0
+glow_blend_mode = 1
+glow_hdr_threshold = 1.0
+fog_enabled = false
+adjustment_enabled = false
+
+[sub_resource type="LabelSettings" id="LabelSettings_1"]
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
+
+[node name="XROrigin3D" type="XROrigin3D" parent="."]
+
+[node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
+near = 0.05
+far = 200.0
+
+[node name="Hud" type="Label3D" parent="XROrigin3D/XRCamera3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.3, -0.9)
+pixel_size = 0.0006
+billboard = 0
+no_depth_test = true
+render_priority = 127
+outline_render_priority = 126
+modulate = Color(0.7, 0.95, 1, 1)
+outline_modulate = Color(0, 0, 0, 0.85)
+outline_size = 14
+font_size = 52
+label_settings = SubResource("LabelSettings_1")
+text = "starting…"
+horizontal_alignment = 0
+
+[node name="LeftHand" type="XRController3D" parent="XROrigin3D"]
+tracker = &"left_hand"
+
+[node name="RightHand" type="XRController3D" parent="XROrigin3D"]
+tracker = &"right_hand"

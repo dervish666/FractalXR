@@ -1,0 +1,48 @@
+config_version=5
+
+[application]
+
+config/name="FractalXR Godot Spike"
+config/description="Chaos-game performance spike: RenderingDevice compute vs the WebXR build."
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+config/icon="res://icon.svg"
+
+[debug]
+
+settings/stdout/print_fps=false
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/vsync/vsync_mode=0
+
+[rendering]
+
+# Forward Mobile, and it is not close. Forward+ would give the RGBA16F buffer that true
+# flam3 log-density needs, but on a Quest 3 it costs 28-100ms of draw against 6-10ms for
+# Mobile, and half its shader pipelines fail to compile (black screen, no HUD). Measured,
+# not assumed: see README.
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+textures/vram_compression/import_etc2_astc=true
+# MSAA off. It was tried at 2x on the theory that sub-pixel points alias under head
+# motion. On-device it just blurred the points, which is the one thing that must stay
+# crisp, and it cost GPU time we cannot spare. Reverted.
+anti_aliasing/quality/msaa_3d=0
+scaling_3d/mode=0
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
+
+[xr]
+
+openxr/enabled=true
+openxr/default_action_map="res://openxr_action_map.tres"
+openxr/form_factor=0
+openxr/view_configuration=1
+openxr/reference_space=1
+openxr/foveation_level=0
+openxr/foveation_dynamic=false
+openxr/submit_depth_buffer=true
+shaders/enabled=true
+

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bw1e1akm3qw7s"
+path="res://.godot/imported/flam3.glsl-8a0badc31f1a5a1f89cba093e02bf8bb.res"
+
+[deps]
+
+source_file="res://shaders/flam3.glsl"
+dest_files=["res://.godot/imported/flam3.glsl-8a0badc31f1a5a1f89cba093e02bf8bb.res"]
+
+[params]
+

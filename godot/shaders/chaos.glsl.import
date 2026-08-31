@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://cbfrovlm8cr2k"
+path="res://.godot/imported/chaos.glsl-f7fe562ef451be81bfbe2f1883ee0f60.res"
+
+[deps]
+
+source_file="res://shaders/chaos.glsl"
+dest_files=["res://.godot/imported/chaos.glsl-f7fe562ef451be81bfbe2f1883ee0f60.res"]
+
+[params]
+

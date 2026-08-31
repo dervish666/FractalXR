@@ -1,0 +1,125 @@
+extends FractalSource
+class_name BulbSource
+
+## Distance-estimate fractals as a particle cloud: Mandelbulb, Mandelbox, KIFS,
+## quaternion Julia, Sierpinski. The second FractalSource, and the proof the split was
+## worth it: this is one shader and one subclass, and the renderer, grab, framing,
+## morphing, menu and self-test all work on it unchanged.
+##
+## The "breath" fields are the animation. Each genome slowly modulates whichever
+## parameter defines its form (Mandelbulb power, Mandelbox scale, KIFS fold angles,
+## Julia constant), so the surface is continuously reshaping rather than sitting there
+## as a static model. That is what makes a bulb feel of a piece with the flames.
+
+const FORMULA_IDS := {
+	"mandelbulb": 0.0, "mandelbox": 1.0, "kifs": 2.0, "quat": 3.0, "sierpinski": 4.0,
+}
+
+var reseed_prob := 0.02
+var proj_steps := 3.0
+var jitter := 0.0022
+var update_mod := 1
+## Seconds of breathing, advanced by the host each frame.
+var clock := 0.0
+
+var _b: Dictionary = {}
+
+
+func _init(genome: Dictionary = {}) -> void:
+	id = &"bulb"
+	set_genome(genome)
+
+
+func shader_path() -> String:
+	return "res://shaders/bulb.glsl"
+
+
+func push_constant_size() -> int:
+	return 96
+
+
+func wants_normals() -> bool:
+	return true
+
+
+func set_genome(b: Dictionary) -> void:
+	_b = b
+	display_name = str(b.get("name", "Bulb"))
+	if _rd != null:
+		rebuild_params()
+
+
+func palette() -> Array:
+	var out: Array = []
+	for c in _b.get("palette", []):
+		out.append(Vector3(float(c[0]), float(c[1]), float(c[2])))
+	while out.size() < 5:
+		out.append(Vector3.ONE)
+	# The bulb palettes run to seven stops; the renderer takes five control colours, so
+	# resample rather than truncate, or the top of every ramp is lost.
+	if out.size() > 5:
+		var res: Array = []
+		for i in 5:
+			var f := float(i) / 4.0 * float(out.size() - 1)
+			var i0 := mini(out.size() - 1, int(f))
+			var i1 := mini(out.size() - 1, i0 + 1)
+			res.append((out[i0] as Vector3).lerp(out[i1] as Vector3, f - float(i0)))
+		out = res
+	return out
+
+
+func tone_settings() -> Dictionary:
+	return {"exposure": 0.3, "gamma": 2.4, "k2": 55.0, "hi_desat": 0.3, "point_brightness": 0.9}
+
+
+func param_buffer_floats() -> PackedFloat32Array:
+	var f := PackedFloat32Array()
+	f.resize(16)
+	var pal := palette()
+	for i in 5:
+		f[i * 3 + 0] = pal[i].x
+		f[i * 3 + 1] = pal[i].y
+		f[i * 3 + 2] = pal[i].z
+	return f
+
+
+func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
+	var t := clock * float(_b.get("speed", 0.1))
+	# Breathing: each formula modulates the parameter that defines its shape.
+	var power := float(_b.get("power", 8.0)) + float(_b.get("powerBreath", 0.0)) * sin(t)
+	var scale := float(_b.get("scale", 2.0)) + float(_b.get("scaleBreath", 0.0)) * sin(t * 0.83)
+	var ang_a := float(_b.get("kAngleA", 0.0)) + float(_b.get("kAngleBreath", 0.0)) * sin(t)
+	var ang_b := float(_b.get("kAngleB", 0.0)) + float(_b.get("kAngleBreath", 0.0)) * cos(t * 0.7)
+	var jc: Array = _b.get("juliaC", [0.0, 0.0, 0.0])
+	var orbit := float(_b.get("juliaOrbit", 0.0))
+	var c := Vector3(float(jc[0]), float(jc[1]), float(jc[2])) + Vector3(
+		sin(t) * orbit, cos(t * 0.9) * orbit, sin(t * 1.3) * orbit)
+
+	var b := PackedByteArray()
+	b.resize(96)
+	b.encode_s32(0, _tex_size)
+	b.encode_s32(4, frame % 16777216)
+	b.encode_s32(8, count)
+	b.encode_s32(12, 1 if seeding else 0)
+	b.encode_s32(16, 1 if seeding else update_mod)
+	b.encode_s32(20, 0 if seeding else (frame % maxi(1, update_mod)))
+	b.encode_float(24, reseed_prob)
+	b.encode_float(28, power)
+	# vec4 must sit on a 16-byte boundary.
+	b.encode_float(32, c.x)
+	b.encode_float(36, c.y)
+	b.encode_float(40, c.z)
+	b.encode_float(44, 0.0)
+	b.encode_float(48, 1.0 if bool(_b.get("mandelbulb", true)) else 0.0)
+	b.encode_float(52, float(FORMULA_IDS.get(str(_b.get("formula", "mandelbulb")), 0.0)))
+	b.encode_float(56, scale)
+	b.encode_float(60, float(_b.get("minR", 0.5)))
+	b.encode_float(64, float(_b.get("fixedR", 1.0)))
+	b.encode_float(68, float(_b.get("bound", 1.3)))
+	b.encode_float(72, proj_steps)
+	b.encode_float(76, jitter)
+	b.encode_float(80, ang_a)
+	b.encode_float(84, ang_b)
+	b.encode_float(88, 0.0)
+	b.encode_float(92, 0.0)
+	return b
