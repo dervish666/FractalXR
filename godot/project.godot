@@ -43,6 +43,11 @@ openxr/view_configuration=1
 openxr/reference_space=1
 openxr/foveation_level=0
 openxr/foveation_dynamic=false
+; Passthrough is double-gated: this asks the runtime for the FB extension at session
+; start, and it is also what un-hides the meta_xr_features/passthrough export option
+; that writes com.oculus.feature.PASSTHROUGH into the manifest. Without it the export
+; flag is silently ignored and the toggle can only ever answer n/a.
+openxr/extensions/meta/passthrough=true
 openxr/submit_depth_buffer=true
 shaders/enabled=true
 
