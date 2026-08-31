@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dq4qngmgffmfp"
+path="res://.godot/imported/bake_shape.glsl-8688b94aa311a69f16e025315de48871.res"
+
+[deps]
+
+source_file="res://shaders/bake_shape.glsl"
+dest_files=["res://.godot/imported/bake_shape.glsl-8688b94aa311a69f16e025315de48871.res"]
+
+[params]
+

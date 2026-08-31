@@ -32,12 +32,20 @@ const SHARPNESS := [3.0, 3.0, 3.5, 4.0]
 # distance-estimate shell is a surface, and a surface wants overlapping discs.
 const SPLAT_STEPS := [0.006, 0.010, 0.016, 0.026, 0.042, 0.003]
 const COLOUR_CYCLES := [1.0, 2.0, 3.0, 4.0]
+# Ascending, so SOLID cycles from ghost to wall instead of jumping about. Unsorted
+# "over" compositing reads thinner than the WebXR build's sorted version at the same
+# alpha, so the top of this ladder is how a bulb gets back to looking solid.
+const OPACITY_STEPS := [0.12, 0.22, 0.35, 0.6, 0.9]
+const DENSITY_STEPS := [1.0, 0.5, 0.0]
 # Per-point brightness is really "how many particles may overlap before the buffer
 # clips". At 0.7 that number is 1.4, which is why dense cores came out as flat white
 # with no hue. Forward Mobile's colour buffer is 10-bit fixed point, so the only way to
 # get density range out of it is to make each point contribute a small fraction and let
 # the tonemapper expand it again. 0.02 gives roughly 50 clean overlaps.
-const BRIGHT_STEPS := [0.01, 0.02, 0.05, 0.12, 0.3, 0.7]
+# 1.0 is there for the premultiplied splat path: "over" compositing converges to the
+# source colour rather than summing it, so a splat surface wants its palette at full
+# strength where an additive point cloud wants slivers.
+const BRIGHT_STEPS := [0.01, 0.02, 0.05, 0.12, 0.3, 0.7, 1.0]
 # Wider range, because low per-point brightness has to be paid back here.
 const EXPOSURE_MUL := [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
 # Forward+ buys the HDR buffer that flam3 needs, but it is far more expensive per
@@ -128,11 +136,73 @@ var morph_idx := 0
 var bulb_mode := false
 var bulb_idx := 0
 var _bulb: BulbSource = null
+## MOTION in bulb mode. It used to read BULB_UPDATE_MOD and cycle stability_idx, which
+## only ever reached the flame source: the button was live and did nothing.
+# Frozen by default now that the cloud is baked. A bake describes the positions it read,
+# so a moving cloud wears it out; and freeze already won every on-device comparison. The
+# life comes from SPIN, which is a rigid rotation and leaves every neighbourhood intact.
+var bulb_stability_idx := 0
+var _bulb_settle := 0
+## Frames between the settle finishing and the bake starting, so the framing measurement
+## (dispatch one frame, read the next) has landed first.
+const BAKE_DELAY_FRAMES := 4
+var _bake_wait := 0
+## Per-splat kNN covariance, computed once per bulb. This is what the WebXR viewer spends
+## its loading pause on, and the only way to get splats that lie along a filament rather
+## than straddling it.
+var auto_bake := true
+
+# --- frame-rate guard --------------------------------------------------------
+# The splat renderer's cost is fill rate, and fill rate scales with the SQUARE of splat
+# size, so the settings ladder has a cliff in it: 42mm with the bake's spread measured
+# 2fps and needed a hard quit. The guard shrinks splats the moment the frame rate dives
+# and recovers slowly once it is comfortably back, so no setting can take the headset
+# below a usable floor no matter what it multiplies out to.
+const GUARD_CUT_FPS := 24.0      # act well above the 15fps floor: reaction takes frames
+const GUARD_RECOVER_FPS := 66.0
+const GUARD_HOLD_S := 3.0        # after a cut, no recovery for this long
+const GUARD_FLOOR := 0.1
+var _perf_scale := 1.0
+var _fps_ema := 72.0
+var _guard_hold := 0.0
+
+## Passthrough (mixed reality): the fractal floating in the actual room. The WebXR build
+## does this with a premultiplied tone-map over the camera feed; here the compositor does
+## the same job when the blend mode is alpha and the background stops painting.
+var passthrough := false
+## What the PASSTHRU tile shows. "n/a" when the runtime refuses, so a failed toggle is
+## visible in the headset instead of only in logcat.
+var passthru_label := "void"
+## The breath is the bulb's skin animation: the surface parameter that defines its shape
+## drifts continuously, so the shell is always reshaping. Off holds the form still while
+## the particles keep refilling it, which is the closest this gets to the static cloud
+## the WebXR viewer renders.
+##
+## A rate rather than a toggle, because at the authored speeds one breath cycle takes
+## around seventy seconds. Turning that off for a few seconds looks exactly like leaving
+## it on, so an on/off switch reads as a dead button even though it works. 3x makes the
+## reshaping plain enough to judge.
+const BREATH_STEPS := [1.0, 3.0, 0.0]
+var breath_idx := 0
 var splat_on := false
 var splat_idx := 1
 var colour_idx := 0
+var opacity_idx := 2       # 0.35
+var density_idx := 0
+## -1 means "whatever palette the genome came with". Anything else indexes library.themes,
+## which includes the genuinely multi-hue ones (Spectrum, Prism, Iridescent, FireIce);
+## most preset palettes are a single-hue ramp, so no amount of equalisation makes them
+## read as more than one colour.
+var theme_idx := -1
+## Pick a fresh theme with every drift transition.
+var recolor_on_drift := true
+## Themes cross-fade rather than snap. A palette change is as much a part of a transition
+## as the shape change, and cutting to the new colours undoes the work the morph is doing.
+var _theme_from: Array = []
+var _theme_blend := 1.0
 var _flame_bright_idx := 1
 var _flame_exposure_idx := 0
+var _flame_opacity_idx := 2
 ## Inside the cloud rather than looking at it from outside. A distance-estimate surface
 ## surrounds you, and Sam's read from the WebXR splat was that it looks dramatically
 ## better from within, so bulbs are placed to enclose the viewer by default.
@@ -149,14 +219,35 @@ const BULB_INSIDE_SCALE := 2.1
 # points had almost none. Measured at 57.5ms for 1.05M splats: four times over budget.
 # A splat covers far more screen area than a pixel, so it does not need the same count
 # to read as solid, which is why fewer-and-bigger is the right trade here.
-const BULB_PARTICLES := 0.07      # of the 2048^2 grid, so ~294K
+# The WebXR splat build defaults to SIXTY THOUSAND splats and looks better than 294K of
+# ours did, because each one is sized to its neighbourhood. Count was never the lever.
+const BULB_PARTICLES := 0.035     # ~147K, with the budget spent on size instead
 const BULB_UPDATE_MOD := 6
+# MOTION for bulbs, same shape as STABILITY: index 0 is frozen, then every-frame and
+# progressively calmer. Frozen matters more here than it does for flames. The WebXR
+# splat viewer generates its cloud ONCE and then never touches it, and a static cloud is
+# the reason each splat sits exactly where it belongs. Ours re-jitters every particle
+# tangentially on every update, which is life, but it is also a permanent shimmer that
+# no amount of splat sizing can sharpen.
+const BULB_STABILITY := [0, 1, 3, 6, 12, 24]
+# A freeze cannot take effect on the spot: a particle only reaches the surface on an
+# update, so anything that had not stepped yet would freeze mid-flight in the seed ball.
+# Run one full pass at mod 1 first, and every particle is projected before the stop.
+# Long enough for the shell to actually FILL before it is measured and baked, not just
+# for every particle to have been projected once. Coverage comes from the reseed churn
+# (2% a frame) re-landing points in the gaps, so this is a fill time, not a settle time.
+# ~1.2s at 72Hz, which is also roughly what the WebXR viewer pauses for.
+const BULB_SETTLE_FRAMES := 90
+# Bulbs cut rather than morph, so they get a longer hold than the flames' 8s. A hard
+# change every eight seconds reads as a slideshow; the flames get away with it because
+# the transition IS the show.
+const BULB_DRIFT_HOLD := 20.0
 # Bulbs need a completely different look from flames, and using the flame's settings is
 # why the first attempt came out as scattered specks. A flame stacks dozens of points on
 # a pixel, so each contributes a sliver (0.02) and the tone curve builds the image out of
 # accumulated density. A bulb is a thin SHELL: about one point per pixel, nothing to
 # accumulate, so each point has to carry its own weight.
-const BULB_BRIGHT_IDX := 4        # 0.3, against 0.02 for flames
+const BULB_BRIGHT_IDX := 6        # 1.0: "over" blending converges to this, not to a sum
 const BULB_EXPOSURE_IDX := 0      # points are already bright, so do not push the curve
 
 
@@ -214,6 +305,7 @@ func _load_preset(i: int) -> bool:
 	# set_source touches the RenderingDevice, so it has to happen on the render thread.
 	# Failures surface through cloud.get_error() on a later frame rather than here.
 	RenderingServer.call_on_render_thread(cloud.set_source.bind(src))
+	call_deferred("_apply_palette")
 	return true
 
 
@@ -221,45 +313,48 @@ func _load_preset(i: int) -> bool:
 ## else; the menu knows nothing about particle counts or exposures.
 func _build_menu() -> void:
 	menu.items = [
-		WristMenu.Item.new("create", "RANDOM",
+		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
 				library.next_serial(), library.themes))),
-		WristMenu.Item.new("create", "MUTATE",
+		WristMenu.Item.new("make", "MUTATE",
 			func(): return "vary this", func(): _morph_to_new(Breed.mutate(
 				library.at(preset_idx), library.next_serial()))),
-		WristMenu.Item.new("create", "BREED",
+		WristMenu.Item.new("make", "BREED",
 			func(): return "mix two", func(): _morph_to_new(Breed.crossover(
 				library.at(preset_idx), library.at(preset_idx + 1 + randi() % maxi(1, library.count() - 1)),
 				library.next_serial()))),
 
-		WristMenu.Item.new("explore", "MODE",
+		WristMenu.Item.new("scene", "MODE",
 			func(): return "bulb" if bulb_mode else "flame",
 			func(): _set_bulb_mode(not bulb_mode)),
-		WristMenu.Item.new("explore", "FLAME",
+		WristMenu.Item.new("scene", "FLAME",
 			func(): return library.bulbs[bulb_idx].get("name", "?") if bulb_mode else "next",
 			func():
 				if bulb_mode:
 					_load_bulb(bulb_idx + 1)
 				else:
 					_morph_to_preset(preset_idx + 1)),
-		WristMenu.Item.new("explore", "DRIFT",
+		WristMenu.Item.new("scene", "DRIFT",
 			func(): return "on" if _drift else "off",
 			func(): _drift = not _drift; _drift_hold = 0.0),
-		WristMenu.Item.new("explore", "SPIN",
+		WristMenu.Item.new("scene", "PASSTHRU",
+			func(): return passthru_label,
+			func(): _set_passthrough(not passthrough)),
+		WristMenu.Item.new("scene", "SPIN",
 			func(): return "on" if spin else "off", func(): spin = not spin),
-		WristMenu.Item.new("explore", "SPEED",
+		WristMenu.Item.new("scene", "SPEED",
 			func(): return "%ds" % int(MORPH_STEPS[morph_idx]),
 			func(): morph_idx = (morph_idx + 1) % MORPH_STEPS.size()),
-		WristMenu.Item.new("explore", "CENTRE",
+		WristMenu.Item.new("scene", "CENTRE",
 			func(): return "reset", func(): _recenter(); cloud.request_measure()),
 
-		WristMenu.Item.new("tune", "POINTS",
+		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
 				particle_idx = (particle_idx + 1) % PARTICLE_STEPS.size()
 				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
 				cloud.request_measure()),
-		WristMenu.Item.new("tune", "SPLAT",
+		WristMenu.Item.new("look", "SPLAT",
 			func(): return "%.0fmm" % (SPLAT_STEPS[splat_idx] * 1000.0) if splat_on else "off",
 			func():
 				if not splat_on:
@@ -269,28 +364,77 @@ func _build_menu() -> void:
 					if splat_idx == 0:
 						splat_on = false
 				_apply_point_look()),
-		WristMenu.Item.new("tune", "SIZE",
+		WristMenu.Item.new("look", "ADAPT",
+			func(): return "%d%%" % int(DENSITY_STEPS[density_idx] * 100.0),
+			func():
+				density_idx = (density_idx + 1) % DENSITY_STEPS.size()
+				_apply_point_look()),
+		WristMenu.Item.new("look", "SOLID",
+			func(): return "%d%%" % int(OPACITY_STEPS[opacity_idx] * 100.0),
+			func():
+				opacity_idx = (opacity_idx + 1) % OPACITY_STEPS.size()
+				_apply_point_look()),
+		WristMenu.Item.new("look", "SIZE",
 			func(): return "%.2f" % POINT_STEPS[point_idx],
 			func(): point_idx = (point_idx + 1) % POINT_STEPS.size(); _apply_point_look()),
-		WristMenu.Item.new("tune", "COLOUR",
+		WristMenu.Item.new("colour", "THEME",
+			func():
+				if recolor_on_drift:
+					return "auto %d" % (theme_idx + 1) if theme_idx >= 0 else "auto"
+				return "theme %d" % (theme_idx + 1) if theme_idx >= 0 else "preset",
+			func(): _cycle_theme()),
+		WristMenu.Item.new("colour", "AUTO",
+			func(): return "on" if recolor_on_drift else "off",
+			func(): recolor_on_drift = not recolor_on_drift),
+		WristMenu.Item.new("colour", "BANDS",
 			func(): return "%dx" % int(COLOUR_CYCLES[colour_idx]),
 			func():
 				colour_idx = (colour_idx + 1) % COLOUR_CYCLES.size()
 				_apply_point_look()),
-		WristMenu.Item.new("tune", "BRIGHT",
+		WristMenu.Item.new("colour", "BRIGHT",
 			func(): return "%.3f" % BRIGHT_STEPS[bright_idx],
 			func(): bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size(); _apply_point_look()),
 
-		WristMenu.Item.new("render", "EXPOSURE",
+		WristMenu.Item.new("colour", "EXPOSURE",
 			func(): return "%.0fx" % EXPOSURE_MUL[exposure_idx],
 			func(): exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size(); _apply_exposure()),
-		WristMenu.Item.new("render", "MOTION",
+		WristMenu.Item.new("look", "MOTION",
+			func():
+				var m: int = BULB_STABILITY[bulb_stability_idx] if bulb_mode else STABILITY[stability_idx]
+				return "frozen" if m == 0 else "1/%d" % m,
 			func():
 				if bulb_mode:
-					return "1/%d" % BULB_UPDATE_MOD
-				return "frozen" if STABILITY[stability_idx] == 0 else "1/%d" % STABILITY[stability_idx],
-			func(): stability_idx = (stability_idx + 1) % STABILITY.size()),
-		WristMenu.Item.new("render", "DETAIL",
+					bulb_stability_idx = (bulb_stability_idx + 1) % BULB_STABILITY.size()
+					# No settle: a running cloud is already projected. Just refresh the
+					# bake so a freeze stops with shapes that describe where things ARE.
+					if BULB_STABILITY[bulb_stability_idx] == 0:
+						_bake_wait = BAKE_DELAY_FRAMES
+				else:
+					stability_idx = (stability_idx + 1) % STABILITY.size()),
+		WristMenu.Item.new("look", "BAKE",
+			func():
+				if cloud.is_baking():
+					return "%d%%" % int(cloud.bake_progress * 100.0)
+				if not auto_bake:
+					return "off"
+				return "on" if cloud.bake_ready else "wait",
+			func():
+				auto_bake = not auto_bake
+				if auto_bake:
+					RenderingServer.call_on_render_thread(cloud.bake)
+				else:
+					cloud.clear_bake(),
+			false, func(): return bulb_mode),
+		WristMenu.Item.new("look", "BREATHE",
+			func():
+				# A frozen cloud cannot show a moving surface, so say so rather than
+				# reporting a rate that nothing is acting on.
+				if BULB_STABILITY[bulb_stability_idx] == 0:
+					return "held"
+				return "off" if BREATH_STEPS[breath_idx] == 0.0 else "%.0fx" % BREATH_STEPS[breath_idx],
+			func(): breath_idx = (breath_idx + 1) % BREATH_STEPS.size(),
+			false, func(): return bulb_mode),
+		WristMenu.Item.new("look", "DETAIL",
 			func(): return "%.2fx" % RENDER_STEPS[render_idx],
 			func():
 				render_idx = (render_idx + 1) % RENDER_STEPS.size()
@@ -300,6 +444,13 @@ func _build_menu() -> void:
 	menu.title = func():
 		return str(library.bulbs[bulb_idx].get("name", "?")) if bulb_mode else library.name_at(preset_idx)
 	menu.status_side = func():
+		if _perf_scale < 0.999:
+			# Name the intervention, or a guarded 42mm splat looks like a broken setting.
+			return "guard %d%%" % int(_perf_scale * 100.0)
+		if cloud.is_baking():
+			return "baking %d%%" % int(cloud.bake_progress * 100.0)
+		if bulb_mode and _bulb_settle > 0:
+			return "settling"
 		if _morph_t < 1.0:
 			return "morphing"
 		return "drifting" if _drift else ""
@@ -310,8 +461,9 @@ func _build_menu() -> void:
 			RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
 				+ cloud.iterate_us / 1000.0]
 	# Worn like a watch: inside of the left forearm, tilted up toward the face.
-	menu.transform = Transform3D(Basis(), Vector3(0.0, 0.05, 0.03))
-	menu.rotation_degrees = Vector3(-55.0, 0.0, 0.0)
+	# Along the forearm, angled up toward the face like a watch worn high on the wrist.
+	menu.transform = Transform3D(Basis(), Vector3(0.0, 0.06, 0.10))
+	menu.rotation_degrees = Vector3(-62.0, 0.0, 0.0)
 	left_hand.add_child(menu)
 	menu.setup(xr_camera, right_hand)
 	# The floating readout is retired: it was a debug tool that sat in the view whether
@@ -355,7 +507,9 @@ func _set_bulb_mode(on: bool) -> void:
 		# A distance-estimate shell is a surface: splat it. This is the whole reason the
 		# WebXR splat build reads better than a point cloud from the inside.
 		splat_on = true
-		splat_idx = 1
+		splat_idx = 0     # 6mm; the WebXR cloud's mean splat is smaller still
+		_flame_opacity_idx = opacity_idx
+		opacity_idx = 1   # 0.22, the WebXR build's ALPHA
 		colour_idx = 1
 		_apply_point_look()
 		_apply_exposure()
@@ -363,6 +517,7 @@ func _set_bulb_mode(on: bool) -> void:
 	else:
 		bright_idx = _flame_bright_idx
 		exposure_idx = _flame_exposure_idx
+		opacity_idx = _flame_opacity_idx
 		splat_on = false
 		colour_idx = 0
 		_apply_point_look()
@@ -380,6 +535,10 @@ func _load_bulb(i: int) -> void:
 	bulb_idx = wrapi(i, 0, library.bulbs.size())
 	_bulb = BulbSource.new(library.bulbs[bulb_idx])
 	_bulb.update_mod = BULB_UPDATE_MOD
+	# A fresh bulb is a ball of unprojected seeds, so it always gets its settle pass,
+	# whether or not MOTION is asking for a freeze.
+	_bulb_settle = BULB_SETTLE_FRAMES
+	_bake_wait = 0
 	cloud.set_count(int(TEX_SIZE * TEX_SIZE * BULB_PARTICLES))
 	RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
 	# Blow it up around the viewer. Auto-framing normalises the cloud to a unit radius,
@@ -406,13 +565,37 @@ func _should_iterate() -> bool:
 
 
 func _sync_iteration() -> void:
+	if bulb_mode:
+		if _bulb == null:
+			return
+		var want: int = BULB_STABILITY[bulb_stability_idx]
+		if _bulb_settle > 0:
+			# Fill the shell first. Everything after this measures or bakes the cloud as
+			# it stands, so it had better be finished standing.
+			_bulb_settle -= 1
+			_bulb.update_mod = 1
+			if _bulb_settle == 0:
+				cloud.request_measure()
+				_bake_wait = BAKE_DELAY_FRAMES
+		elif _bake_wait > 0:
+			# Let the measurement land: the bake bins particles into a grid sized from
+			# the framing, and binning against a stale extent drops the outliers.
+			_bake_wait -= 1
+			_bulb.update_mod = 1
+			if _bake_wait == 0 and auto_bake:
+				RenderingServer.call_on_render_thread(cloud.bake)
+		elif cloud.is_baking():
+			# Hold the cloud still while it is being baked. The bake describes the
+			# positions it read, so moving them underneath it invalidates the answer.
+			_bulb.update_mod = 0
+		else:
+			_bulb.update_mod = want
+		return
 	var src := cloud.source as FlameSource
 	if src == null:
 		return
 	# A frozen cloud that is morphing would keep the old attractor's points while the
 	# genome moved out from under them, so a morph always forces iteration.
-	if bulb_mode:
-		return
 	if _morph_t < 1.0:
 		src.update_mod = MORPH_UPDATE_MOD
 	elif _converge > 0:
@@ -423,6 +606,17 @@ func _sync_iteration() -> void:
 
 func _tick_morph(delta: float) -> void:
 	if bulb_mode:
+		# Bulbs cannot morph (there is no meaningful path between a Mandelbox scale and a
+		# KIFS fold angle), but DRIFT still promises a tour of the gallery, so honour it
+		# by cutting to the next one on the same timer rather than leaving the button dead.
+		if _drift:
+			_drift_hold += delta
+			if _drift_hold >= BULB_DRIFT_HOLD:
+				_drift_hold = 0.0
+				if recolor_on_drift and not library.themes.is_empty():
+					_begin_theme_blend()
+					theme_idx = randi() % library.themes.size()
+				_load_bulb(bulb_idx + 1)
 		return
 	# With both endpoints known, drive the framing along the morph curve directly. Only
 	# fall back to measuring when a preset has not been seen yet.
@@ -445,6 +639,9 @@ func _tick_morph(delta: float) -> void:
 			_drift_hold += delta
 			if _drift_hold >= DRIFT_HOLD:
 				_drift_hold = 0.0
+				if recolor_on_drift and not library.themes.is_empty():
+					_begin_theme_blend()
+					theme_idx = randi() % library.themes.size()
 				# Step by a coprime stride so a drift session tours the whole gallery
 				# instead of ping-ponging between neighbours.
 				_morph_to_preset(preset_idx + 5)
@@ -462,7 +659,7 @@ func _tick_morph(delta: float) -> void:
 	var src := cloud.source as FlameSource
 	if src != null:
 		src.set_preset(g)
-		cloud.apply_look()
+		_apply_palette()
 		RenderingServer.call_on_render_thread(src.update_params)
 
 
@@ -518,6 +715,67 @@ func _home_transform() -> Transform3D:
 	return Transform3D(Basis(), pos)
 
 
+## Keep the frame rate off the floor whatever the settings multiply out to. Cuts are
+## immediate and proportional (the further over budget, the harder the cut); recovery
+## waits for a hold, then creeps, so it cannot oscillate against the cliff it fell off.
+func _run_guard(delta: float) -> void:
+	var fps := 1.0 / maxf(delta, 1e-4)
+	_fps_ema = lerpf(_fps_ema, fps, 0.08)
+	_guard_hold = maxf(0.0, _guard_hold - delta)
+	if not splat_on:
+		if _perf_scale < 1.0:
+			_perf_scale = 1.0
+			cloud.set_perf_scale(1.0)
+		return
+	if fps < GUARD_CUT_FPS:
+		_perf_scale = maxf(GUARD_FLOOR, _perf_scale * clampf(sqrt(fps / GUARD_CUT_FPS), 0.5, 0.95))
+		cloud.set_perf_scale(_perf_scale)
+		_guard_hold = GUARD_HOLD_S
+	elif _perf_scale < 1.0 and _guard_hold <= 0.0 and _fps_ema > GUARD_RECOVER_FPS:
+		_perf_scale = minf(1.0, _perf_scale * 1.01)
+		cloud.set_perf_scale(_perf_scale)
+
+
+func _set_passthrough(on: bool) -> void:
+	if xr == null:
+		return
+	var env: Environment = $WorldEnvironment.environment
+	if on:
+		# Two doors to the same room. Newer Godot reports Meta passthrough as the alpha
+		# environment blend mode; older vendor-plugin combinations only answer to
+		# start_passthrough(). Try the blessed one first, fall back, and say which
+		# worked, because "it says void" from inside a headset is not a bug report
+		# anyone can act on.
+		var modes := xr.get_supported_environment_blend_modes()
+		if XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND in modes:
+			xr.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND
+			print("[xr] passthrough on via blend mode")
+		elif xr.is_passthrough_supported():
+			if not xr.start_passthrough():
+				passthru_label = "n/a"
+				print("[xr] passthrough: start_passthrough() refused")
+				return
+			print("[xr] passthrough on via start_passthrough")
+		else:
+			passthru_label = "n/a"
+			print("[xr] passthrough: unsupported (modes=%s)" % str(modes))
+			return
+		get_viewport().transparent_bg = true
+		if env != null:
+			env.background_color = Color(0, 0, 0, 0)
+		passthrough = true
+		passthru_label = "room"
+	else:
+		if xr.environment_blend_mode != XRInterface.XR_ENV_BLEND_MODE_OPAQUE:
+			xr.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_OPAQUE
+		xr.stop_passthrough()
+		get_viewport().transparent_bg = false
+		if env != null:
+			env.background_color = Color(0, 0, 0, 1)
+		passthrough = false
+		passthru_label = "void"
+
+
 func _recenter() -> void:
 	var t := _home_transform()
 	if grab != null:
@@ -535,14 +793,19 @@ func _current_eye_res() -> Vector2i:
 func _process(delta: float) -> void:
 	_uptime += delta
 	cloud.ease_framing(delta)
+	if _theme_blend < 1.0:
+		# Match the shape transition, so colour and form arrive together.
+		_theme_blend = minf(1.0, _theme_blend + delta / MORPH_STEPS[morph_idx])
+		_apply_palette()
 	if not _placed and _setup_done and xr_camera.global_transform.origin.length_squared() > 1e-6:
 		_placed = true
 		_recenter()
 	_menu_active = menu.update(delta)
+	_run_guard(delta)
 	if _bulb != null:
 		# The breath is the animation: each genome slowly reshapes whichever parameter
 		# defines its form, so the surface is never static.
-		_bulb.clock += delta
+		_bulb.clock += delta * BREATH_STEPS[breath_idx]
 	_tick_morph(delta)
 	if _converge > 0:
 		_converge -= 1
@@ -650,8 +913,52 @@ func _handle_input(delta: float) -> void:
 ## Point size, falloff tightness and brightness move together: they are three ways of
 ## saying the same thing about how fine a particle reads, and splitting them across
 ## three buttons would just mean hunting for a combination that already pairs up.
+## Recolour the live cloud from the theme list, without touching its genome.
+func _cycle_theme() -> void:
+	if library.themes.is_empty():
+		return
+	_begin_theme_blend()
+	theme_idx += 1
+	if theme_idx >= library.themes.size():
+		theme_idx = -1
+	_apply_palette()
+
+
+## The genome's own palette, or the chosen theme on top of it. Called anywhere the
+## palette could be reset, so a theme survives morphs, preset changes and mode switches.
+func _apply_palette() -> void:
+	if cloud.source == null:
+		return
+	var target := _theme_palette()
+	if _theme_blend < 1.0 and _theme_from.size() == target.size():
+		var mixed: Array = []
+		for i in target.size():
+			mixed.append((_theme_from[i] as Vector3).lerp(target[i] as Vector3,
+				Morph.smoothstep_t(_theme_blend)))
+		cloud.override_palette(mixed)
+	else:
+		cloud.override_palette(target)
+
+
+func _theme_palette() -> Array:
+	if theme_idx < 0 or library.themes.is_empty():
+		return cloud.source.palette() if cloud.source != null else []
+	var pal: Array = []
+	for c in library.themes[wrapi(theme_idx, 0, library.themes.size())]:
+		pal.append(Vector3(float(c[0]), float(c[1]), float(c[2])))
+	return pal
+
+
+## Start a cross-fade from the palette currently showing to whatever theme_idx now names.
+func _begin_theme_blend() -> void:
+	_theme_from = _theme_palette()
+	_theme_blend = 0.0
+
+
 func _apply_point_look() -> void:
 	cloud.set_palette_cycles(COLOUR_CYCLES[colour_idx])
+	cloud.set_opacity(OPACITY_STEPS[opacity_idx])
+	cloud.set_density_strength(DENSITY_STEPS[density_idx])
 	cloud.set_splat(splat_on, SPLAT_STEPS[splat_idx])
 	cloud.set_point_size(POINT_STEPS[point_idx])
 	cloud.set_sharpness(SHARPNESS[point_idx])

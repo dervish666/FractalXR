@@ -17,8 +17,14 @@ class_name WristMenu
 ## closure that reads the current value, and a closure that advances it. Nothing in here
 ## knows what a particle count is.
 
-const VIEW_SIZE := Vector2i(660, 600)
-const PANEL_METRES := Vector2(0.20, 0.182)
+# Shaped for a forearm: narrow and long, rather than a square slab sitting across it.
+# The viewport is generously tall because the content is laid out top-down and anything
+# that overflows is simply clipped, with no scrollbar to tell you it happened.
+const VIEW_SIZE := Vector2i(760, 900)
+const PANEL_METRES := Vector2(0.185, 0.219)
+## Tiles per row. Sections wrap instead of squeezing, so a section with six settings
+## does not shrink every tile in it past the point of being readable or hittable.
+const COLUMNS := 4
 const REVEAL_DOT := 0.55
 const FADE_SPEED := 7.0
 
@@ -39,12 +45,18 @@ class Item:
 	var read: Callable
 	var advance: Callable
 	var wide := false
-	func _init(sec: String, l: String, r: Callable, a: Callable, w := false) -> void:
+	## Optional predicate. A false tile is hidden, and a Container skips hidden children,
+	## so the grid reflows around it. That is how a bulb-only setting can exist without
+	## taking a slot in flame mode.
+	var visible_when: Callable
+	func _init(sec: String, l: String, r: Callable, a: Callable, w := false,
+			vis := Callable()) -> void:
 		section = sec
 		label = l
 		read = r
 		advance = a
 		wide = w
+		visible_when = vis
 
 var items: Array[Item] = []
 var status_main: Callable = Callable()
@@ -166,11 +178,11 @@ func _build_viewport() -> void:
 	_vp.add_child(root)
 
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 10)
+	col.add_theme_constant_override("separation", 7)
 	root.add_child(col)
 	var pad := MarginContainer.new()
 	for side in ["left", "right", "top", "bottom"]:
-		pad.add_theme_constant_override("margin_" + side, 18)
+		pad.add_theme_constant_override("margin_" + side, 14)
 	root.remove_child(col)
 	root.add_child(pad)
 	pad.add_child(col)
@@ -178,16 +190,16 @@ func _build_viewport() -> void:
 	# Header: name on the left, live status on the right, as in the web build.
 	var head_row := HBoxContainer.new()
 	col.add_child(head_row)
-	_title_label = _label("", 34, LABEL)
+	_title_label = _label("", 30, LABEL)
 	_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head_row.add_child(_title_label)
 	var head_right := VBoxContainer.new()
 	head_right.alignment = BoxContainer.ALIGNMENT_END
 	head_row.add_child(head_right)
-	_side_label = _label("", 20, VALUE)
+	_side_label = _label("", 18, VALUE)
 	_side_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	head_right.add_child(_side_label)
-	_status_label = _label("", 17, SECTION)
+	_status_label = _label("", 15, SECTION)
 	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	head_right.add_child(_status_label)
 
@@ -197,14 +209,15 @@ func _build_viewport() -> void:
 		if not seen.has(it.section):
 			seen.append(it.section)
 	for sec in seen:
-		col.add_child(_label(sec.to_upper(), 15, SECTION))
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 8)
-		col.add_child(row)
+		col.add_child(_label(sec.to_upper(), 14, SECTION))
+		var grid := GridContainer.new()
+		grid.columns = COLUMNS
+		grid.add_theme_constant_override("h_separation", 8)
+		grid.add_theme_constant_override("v_separation", 8)
+		col.add_child(grid)
 		for i in items.size():
-			if items[i].section != sec:
-				continue
-			row.add_child(_tile(i))
+			if items[i].section == sec:
+				grid.add_child(_tile(i))
 
 
 func _tile(i: int) -> PanelContainer:
@@ -218,13 +231,13 @@ func _tile(i: int) -> PanelContainer:
 	for side in ["left", "right"]:
 		m.add_theme_constant_override("margin_" + side, 6)
 	for side in ["top", "bottom"]:
-		m.add_theme_constant_override("margin_" + side, 7)
+		m.add_theme_constant_override("margin_" + side, 6)
 	p.add_child(m)
 	m.add_child(v)
-	var l := _label(it.label, 21, LABEL)
+	var l := _label(it.label, 20, LABEL)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(l)
-	var val := _label("", 18, VALUE)
+	var val := _label("", 17, VALUE)
 	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(val)
 	while _tiles.size() <= i:
@@ -315,7 +328,8 @@ func update(delta: float) -> bool:
 	_hovered = -1
 	if hit.x >= 0.0:
 		for i in _tiles.size():
-			if _tiles[i] != null and _tiles[i].get_global_rect().has_point(hit):
+			# A hidden tile keeps its last rect, so it would still swallow the ray.
+			if _tiles[i] != null and _tiles[i].visible and _tiles[i].get_global_rect().has_point(hit):
 				_hovered = i
 				break
 	if _hovered != was:
@@ -332,7 +346,9 @@ func activate() -> void:
 
 func _refresh() -> void:
 	for i in items.size():
-		if _values[i] != null:
+		if _tiles[i] != null and items[i].visible_when.is_valid():
+			_tiles[i].visible = bool(items[i].visible_when.call())
+		if _values[i] != null and (_tiles[i] == null or _tiles[i].visible):
 			_values[i].text = str(items[i].read.call())
 	if title.is_valid():
 		_title_label.text = str(title.call())

@@ -8,6 +8,11 @@
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 mkdir -p "$PROJ/.spike-out"
+# Import first, ALWAYS. A --script run does not rescan the filesystem, so it happily
+# executes the last-imported SPIR-V and reports a pass on shader source that was never
+# compiled. That cost an evening: three edits to a compute shader in a row, each
+# "verified" against the binary from before the first one.
+"$GODOT" $GODOT_FLAGS --headless --import >/dev/null 2>&1 || true
 ( sleep 240; pkill -9 -f "Godot --xr-mode off --path $PROJ" 2>/dev/null ) &
 WATCHDOG=$!
 "$GODOT" $GODOT_FLAGS --rendering-method mobile --resolution 320x240 --position 0,0 \

@@ -9,8 +9,39 @@
 // particle index and which corner this is. So the mesh is a bare resize with no
 // attributes to fill, and changing the particle count stays cheap.
 shader_type spatial;
-render_mode unshaded, blend_add, cull_disabled, depth_draw_never, depth_test_disabled,
+// This is a real Gaussian-splat rasteriser now, not a billboard with a soft edge.
+//
+// What Spark (the WebXR build's renderer) does, and what the first four attempts here did
+// not, in the order it matters:
+//
+// 1. NO DEPTH WRITE. Spark's material is `depthTest: true, depthWrite: false`. Ours wrote
+//    depth on every splat, so a nearer splat OCCLUDED the ones behind it. That is the
+//    whole reason the result kept reading as "a point cloud with splats": each splat was
+//    an opaque disc with a soft edge, and discs do not merge into a surface.
+// 2. The footprint is computed in SCREEN SPACE, by projecting the splat's 3D covariance
+//    through the Jacobian of the perspective transform, not by drawing a fixed-size quad
+//    in the world. The ellipse is therefore exactly right at every distance and view angle.
+// 3. A blur floor with matching alpha compensation, so a splat can never shrink below
+//    about a pixel. It fades instead of aliasing, which is what stops the sparkle.
+// 4. Premultiplied alpha, which is the correct "over" operator.
+//
+// The one thing Spark does that this does not is sort back-to-front every frame. Without
+// depth writes the compositing is order-dependent, and a thin shell of similarly coloured
+// splats is the case where that error is smallest.
+render_mode unshaded, blend_premul_alpha, cull_disabled, depth_draw_never,
 	fog_disabled, shadows_disabled, skip_vertex_transform;
+
+// Quad half-extent in standard deviations. Spark's default is sqrt(8), so the Gaussian is
+// evaluated out to 2.83 sigma and the falloff is exp(-0.5 * 8 * r^2).
+const float MAX_STDDEV2 = 8.0;
+// Dilation of the projected covariance, in square pixels, and the antialiasing floor.
+// Without it a distant splat lands inside one pixel and flickers as it moves.
+const float BLUR_PX2 = 0.3;
+// Hard bound on any one splat's footprint. 512 sounded generous and was a death
+// sentence: a 42mm mean size with the bake's spread put ellipses of tens of thousands
+// of pixels each over the whole view, 147k of them, alpha blended — measured 2fps and a
+// hard quit. Fill rate is the entire cost of this renderer.
+const float MAX_PIXEL_RADIUS = 192.0;
 
 uniform sampler2D state_tex : filter_nearest, source_color;
 uniform sampler2D normal_tex : filter_nearest;
@@ -22,16 +53,47 @@ uniform sampler2D normal_tex : filter_nearest;
 uniform bool use_normals = false;
 // How flat the disc is along the normal. bulbSplat.ts uses THIN = 0.16 for the same job.
 uniform float splat_thin = 0.18;
+uniform float splat_opacity = 0.35;
+// Local density, so a splat can be sized by how crowded its neighbourhood is rather than
+// by one global number. Packed as a 3D grid flattened into a 2D texture: Godot spatial
+// shaders cannot sample a storage buffer, so the counts come across as a texture.
+uniform sampler2D density_tex : filter_nearest;
+uniform int density_grid = 64;
+uniform float density_extent = 1.6;
+uniform float density_strength = 1.0;
+// 1/2 for a surface, 1/3 for a volume. A distance-estimate shell is two-dimensional, so
+// m particles in a box of side L sit at a spacing of L/sqrt(m). Using the cube root on a
+// surface compresses the range the counts actually span, which is why the first
+// density-sized build varied so little.
+uniform float density_exponent = 0.3333;
+// Mean particles per occupied cell, measured on the GPU. Dividing by it is what keeps
+// the mean splat size at whatever SPLAT is set to: only the departures from average
+// resize, so changing the particle count or the grid does not quietly rescale the cloud.
+uniform float density_nominal = 8.0;
+// Baked per-splat shape: (cos, sin) of the major axis in the tangent frame, then the two
+// axis lengths. This is the kNN covariance the WebXR viewer computes during its loading
+// pause, and it is the difference between a disc that is merely the right size and one
+// that lies ALONG the filament it belongs to.
+uniform sampler2D bake_tex : filter_nearest;
+uniform bool use_bake = false;
+// splat_radius / mean baked axis, so SPLAT still sets the average and the bake only
+// decides how each splat departs from it.
+uniform float bake_scale = 1.0;
+// The frame-rate governor's lever. Scales every splat's real size, so cost falls with
+// its square. 1 when the frame budget holds; cut hard the moment it does not.
+uniform float perf_scale = 1.0;
+uniform vec3 density_centre = vec3(0.0);
 uniform int tex_size = 2048;
 uniform float splat_radius = 0.026;
 uniform float brightness = 0.3;
 uniform float sharpness = 3.0;
 uniform vec3 cloud_center = vec3(0.0);
 uniform float cloud_fit = 1.0;
-// Running total of the palette-coordinate histogram, from the measure pass. Mapping a
-// point through its own percentile uses the whole gradient; the raw value clusters in a
-// narrow band and would use a sliver of it.
-uniform float colour_cdf[32];
+// Where the colour data actually sits and how wide it is, measured live. A raw orbit
+// trap or flame colour index occupies a narrow off-centre band, so mapping it straight
+// onto the palette uses a sliver of the ramp and everything comes out one colour.
+uniform float colour_mean = 0.5;
+uniform float colour_spread = 0.25;
 // How many times the palette repeats across the equalised range. Equalisation spreads
 // every point evenly over one traversal of the ramp, which reads as a single gradient.
 // Repeating it two or three times gives distinct colour bands from the same data, and
@@ -46,6 +108,7 @@ uniform vec3 pal4;
 
 varying vec3 v_col;
 varying vec2 v_off;
+varying float v_alpha;
 
 const vec2 CORNERS[6] = vec2[6](
 	vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
@@ -53,10 +116,13 @@ const vec2 CORNERS[6] = vec2[6](
 
 vec3 palette(float t) {
 	t = clamp(t, 0.0, 1.0);
-	// Rank-equalise: replace the value with its percentile.
-	int bin = clamp(int(t * 32.0), 0, 31);
-	float lo = bin == 0 ? 0.0 : colour_cdf[bin - 1];
-	t = mix(lo, colour_cdf[bin], fract(t * 32.0));
+	// Centre on the measured mean and spread by the measured deviation, so the palette
+	// is used across its whole range rather than over the narrow band the raw values
+	// happen to occupy. Three deviations covers essentially the whole distribution.
+	// The floor matters: with a tight distribution, dividing by 3*spread sends almost
+	// every point to one end of the ramp or the other, which reads as posterised rather
+	// than spread. Widen the band, never shatter it.
+	t = clamp(0.5 + (t - colour_mean) / max(0.35, 3.0 * colour_spread), 0.0, 1.0);
 	if (palette_cycles > 1.5) {
 		// Ping-pong rather than wrap, so bands meet at a shared colour instead of
 		// snapping from the top of the ramp back to the bottom.
@@ -78,34 +144,119 @@ void vertex() {
 	bool bad = !(s.x == s.x) || !(s.y == s.y) || !(s.z == s.z);
 	vec3 p = (s.xyz - cloud_center) * cloud_fit;
 
-	// skip_vertex_transform means VERTEX is expected in VIEW space, which is exactly
-	// where a billboard wants to be built: offset on the view plane and the quad always
-	// faces the eye, in both eyes, with no per-eye special case.
-	vec3 vpos = (MODELVIEW_MATRIX * vec4(p, 1.0)).xyz;
+	vec3 vc = (MODELVIEW_MATRIX * vec4(p, 1.0)).xyz;
 	float mscale = length(MODELVIEW_MATRIX[0].xyz);   // carry the cloud's own scale
-	float r = splat_radius * mscale;
+	float r = splat_radius * perf_scale * mscale;
 
+	// --- the splat's three axes, in VIEW space -----------------------------------
+	// Together they are the RS matrix of 3D Gaussian splatting: cov3D = RS * RS^T.
+	vec3 a1, a2, a3;
 	if (use_normals) {
-		// Build the quad in the surface's tangent plane, then flatten it along the
-		// normal. Seen face-on it is a disc in the surface; seen edge-on it nearly
-		// vanishes, which is what stops a shell reading as fog.
-		vec3 n = normalize((MODELVIEW_MATRIX * vec4(
-			texelFetch(normal_tex, ivec2(pid % tex_size, pid / tex_size), 0).xyz, 0.0)).xyz);
-		vec3 t1 = normalize(cross(n, abs(n.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
-		vec3 t2 = cross(n, t1);
-		vpos += (t1 * v_off.x + t2 * v_off.y) * r + n * (v_off.x * splat_thin * r);
+		// The tangent frame is built in LOCAL space, from the same formula
+		// bake_shape.glsl uses, which is what lets the bake send an angle instead of
+		// two vectors.
+		vec3 nl = texelFetch(normal_tex, ivec2(pid % tex_size, pid / tex_size), 0).xyz;
+		nl = (dot(nl, nl) > 1e-12) ? normalize(nl) : vec3(0.0, 0.0, 1.0);
+		vec3 t1 = normalize(cross(nl, abs(nl.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+		vec3 t2 = cross(nl, t1);
+
+		float l1 = r;
+		float l2 = r;
+		if (use_bake) {
+			vec4 bk = texelFetch(bake_tex, ivec2(pid % tex_size, pid / tex_size), 0);
+			// Rotate the frame into the neighbourhood's own principal axes.
+			vec3 e1 = t1 * bk.x + t2 * bk.y;
+			vec3 e2 = t2 * bk.x - t1 * bk.y;
+			t1 = e1;
+			t2 = e2;
+			l1 = bk.z * bake_scale * mscale * perf_scale;
+			l2 = bk.w * bake_scale * mscale * perf_scale;
+		} else if (density_strength > 0.01) {
+			vec3 gn = ((s.xyz - density_centre) / density_extent) * 0.5 + 0.5;
+			ivec3 gc = ivec3(clamp(gn * float(density_grid), vec3(0.0), vec3(float(density_grid) - 1.0)));
+			int flat_i = (gc.z * density_grid + gc.y) * density_grid + gc.x;
+			int w = textureSize(density_tex, 0).x;
+			float n_here = max(1.0, texelFetch(density_tex, ivec2(flat_i % w, flat_i / w), 0).r);
+			float rel = clamp(pow(density_nominal / n_here, density_exponent), 0.4, 2.5);
+			l1 *= rel;
+			l2 *= rel;
+		}
+		// Flat along the normal, so a splat lies IN the surface. Spark's source cloud
+		// uses THIN = 0.16 for exactly this.
+		a1 = (MODELVIEW_MATRIX * vec4(t1 * l1, 0.0)).xyz;
+		a2 = (MODELVIEW_MATRIX * vec4(t2 * l2, 0.0)).xyz;
+		a3 = (MODELVIEW_MATRIX * vec4(nl * (splat_thin * l1), 0.0)).xyz;
 	} else {
-		vpos.xy += v_off * r;
+		// No surface to lie in: an isotropic Gaussian, already in view space.
+		a1 = vec3(r, 0.0, 0.0);
+		a2 = vec3(0.0, r, 0.0);
+		a3 = vec3(0.0, 0.0, r);
 	}
 
-	VERTEX = bad ? vec3(0.0, 0.0, 1e9) : vpos;
+	float alpha = splat_opacity;
+	vec2 pixel_off = vec2(0.0);
+	bool cull = bad || vc.z >= 0.0;
+
+	if (!cull) {
+		mat3 rs = mat3(a1, a2, a3);
+		mat3 cov3 = rs * transpose(rs);
+
+		// Jacobian of the perspective projection at this point, in pixels.
+		vec2 focal = 0.5 * VIEWPORT_SIZE * vec2(PROJECTION_MATRIX[0][0], PROJECTION_MATRIX[1][1]);
+		float inv_z = 1.0 / vc.z;
+		vec2 j1 = focal * inv_z;
+		vec2 j2 = -(j1 * vc.xy) * inv_z;
+		mat3 jm = mat3(
+			vec3(j1.x, 0.0, j2.x),
+			vec3(0.0, j1.y, j2.y),
+			vec3(0.0, 0.0, 0.0));
+		mat3 cov2 = transpose(jm) * cov3 * jm;
+
+		float ca = cov2[0][0];
+		float cd = cov2[1][1];
+		float cb = cov2[0][1];
+		float det_orig = ca * cd - cb * cb;
+		ca += BLUR_PX2;
+		cd += BLUR_PX2;
+		float det = ca * cd - cb * cb;
+		// Dilating the footprint spreads the same energy over more pixels, so the alpha
+		// has to come down to match or every distant splat quietly gets brighter.
+		alpha *= sqrt(max(0.0, det_orig / max(1e-12, det)));
+
+		float eig_avg = 0.5 * (ca + cd);
+		float eig_del = sqrt(max(0.0, eig_avg * eig_avg - det));
+		float eig1 = eig_avg + eig_del;
+		float eig2 = max(0.0, eig_avg - eig_del);
+		vec2 ev1 = normalize(vec2((abs(cb) < 1e-6) ? 1.0 : cb, eig1 - ca));
+		vec2 ev2 = vec2(ev1.y, -ev1.x);
+		float sc1 = min(MAX_PIXEL_RADIUS, sqrt(MAX_STDDEV2) * sqrt(eig1));
+		float sc2 = min(MAX_PIXEL_RADIUS, sqrt(MAX_STDDEV2) * sqrt(eig2));
+		pixel_off = v_off.x * ev1 * sc1 + v_off.y * ev2 * sc2;
+		if (alpha < 0.002) cull = true;
+	}
+
+	v_alpha = alpha;
 	v_col = palette(s.w) * brightness;
+
+	if (cull) {
+		POSITION = vec4(2.0, 2.0, 2.0, 1.0);   // outside the clip volume
+	} else {
+		vec4 clip = PROJECTION_MATRIX * vec4(vc, 1.0);
+		vec2 ndc_off = (2.0 / VIEWPORT_SIZE) * pixel_off;
+		POSITION = vec4(clip.xy + ndc_off * clip.w, clip.z, clip.w);
+	}
+	VERTEX = vc;
 }
+
 
 void fragment() {
 	float r2 = dot(v_off, v_off);
 	if (r2 > 1.0) discard;
-	float fall = exp(-r2 * sharpness);
-	ALBEDO = v_col * fall;
-	ALPHA = fall;
+	// The quad spans MAX_STDDEV2 in squared standard deviations, so this is the real
+	// Gaussian: exp(-0.5 * sigma^2). `sharpness` scales it for taste.
+	float fall = exp(-0.5 * MAX_STDDEV2 * r2 * (sharpness / 3.0));
+	float a = fall * v_alpha;
+	// Premultiplied: the blend is src + dst * (1 - a), so the colour arrives pre-scaled.
+	ALBEDO = v_col * a;
+	ALPHA = a;
 }

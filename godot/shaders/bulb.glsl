@@ -214,9 +214,13 @@ void main() {
 	vec3 t2 = cross(n, t1);
 	pos += (t1 * (rnd(seed) * 2.0 - 1.0) + t2 * (rnd(seed) * 2.0 - 1.0)) * p.jitter * p.bound;
 
-	// Orbit-trap colour, equalised: the raw trap piles ~50% of particles into the middle
-	// of the palette and starves the ends, so spread it across the whole ramp.
-	col = smoothstep(0.15, 0.9, d.y * 0.7 + d.z * 0.5);
+	// Orbit-trap colour, RAW. This used to be squashed through smoothstep(0.15, 0.9, ..)
+	// as a hand-tuned stand-in for a CDF, which saturated: nearly every particle came out
+	// at 1.0, the cloud rendered cream whatever palette it was given, and repeating the
+	// palette could not help because there was no variation left to band. The renderer
+	// now measures a real histogram and equalises against it, so the right thing to emit
+	// here is the unsquashed value with the range merely bounded.
+	col = clamp((d.y * 0.7 + d.z * 0.5) * 0.45, 0.0, 1.0);
 
 	if (abs(p.formula - 1.0) < 0.5 && d.w < 0.5) pos = randBall(seed, p.bound);
 	if (dot(pos, pos) > bsq) pos = randBall(seed, p.bound);

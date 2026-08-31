@@ -155,6 +155,146 @@ the naturally small ones, spreading a fixed point budget over more screen area, 
 thinner points read as lower resolution. It now only ever shrinks. Large attractors get
 reined in; small dense ones keep the density that makes them look sharp.
 
+**Bulb motion has two independent clocks**, and the menu now exposes both because
+telling them apart on-device is the only way to judge what the shimmer costs.
+
+`MOTION` is the particle clock: how much of the cloud re-projects onto the surface each
+frame, frozen to every-frame. Until now it read `BULB_UPDATE_MOD` and cycled
+`stability_idx`, which only ever reaches the flame source, so in bulb mode it was a live
+button wired to nothing. Frozen needs a settle pass first (`BULB_SETTLE_FRAMES`): a
+particle only reaches the surface on an update, so stopping the clock cold would strand
+whatever had not stepped yet in the seed ball.
+
+`BREATHE` is the surface clock: the per-genome parameter drift that keeps the shell
+reshaping. Off holds the form still while particles keep filling it in.
+
+### Density-adaptive splat sizing, and the bug that hid it
+
+`bulbSplat.ts` sizes every Gaussian from the covariance of its 14 nearest neighbours,
+across a full 10x span (MIN_S 0.0007 to MAX_S 0.0075). That spread is why 60k of its
+splats read sharper than 294k of uniformly sized ones: a dense region gets small splats
+that hold the detail, a sparse one gets large ones that close the gaps, and a single
+global size can only ever do one of those. kNN per frame is out of the question on a
+live cloud, so this approximates it with a grid histogram: one `atomicAdd` per particle
+into a 64^3 grid, and each splat scales by the cube root of the volume it has to itself.
+
+**It did nothing at all for its first outing.** The counts reach the vertex shader as a
+texture, because a Godot spatial shader cannot read a storage buffer, and that texture
+was `R32_UINT` sampled through a `sampler2D`. Vulkan needs `usampler2D` for an integer
+format. Every fetch came back zero, every splat took the same clamped fallback, and 147k
+identically sized discs merged into a foam ball. Nothing errored: an invalid sampler
+binding is silent, and the fallback path was a legal number.
+
+The fix is a second compute pass that writes floats with `imageStore`, which is both
+valid and one 400KB readback cheaper than uploading the buffer each measure. It also
+does two things the first version could not:
+
+- **Sums the 3x3x3 block around each cell** rather than reading one. A single cell
+  quantises hard, so two particles either side of a boundary get different sizes and the
+  grid itself becomes visible.
+- **Measures the mean occupancy** of the cells that actually hold particles, and the
+  splat shader divides by it. Without that reference the sizing depends on the particle
+  count and the grid resolution, so changing either quietly rescales the whole cloud.
+
+### The bake
+
+`shaders/bake_scan.glsl`, `bake_scatter.glsl`, `bake_shape.glsl`, driven from
+`ParticleCloud.bake()`. Once per bulb, after the shell has filled: bin every particle
+into the 64^3 grid, prefix-sum the counts so each cell knows where its slice of a sorted
+particle list starts, scatter the ids into it, then give every splat its own size and
+shape from the neighbours that list makes reachable. Chunked at 32k particles a frame, so
+the pause is a wait rather than a stall — a dropped frame in a headset is worse than a
+loading bar.
+
+Two shortcuts make it cheap enough to run on-device at all. The surface normal is already
+known, so the covariance only has to be solved in the tangent plane: a 2x2 eigenproblem
+with a closed form, not a 3x3 needing Jacobi sweeps. And the neighbourhood is "everything
+within 2.5 local spacings" rather than a true k-th nearest, which lands on ~23 neighbours
+against bulbSplat.ts's k of 14 and needs no sorted search. Output is four numbers per
+splat: the major axis as a cosine and sine in the tangent frame, and the two axis lengths.
+The vertex shader rebuilds the frame from the same normal with the same formula, so only
+the angle has to cross.
+
+Measured on the first bulb: sizes spread at 67% of the mean, and a mean minor/major of
+**0.66**. Splats now lie along the filament they belong to instead of straddling it,
+which is the difference no amount of resizing a circle can reach.
+
+### The renderer was the missing piece, not the data
+
+After the bake shipped and still read as "a point cloud with splats", the WebXR viewer's
+actual renderer (Spark) got read properly instead of guessed about. Its splat material is
+`depthTest: true, depthWrite: FALSE`, it depth-sorts every frame, and its vertex shader
+projects each splat's 3D covariance through the Jacobian of the perspective transform to
+get a screen-space ellipse, with a blur floor and matching alpha compensation.
+
+Ours wrote depth on every splat (`depth_draw_always` + `depth_prepass_alpha`). That
+single flag is most of the difference: with depth writes, a nearer splat OCCLUDES the
+ones behind it, so every splat stays a legible disc and no amount of sizing makes discs
+merge into a surface. Gaussian splatting is an accumulation of translucency; occlusion
+was structurally the wrong compositing model, chosen early on the reasonable-sounding
+"a surface wants nearer to cover farther" and never revisited while everything else got
+tuned around it.
+
+`splat.gdshader` is now the real algorithm: no depth write, premultiplied alpha,
+screen-space covariance projection (a direct port of Spark's maths), `exp(-0.5 sigma^2)`
+falloff over a sqrt(8)-sigma quad, blur floor with energy-conserving alpha adjustment.
+Bulb defaults moved to Spark's numbers: alpha 0.22, smaller splats, palette at full
+strength (an "over" composite converges to the source colour, it does not sum).
+
+The one Spark feature not ported is the per-frame back-to-front sort. Unsorted "over" is
+order-dependent; a thin shell of similarly coloured splats is the mildest case, so the
+sort is deferred until the headset says otherwise.
+
+### The fill-rate guard
+
+The projected-covariance renderer moved the cost model: it is now almost pure fill rate,
+and fill scales with the SQUARE of splat size, so the settings ladder has a cliff in it.
+On-device: 42mm splats with the bake's spread hit 2fps and needed a hard quit to escape.
+
+Two guards. A hard per-splat cap (`MAX_PIXEL_RADIUS`, 192px) bounds any one ellipse. And
+a governor in `main.gd` watches the real frame time and scales every splat (`perf_scale`)
+the moment fps dives under 24 — cuts are immediate and proportional, recovery waits three
+seconds and then creeps, so it cannot oscillate against the cliff it fell off. The wrist
+menu shows "guard N%" while it is intervening, because a silently shrunk 42mm splat would
+otherwise read as a broken setting.
+
+### Two bugs the self-test caught, and one it could not
+
+The neighbour search first came back finding **zero** neighbours for every particle. The
+cause was scanning a blanket 3x3x3 of cells under a candidate budget: the budget went on a
+far corner cell whose particles all failed the radius test, and the home cell was never
+reached, so every splat took the isotropic fallback. It reads on-device as "the bake did
+nothing", which is indistinguishable from twenty other causes. The self-test named it in
+one line: `minor/major 0.99`. Both a size-variance and an anisotropy assertion are now
+gates, because "the bake ran and produced uniform circles" is the failure this whole pass
+exists to prevent.
+
+The one it could not catch was itself. **`tools/selftest.sh` runs Godot with `--script`,
+which does not rescan the filesystem**, so it executed the last-imported SPIR-V and
+reported a confident pass on shader source that had never been compiled. Three consecutive
+edits to `bake_shape.glsl` were each "verified" against the binary from before the first
+one, and the fix that did work looked like it had failed. `--import` now runs first,
+always. Exports were never affected: `--export-debug` scans.
+
+### What the web build is really buying with those few seconds
+
+The WebXR viewer pauses for several seconds before a splat cloud appears. That pause is
+the difference, and it is not something a live simulation can approximate away: it is a
+real kNN covariance per splat, computed once, giving each Gaussian a true size AND three
+eigenvalue-derived axes (`THIN = 0.16`). Then it renders a cloud that never changes.
+
+We get orientation for free from the distance-estimate normal, and now approximate size
+from a grid. The two things still missing are genuine anisotropy and staying still, and
+both point the same way: **bake the cloud once per bulb** rather than simulate it live.
+Freeze already wins on-device, which is the same finding from the other end.
+
+Both exist because of what the WebXR splat viewer does differently. It generates its
+cloud **once** and never touches it again, and a static cloud is why each splat sits
+exactly where it belongs. Ours re-jitters tangentially on every update, which is life,
+but it is also a permanent shimmer that no amount of splat sizing can sharpen. Frozen
+plus breath-off is the closest this gets to that, and the toggles make it a comparison
+rather than an argument.
+
 For the record, three things were blamed before the log settled it: dynamic foveation
 twice and dynamic resolution once. `fov=0 dyn=false rt=(1680,1760) scale3d=1.00` never
 moved across an entire run, and at a constant particle count the frame rate held 71-72fps
