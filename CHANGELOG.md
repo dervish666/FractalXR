@@ -27,6 +27,11 @@ All notable changes to FractalXR are documented here. Format based on
   reader is gone. The look is unchanged.
 - The bulb iterator evaluated one distance estimate per particle per frame that the first
   projection step immediately recomputed; it no longer does.
+- **Bulb splats are depth-sorted.** A GPU counting sort by view depth runs every frame in
+  splat mode and the vertex shader draws back-to-front through the resulting permutation.
+  This was the largest remaining difference from the WebXR build's renderer, and the reason
+  no opacity setting could make a bulb read as solid: "over" compositing is order-dependent.
+  The self-test verifies the permutation is complete.
 - **Staggered iteration now actually saves GPU time.** MOTION 1/n and the morph's 1/6 picked
   particles by `idx % n`, which leaves most of every SIMD wave idle while the rest run the full
   loop: the headset measured 1/6 of the cloud at 3ms against 4.4ms for all of it. Particles are

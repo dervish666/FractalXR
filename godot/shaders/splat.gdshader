@@ -25,9 +25,10 @@ shader_type spatial;
 //    about a pixel. It fades instead of aliasing, which is what stops the sparkle.
 // 4. Premultiplied alpha, which is the correct "over" operator.
 //
-// The one thing Spark does that this does not is sort back-to-front every frame. Without
-// depth writes the compositing is order-dependent, and a thin shell of similarly coloured
-// splats is the case where that error is smallest.
+// And, since the depth sort landed, the one thing Spark did that this did not: splats
+// are drawn back-to-front. The host runs a GPU counting sort by view depth every frame
+// (sort_count.glsl, bake_scan.glsl, sort_scatter.glsl) and hands the permutation over
+// as a texture, because a spatial shader can sample a texture and not a storage buffer.
 render_mode unshaded, blend_premul_alpha, cull_disabled, depth_draw_never,
 	fog_disabled, shadows_disabled, skip_vertex_transform;
 
@@ -76,6 +77,10 @@ uniform float density_nominal = 8.0;
 // that lies ALONG the filament it belongs to.
 uniform sampler2D bake_tex : filter_nearest;
 uniform bool use_bake = false;
+// Back-to-front draw order: slot i of the mesh draws particle perm_tex[i]. R32F holds the
+// id exactly. Off, the slot is the particle, which is the unsorted order.
+uniform sampler2D perm_tex : filter_nearest;
+uniform bool use_sort = false;
 // splat_radius / mean baked axis, so SPLAT still sets the average and the bake only
 // decides how each splat departs from it.
 uniform float bake_scale = 1.0;
@@ -134,7 +139,12 @@ vec3 palette(float t) {
 }
 
 void vertex() {
-	int pid = VERTEX_ID / 6;
+	int slot = VERTEX_ID / 6;
+	int pid = slot;
+	if (use_sort) {
+		int pw = textureSize(perm_tex, 0).x;
+		pid = int(texelFetch(perm_tex, ivec2(slot % pw, slot / pw), 0).r + 0.5);
+	}
 	v_off = CORNERS[VERTEX_ID % 6];
 
 	vec4 s = texelFetch(state_tex, ivec2(pid % tex_size, pid / tex_size), 0);

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://bmrmikc0ashfh"
+path="res://.godot/imported/sort_scatter.glsl-0bfe1c8fa3f74636bacb5ef47d518333.res"
+
+[deps]
+
+source_file="res://shaders/sort_scatter.glsl"
+dest_files=["res://.godot/imported/sort_scatter.glsl-0bfe1c8fa3f74636bacb5ef47d518333.res"]
+
+[params]
+

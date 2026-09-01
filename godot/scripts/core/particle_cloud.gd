@@ -176,6 +176,7 @@ func setup(p_tex_size: int = DEFAULT_TEX_SIZE) -> bool:
 	_setup_measure()
 	_setup_density()
 	_setup_bake()
+	_setup_sort()
 	_ready_ok = true
 	return true
 
@@ -748,6 +749,13 @@ func iterate() -> void:
 			_needs_seed = false
 		source.encode(cl, _count, _frame, false)
 		_rd.compute_list_end()
+	# Sort after the step so the order matches the positions being drawn. Every frame:
+	# the view moves even when the cloud does not.
+	if _splat and _sort_ok:
+		_run_sort()
+		_set_sorting(true)
+	else:
+		_set_sorting(false)
 	_rd.capture_timestamp("cloud_end")
 
 
@@ -833,6 +841,143 @@ func set_framing(c: Vector3, f: float) -> void:
 var _pushed_center := Vector3(INF, INF, INF)
 var _pushed_fit := -1.0
 
+# --- Depth sort ---------------------------------------------------------------
+#
+# Splats composite with "over", which is order-dependent, so an unsorted cloud never
+# reads as a solid surface: far splats drawn late bleed through near ones. This is the
+# one thing the WebXR renderer did that the first Godot renderer did not. A GPU counting
+# sort by view depth every frame: count into buckets, prefix-sum (bake_scan.glsl),
+# scatter ids into a permutation image, and the vertex shader draws slot i as perm[i].
+const SORT_BUCKETS := 4096            # 16 scan blocks; depth resolution of ~1/500 of the cloud
+const SORT_BLOCKS := SORT_BUCKETS / 256
+## Depth range sorted, in cloud radii either side of the framing centre. Framing keeps
+## the RMS radius at or under 1, so this covers the spikes; anything past it clamps to
+## an end bucket and is merely mis-ordered, not lost.
+const SORT_RADII := 4.0
+var _sort_count_shader: RID
+var _sort_count_pipeline: RID
+var _sort_count_set: RID
+var _sort_scan_set: RID
+var _sort_scatter_shader: RID
+var _sort_scatter_pipeline: RID
+var _sort_scatter_set: RID
+var _sort_cnt_buf: RID
+var _sort_off_buf: RID
+var _sort_bsum_buf: RID
+var _sort_cur_buf: RID
+var _perm_tex: RID
+var _perm_texture := Texture2DRD.new()
+var _sort_ok := false
+## Camera-inverse times cloud transform, set by the host each frame. Identity until then.
+var _view_mv := Transform3D.IDENTITY
+var _sorting := false
+
+
+func _setup_sort() -> void:
+	_sort_count_shader = _compile("res://shaders/sort_count.glsl", "sort_count")
+	_sort_scatter_shader = _compile("res://shaders/sort_scatter.glsl", "sort_scatter")
+	if not (_sort_count_shader.is_valid() and _sort_scatter_shader.is_valid()
+			and _scan_pipeline.is_valid()):
+		return
+	_sort_count_pipeline = _rd.compute_pipeline_create(_sort_count_shader)
+	_sort_scatter_pipeline = _rd.compute_pipeline_create(_sort_scatter_shader)
+	_sort_cnt_buf = _rd.storage_buffer_create(SORT_BUCKETS * 4, PackedByteArray())
+	_sort_off_buf = _rd.storage_buffer_create(SORT_BUCKETS * 4, PackedByteArray())
+	_sort_cur_buf = _rd.storage_buffer_create(SORT_BUCKETS * 4, PackedByteArray())
+	_sort_bsum_buf = _rd.storage_buffer_create(SORT_BLOCKS * 4, PackedByteArray())
+
+	var fmt := RDTextureFormat.new()
+	fmt.width = tex_size
+	fmt.height = tex_size
+	fmt.format = RenderingDevice.DATA_FORMAT_R32_SFLOAT
+	fmt.usage_bits = (RenderingDevice.TEXTURE_USAGE_STORAGE_BIT
+		| RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
+		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
+	_perm_tex = _rd.texture_create(fmt, RDTextureView.new(), [])
+	_perm_texture.texture_rd_rid = _perm_tex
+	_splat_material.set_shader_parameter("perm_tex", _perm_texture)
+
+	_sort_count_set = _rd.uniform_set_create(
+		[_image(0, _state_tex), _ssbo(1, _sort_cnt_buf)], _sort_count_shader, 0)
+	_sort_scan_set = _rd.uniform_set_create(
+		[_ssbo(0, _sort_cnt_buf), _ssbo(1, _sort_off_buf), _ssbo(2, _sort_bsum_buf)], _scan_shader, 0)
+	_sort_scatter_set = _rd.uniform_set_create([
+		_image(0, _state_tex), _ssbo(1, _sort_off_buf), _ssbo(2, _sort_cur_buf), _image(3, _perm_tex),
+	], _sort_scatter_shader, 0)
+	_sort_ok = true
+
+
+## The view the sort is for: camera transform in world space. Called by the host every
+## frame before iterate(); the cloud's own transform is folded in here.
+func set_view(camera: Transform3D) -> void:
+	_view_mv = camera.affine_inverse() * global_transform
+
+
+func _run_sort() -> void:
+	var mv := _view_mv
+	var mscale := mv.basis.x.length()
+	var d_centre := -mv.origin.z
+	var r := SORT_RADII * maxf(1e-4, mscale)
+	var pc := PackedByteArray()
+	pc.resize(112)
+	# mat4 in std430 is column-major: four columns of vec4.
+	var cols := [mv.basis.x, mv.basis.y, mv.basis.z, mv.origin]
+	for c in 4:
+		var v: Vector3 = cols[c]
+		pc.encode_float(c * 16 + 0, v.x)
+		pc.encode_float(c * 16 + 4, v.y)
+		pc.encode_float(c * 16 + 8, v.z)
+		pc.encode_float(c * 16 + 12, 1.0 if c == 3 else 0.0)
+	pc.encode_float(64, center.x)
+	pc.encode_float(68, center.y)
+	pc.encode_float(72, center.z)
+	pc.encode_float(76, fit)
+	pc.encode_s32(80, _count)
+	pc.encode_s32(84, tex_size)
+	pc.encode_s32(88, SORT_BUCKETS)
+	pc.encode_float(92, d_centre - r)
+	pc.encode_float(96, 1.0 / (2.0 * r))
+	var groups := int(ceil(float(_count) / 256.0))
+
+	_rd.buffer_clear(_sort_cnt_buf, 0, SORT_BUCKETS * 4)
+	_rd.buffer_clear(_sort_cur_buf, 0, SORT_BUCKETS * 4)
+	var cl := _rd.compute_list_begin()
+	_rd.compute_list_bind_compute_pipeline(cl, _sort_count_pipeline)
+	_rd.compute_list_bind_uniform_set(cl, _sort_count_set, 0)
+	_rd.compute_list_set_push_constant(cl, pc, 112)
+	_rd.compute_list_dispatch(cl, groups, 1, 1)
+	_rd.compute_list_add_barrier(cl)
+
+	_rd.compute_list_bind_compute_pipeline(cl, _scan_pipeline)
+	_rd.compute_list_bind_uniform_set(cl, _sort_scan_set, 0)
+	for stage in 3:
+		var spc := PackedByteArray()
+		spc.resize(16)
+		spc.encode_s32(0, SORT_BUCKETS)
+		spc.encode_s32(4, SORT_BLOCKS)
+		spc.encode_s32(8, stage)
+		spc.encode_s32(12, 0)
+		_rd.compute_list_set_push_constant(cl, spc, 16)
+		_rd.compute_list_dispatch(cl, 1 if stage == 1 else SORT_BLOCKS, 1, 1)
+		_rd.compute_list_add_barrier(cl)
+
+	_rd.compute_list_bind_compute_pipeline(cl, _sort_scatter_pipeline)
+	_rd.compute_list_bind_uniform_set(cl, _sort_scatter_set, 0)
+	_rd.compute_list_set_push_constant(cl, pc, 112)
+	_rd.compute_list_dispatch(cl, groups, 1, 1)
+	_rd.compute_list_end()
+
+
+func _set_sorting(on: bool) -> void:
+	if on == _sorting:
+		return
+	_sorting = on
+	_splat_material.set_shader_parameter("use_sort", on)
+
+
+func perm_texture_rid() -> RID:
+	return _perm_tex
+
 
 func _push_framing() -> void:
 	# ease_framing calls this every frame for the whole session; once the lerp has
@@ -873,12 +1018,15 @@ func cleanup() -> void:
 		_normal_texture.texture_rd_rid = RID()
 		_density_texture.texture_rd_rid = RID()
 		_bake_texture.texture_rd_rid = RID()
+		_perm_texture.texture_rd_rid = RID()
 		# Pipelines and uniform sets are dependents of these and are freed with them.
 		for rid: RID in [
 			_state_tex, _normal_tex, _measure_shader, _stats_buf,
 			_density_shader, _density_buf, _density_tex, _norm_shader, _norm_buf,
 			_scan_shader, _scatter_shader, _shape_shader,
 			_off_buf, _bsum_buf, _cursor_buf, _sorted_buf, _bake_norm_buf, _bake_tex,
+			_sort_count_shader, _sort_scatter_shader, _sort_cnt_buf, _sort_off_buf,
+			_sort_bsum_buf, _sort_cur_buf, _perm_tex,
 		]:
 			if rid.is_valid():
 				_rd.free_rid(rid)

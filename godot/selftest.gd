@@ -95,6 +95,13 @@ func _check_bake(rd: RenderingDevice, cloud: ParticleCloud, lib: PresetLibrary) 
 	if not cloud.bake_ready:
 		return "bake %s: produced no usable sizes" % name
 
+	# The depth sort ran on every one of those frames. Its output has to be a permutation
+	# of 0..count-1: a hole means a splat drawn twice and another never, which no picture
+	# would reveal as anything but "a bit noisy".
+	var perm_msg := _check_perm(rd, cloud)
+	if perm_msg != "":
+		return perm_msg
+
 	var data := rd.texture_get_data(cloud.bake_texture_rid(), 0)
 	var stride := 8    # RGBA16F
 	var n := 0
@@ -135,6 +142,28 @@ func _check_bake(rd: RenderingDevice, cloud: ParticleCloud, lib: PresetLibrary) 
 			name, ratio]
 	print("  bake %-10s mean %.5f  sd %.5f (%.0f%%)  minor/major %.2f  empty %d/%d" % [
 		name, mean, sd, sd / mean * 100.0, ratio, zero, n])
+	return ""
+
+
+func _check_perm(rd: RenderingDevice, cloud: ParticleCloud) -> String:
+	var data := rd.texture_get_data(cloud.perm_texture_rid(), 0)
+	if data.size() < COUNT * 4:
+		return "sort: short readback (%d bytes)" % data.size()
+	var seen := PackedByteArray()
+	seen.resize(COUNT)
+	var dup := 0
+	var range_bad := 0
+	for i in COUNT:
+		var v := int(data.decode_float(i * 4) + 0.5)
+		if v < 0 or v >= COUNT:
+			range_bad += 1
+		elif seen[v] != 0:
+			dup += 1
+		else:
+			seen[v] = 1
+	if range_bad > 0 or dup > 0:
+		return "sort: not a permutation (%d out of range, %d duplicates of %d)" % [range_bad, dup, COUNT]
+	print("  sort: permutation of %d complete" % COUNT)
 	return ""
 
 

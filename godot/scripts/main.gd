@@ -928,6 +928,8 @@ func _process(delta: float) -> void:
 	_eye_res = _current_eye_res()
 	if _status == "" and cloud.get_error() != "":
 		_fail(cloud.get_error())
+	# The depth sort is for the head; both eyes share one order, as Spark does.
+	cloud.set_view(xr_camera.global_transform)
 	RenderingServer.call_on_render_thread(cloud.iterate)
 
 

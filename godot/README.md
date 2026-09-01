@@ -249,6 +249,23 @@ The one Spark feature not ported is the per-frame back-to-front sort. Unsorted "
 order-dependent; a thin shell of similarly coloured splats is the mildest case, so the
 sort is deferred until the headset says otherwise.
 
+### The depth sort
+
+Splats composite with "over", and "over" is order-dependent. Drawn in particle order, a
+far splat that happens to come after a near one bleeds through it, and the sum of those
+errors is a surface that never looks solid however high SOLID goes. Spark, the WebXR
+build's renderer, sorts every splat back-to-front on every view change, and that turned
+out to be the largest single difference between the two builds.
+
+The Godot build now does the same as a GPU counting sort, every frame in splat mode:
+`sort_count.glsl` buckets each particle by its view depth (4096 buckets across four cloud
+radii either side of the framing centre), `bake_scan.glsl` prefix-sums the buckets, and
+`sort_scatter.glsl` writes the particle ids into a permutation. The permutation crosses to
+the vertex shader as an R32F texture, because a spatial shader can sample a texture and
+cannot read a storage buffer; slot i of the mesh then draws particle `perm[i]`. One sort
+serves both eyes, keyed on the head. The self-test reads the permutation back and fails
+unless every id appears exactly once.
+
 ### The fill-rate guard
 
 The projected-covariance renderer moved the cost model: it is now almost pure fill rate,
