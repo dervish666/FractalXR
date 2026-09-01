@@ -5,6 +5,17 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Added
+- **Ground mode in the native build: stand on the fractal.** MODE now cycles flame, bulb,
+  ground. A Mandelbrot or Julia set is the floor and runs to the horizon: crisp at your feet,
+  smooth in the distance, and the frame cost does not depend on zoom or iteration count. It is
+  a GPU clipmap (eight 512-texel levels, each twice the scale of the last, all centred under
+  you) filled by a compute port of the web zoomer's escape-time core, coloured Frax-style at
+  sample time: palette (THEME and BANDS apply), FREQ, HUE, orbit TEXTURE, RELIEF (terraces from
+  iteration count or ridges from distance, lit), SET (Mandelbrot or Julia), JULIA from here,
+  ITER, HOME. Left stick walks, right stick zooms about your feet. Float32, so useful zoom ends
+  around 1e5; perturbation is the follow-up. The self-test fills a stack and checks two points.
+
 ### Changed
 - **Native build: the self-inflicted stalls are gone.** A flame morph rebuilt the genome
   storage buffer and its uniform set every frame (`FlameSource.set_preset`); it now rewrites

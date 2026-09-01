@@ -60,6 +60,13 @@ func _init() -> void:
 		failures.append(bake_msg)
 
 	cloud.cleanup()
+
+	# The ground viewer: its compute fill and clipmap bookkeeping, checked against two
+	# points whose fate is not in doubt.
+	var ground_msg: String = await _check_ground(rd)
+	if ground_msg != "":
+		failures.append(ground_msg)
+
 	_done(failures.is_empty(), "; ".join(failures))
 
 
@@ -150,6 +157,55 @@ func _check_bake(rd: RenderingDevice, cloud: ParticleCloud, lib: PresetLibrary) 
 	print("  bake %-10s mean %.5f  sd %.5f (%.0f%%)  minor/major %.2f  empty %d/%d" % [
 		name, mean, sd, sd / mean * 100.0, ratio, zero, n])
 	return ""
+
+
+func _check_ground(rd: RenderingDevice) -> String:
+	var g := FractalGround.new()
+	if not g.setup():
+		return "ground: %s" % g.get_error()
+	g.centre = Vector2(0.0, 0.0)
+	var frames := 0
+	while frames < 120:
+		g.update(Vector2.ZERO)
+		await process_frame
+		frames += 1
+		if frames > 2 and g.pending_texels() == 0:
+			break
+	if g.pending_texels() > 0:
+		return "ground: %d texels still pending after %d frames" % [g.pending_texels(), frames]
+	# Level 0 layer: texel containing the origin (inside the set) and one at (1.5, 1.5)
+	# (escapes on the second iteration).
+	var t0: float = g._texel0()
+	var layer: int = (0 + g._rot) % FractalGround.LEVELS
+	var data := rd.texture_get_data(g._tex, layer)
+	var n := FractalGround.N
+	if data.size() < n * n * 16:
+		return "ground: short readback"
+	var inside := _ground_texel(data, n, Vector2(0.0, 0.0), t0)
+	var outside := _ground_texel(data, n, Vector2(0.001, 0.001), t0)
+	if inside.z < 0.5:
+		return "ground: origin not inside the set (flag %.2f, iter %.1f)" % [inside.z, inside.x]
+	# Level 0 spans only ~1.5m of the ~90m set at stage 0, so a far-outside point is not in
+	# its window; check the coarsest level for (1.5, 1.5) instead.
+	var tl: float = g._texel(FractalGround.LEVELS - 1)
+	var ll: int = (FractalGround.LEVELS - 1 + g._rot) % FractalGround.LEVELS
+	var far := _ground_texel(rd.texture_get_data(g._tex, ll), n, Vector2(1.5, 1.5), tl)
+	if far.z > 0.5 or far.x > 6.0:
+		return "ground: (1.5,1.5) should escape fast (flag %.2f, iter %.1f)" % [far.z, far.x]
+	print("  ground: filled in %d frames; origin inside, (1.5,1.5) escapes at %.1f; budget %d" % [
+		frames, far.x, int(g._budget)])
+	g.cleanup()
+	return ""
+
+
+func _ground_texel(data: PackedByteArray, n: int, c: Vector2, texel: float) -> Vector4:
+	var ax := int(floor(c.x / texel))
+	var ay := int(floor(c.y / texel))
+	var sx := ((ax % n) + n) % n
+	var sy := ((ay % n) + n) % n
+	var o := (sy * n + sx) * 16
+	return Vector4(data.decode_float(o), data.decode_float(o + 4),
+		data.decode_float(o + 8), data.decode_float(o + 12))
 
 
 func _check_perm(rd: RenderingDevice, cloud: ParticleCloud) -> String:

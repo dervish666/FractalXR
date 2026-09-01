@@ -96,6 +96,20 @@ var help := HelpCard.new()
 
 var xr: OpenXRInterface = null
 var cloud := ParticleCloud.new()
+## The third mode: stand on a Mandelbrot or Julia set that runs to the horizon.
+var ground := FractalGround.new()
+var ground_mode := false
+const GROUND_ITER := [256, 512, 1024, 128]
+var ground_iter_idx := 0
+const GROUND_RELIEF := ["terraces", "ridges", "flat"]
+var ground_relief_idx := 0
+const GROUND_TEXTURE := [0.6, 1.0, 0.0, 0.3]
+var ground_texture_idx := 0
+const GROUND_FREQ := [1.0, 2.0, 4.0, 0.5]
+var ground_freq_idx := 0
+var ground_hue := 0.0
+const GROUND_PAN_MPS := 1.4       # metres per second at full stick
+const GROUND_ZOOM_PER_S := 0.9    # e-folds per second at full stick
 var library := PresetLibrary.new()
 var grab: WorldGrab = null
 var tonemap := Flam3Tonemap.new()
@@ -273,6 +287,7 @@ const BULB_EXPOSURE_IDX := 0      # points are already bright, so do not push th
 
 func _ready() -> void:
 	add_child(cloud)
+	add_child(ground)
 
 	if not library.load_all():
 		_fail("presets: %s" % library.load_error)
@@ -303,6 +318,8 @@ func _ready() -> void:
 
 func _setup_gpu() -> void:
 	var ok := cloud.setup(TEX_SIZE)
+	if ok and not ground.setup():
+		push_error("[ground] %s" % ground.get_error())
 	call_deferred("_on_gpu_ready", ok)
 
 
@@ -351,8 +368,8 @@ func _build_menu() -> void:
 				library.next_serial()))),
 
 		WristMenu.Item.new("scene", "MODE",
-			func(): return "bulb" if bulb_mode else "flame",
-			func(): _set_bulb_mode(not bulb_mode)),
+			func(): return "ground" if ground_mode else ("bulb" if bulb_mode else "flame"),
+			func(): _cycle_mode()),
 		WristMenu.Item.new("scene", "FLAME",
 			func(): return library.bulbs[bulb_idx].get("name", "?") if bulb_mode else "next",
 			func():
@@ -473,6 +490,48 @@ func _build_menu() -> void:
 				render_idx = (render_idx + 1) % RENDER_STEPS.size()
 				if xr != null:
 					xr.render_target_size_multiplier = RENDER_STEPS[render_idx]),
+		WristMenu.Item.new("look", "SET",
+			func(): return "julia" if ground.julia else "mandelbrot",
+			func(): ground.set_julia(not ground.julia),
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "JULIA",
+			func(): return "from here",
+			func(): ground.julia_here(),
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "ITER",
+			func(): return str(GROUND_ITER[ground_iter_idx]),
+			func():
+				ground_iter_idx = (ground_iter_idx + 1) % GROUND_ITER.size()
+				ground.set_max_iter(GROUND_ITER[ground_iter_idx]),
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "RELIEF",
+			func(): return GROUND_RELIEF[ground_relief_idx],
+			func():
+				ground_relief_idx = (ground_relief_idx + 1) % GROUND_RELIEF.size()
+				_apply_ground_look(),
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "TEXTURE",
+			func(): return "%d%%" % int(GROUND_TEXTURE[ground_texture_idx] * 100.0),
+			func():
+				ground_texture_idx = (ground_texture_idx + 1) % GROUND_TEXTURE.size()
+				_apply_ground_look(),
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "FREQ",
+			func(): return "%.1fx" % GROUND_FREQ[ground_freq_idx],
+			func():
+				ground_freq_idx = (ground_freq_idx + 1) % GROUND_FREQ.size()
+				_apply_ground_look(),
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "HUE",
+			func(): return "%.2f" % ground_hue,
+			func():
+				ground_hue = fmod(ground_hue + 0.125, 1.0)
+				_apply_ground_look(),
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "HOME",
+			func(): return "reset view",
+			func(): ground.home(),
+			false, func(): return ground_mode),
 		# Glow is a downsample/blur/upsample chain per eye on a tiler, and its cost has
 		# never been measured. This toggle is the instrument: flip it and read the ms.
 		WristMenu.Item.new("look", "GLOW",
@@ -544,6 +603,37 @@ func _morph_to_preset(i: int) -> void:
 ## builds up over a session.
 ## Switch between the flame gallery and the bulb gallery. Both are FractalSources over
 ## the same particle cloud, so everything else is untouched.
+## flame -> bulb -> ground -> flame.
+func _cycle_mode() -> void:
+	if ground_mode:
+		_set_ground_mode(false)
+	elif bulb_mode:
+		_set_bulb_mode(false)
+		_set_ground_mode(true)
+	else:
+		_set_bulb_mode(true)
+
+
+func _set_ground_mode(on: bool) -> void:
+	ground_mode = on
+	ground.visible = on
+	cloud.set_visible_cloud(not on)
+	if on:
+		ground.home()
+		_apply_ground_look()
+		_apply_palette()
+
+
+func _apply_ground_look() -> void:
+	ground.set_look(&"relief_mode", [1, 2, 0][ground_relief_idx])
+	ground.set_look(&"texture_strength", GROUND_TEXTURE[ground_texture_idx])
+	ground.set_look(&"colour_freq", GROUND_FREQ[ground_freq_idx])
+	ground.set_look(&"colour_offset", ground_hue)
+	ground.set_look(&"texture_strength", GROUND_TEXTURE[ground_texture_idx])
+	ground.set_texture_on(GROUND_TEXTURE[ground_texture_idx] > 0.0)
+	ground.set_palette_cycles(COLOUR_CYCLES[colour_idx])
+
+
 func _set_bulb_mode(on: bool) -> void:
 	bulb_mode = on
 	if on:
@@ -913,7 +1003,7 @@ func _process(delta: float) -> void:
 			print("[cloud] cached framing for %s" % library.name_at(_pending_cache))
 		_pending_cache = -1
 	_sync_iteration()
-	if spin and _xr_focused and (grab == null or not grab.is_grabbing()):
+	if spin and _xr_focused and not ground_mode and (grab == null or not grab.is_grabbing()):
 		cloud.rotate_y(AMBIENT_SPIN * delta)
 		cloud.rotate_object_local(Vector3.RIGHT, AMBIENT_TILT * delta)
 	if grab != null:
@@ -925,6 +1015,10 @@ func _process(delta: float) -> void:
 	_eye_res = _current_eye_res()
 	if _status == "" and cloud.get_error() != "":
 		_fail(cloud.get_error())
+	if ground_mode:
+		var hp := xr_camera.global_transform.origin
+		ground.update(Vector2(hp.x, hp.z))
+		return
 	# The depth sort is for the head; both eyes share one order, as Spark does.
 	cloud.set_view(xr_camera.global_transform)
 	RenderingServer.call_on_render_thread(cloud.iterate)
@@ -960,9 +1054,23 @@ func _handle_input(delta: float) -> void:
 	if xr == null:
 		rs = Vector2(Input.get_axis("ui_left", "ui_right"), Input.get_axis("ui_down", "ui_up"))
 
+	if ground_mode:
+		# Left stick walks the fractal under you, in the direction you face; right stick
+		# Y zooms about the ground under your feet.
+		var basis := xr_camera.global_transform.basis
+		var fwd := Vector2(-basis.z.x, -basis.z.z)
+		var right := Vector2(basis.x.x, basis.x.z)
+		if fwd.length_squared() > 1e-6:
+			fwd = fwd.normalized()
+		if right.length_squared() > 1e-6:
+			right = right.normalized()
+		if ls.length() > 0.15:
+			ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
+		if absf(rs.y) > 0.15:
+			ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping.
-	if grab == null or not grab.is_grabbing():
+	elif grab == null or not grab.is_grabbing():
 		if absf(rs.x) > 0.15:
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
@@ -975,10 +1083,11 @@ func _handle_input(delta: float) -> void:
 	if _pressed(right_hand, "trigger_click") or _key(KEY_RIGHT):
 		if _menu_active:
 			menu.activate()
-		else:
+		elif not ground_mode:
 			_morph_to_preset(preset_idx + 1)
 	if _pressed(left_hand, "trigger_click") or _key(KEY_LEFT):
-		_morph_to_preset(preset_idx - 1)
+		if not ground_mode:
+			_morph_to_preset(preset_idx - 1)
 	if _pressed(left_hand, "menu_button") or _key(KEY_D):
 		_drift = not _drift
 		_drift_hold = 0.0
@@ -1037,8 +1146,10 @@ func _apply_palette() -> void:
 			mixed.append((_theme_from[i] as Vector3).lerp(target[i] as Vector3,
 				Morph.smoothstep_t(_theme_blend)))
 		cloud.override_palette(mixed)
+		ground.set_palette(mixed)
 	else:
 		cloud.override_palette(target)
+		ground.set_palette(target)
 
 
 var _theme_cache: Dictionary = {}   # theme index -> Array[Vector3], parsed once
@@ -1064,6 +1175,7 @@ func _begin_theme_blend() -> void:
 
 func _apply_point_look() -> void:
 	cloud.set_palette_cycles(COLOUR_CYCLES[colour_idx])
+	ground.set_palette_cycles(COLOUR_CYCLES[colour_idx])
 	cloud.set_opacity(OPACITY_STEPS[opacity_idx])
 	cloud.set_density_strength(DENSITY_STEPS[density_idx])
 	cloud.set_splat(splat_on, SPLAT_STEPS[splat_idx])
@@ -1116,7 +1228,7 @@ func _update_hud(delta: float) -> void:
 
 	var vp := get_viewport().get_viewport_rid()
 	var gpu := RenderingServer.viewport_get_measured_render_time_gpu(vp)
-	var sim := cloud.iterate_us / 1000.0
+	var sim := (ground.ground_us if ground_mode else cloud.iterate_us) / 1000.0
 	var fps := Engine.get_frames_per_second()
 	var grabbing := 0 if grab == null else grab.grip_count()
 
@@ -1183,3 +1295,4 @@ func _mark_help_seen() -> void:
 
 func _exit_tree() -> void:
 	RenderingServer.call_on_render_thread(cloud.cleanup)
+	RenderingServer.call_on_render_thread(ground.cleanup)
