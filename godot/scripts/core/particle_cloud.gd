@@ -399,7 +399,9 @@ func bake() -> void:
 	_bake_first = 0
 	bake_progress = 0.0
 	bake_ready = false
-	_splat_material.set_shader_parameter("use_bake", false)
+	# The previous bake, if any, stays on while this one is computed; sizes only switch
+	# when the new numbers land (_on_bake_norm). Off would mean a pop to grid sizing and
+	# back for the handful of frames a bake takes.
 	# Roomier than the density grid's box. A particle that falls outside gets a fallback
 	# size rather than a real neighbourhood, so the box wants to contain the spikes too.
 	_bake_extent = maxf(0.2, 2.6 / maxf(0.05, fit))
@@ -521,12 +523,31 @@ func _on_bake_norm(raw: PackedByteArray) -> void:
 	print("[cloud] baked %d splats, mean axis %.5f" % [_count, _bake_mean])
 
 
+## Coverage mode: each splat's sigma is this multiple of its OWN baked neighbourhood axis,
+## in cloud units, which is how bulbSplat.ts sizes them (A_SCALE 0.9 of the kNN sigma).
+## 0 is the old absolute mode, where SPLAT sets the mean radius in metres and the bake
+## only decides the spread. The headset measured a mean baked axis of 0.014 against a
+## default radius of 0.006: coverage 0.43, splats less than half the size they need to
+## merge, which is why the surface read as discs however it was sorted.
+var _coverage := 0.0
+
+
+func set_coverage(c: float) -> void:
+	_coverage = maxf(0.0, c)
+	_apply_bake_scale()
+
+
 func _apply_bake_scale() -> void:
 	if _bake_mean <= 0.0:
 		return
-	# The baked lengths are in state units. Dividing by their mean makes them a ratio, so
-	# SPLAT still sets the average size and the bake only decides the spread around it.
-	_splat_material.set_shader_parameter("bake_scale", _splat_radius / _bake_mean)
+	if _coverage > 0.0:
+		_splat_material.set_shader_parameter("bake_scale", _coverage)
+		_splat_material.set_shader_parameter("bake_in_cloud_units", true)
+	else:
+		# The baked lengths are in state units. Dividing by their mean makes them a ratio,
+		# so SPLAT still sets the average size and the bake only decides the spread.
+		_splat_material.set_shader_parameter("bake_scale", _splat_radius / _bake_mean)
+		_splat_material.set_shader_parameter("bake_in_cloud_units", false)
 
 
 func is_baking() -> bool:
@@ -597,15 +618,19 @@ func set_source(s: FractalSource) -> bool:
 
 
 ## The current source has been given a new genome in place (same shader, same buffers).
-## Everything set_source does except the GPU setup: new palette, no stale bake, reseed.
 ## Render thread only, because it rewrites the parameter buffer.
+##
+## The particles are deliberately NOT reseeded: the old shell is the starting point, and
+## the iterator projects it onto the new surface over the settle. That is what makes a
+## bulb switch a morph instead of a ball of seeds collapsing (which also drew at 30fps).
+## The previous bake stays live for the same reason: its per-splat sizes are about right
+## for the neighbouring shape, and the re-bake after the settle replaces them without a
+## visible pop.
 func reload_source() -> void:
 	if not _ready_ok or source == null:
 		return
 	source.update_params()
-	clear_bake()
 	apply_look()
-	_needs_seed = true
 
 
 ## Pull palette and tone settings from the active source. Called on a preset change.

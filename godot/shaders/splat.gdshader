@@ -32,9 +32,11 @@ shader_type spatial;
 render_mode unshaded, blend_premul_alpha, cull_disabled, depth_draw_never,
 	fog_disabled, shadows_disabled, skip_vertex_transform;
 
-// Quad half-extent in standard deviations. Spark's default is sqrt(8), so the Gaussian is
-// evaluated out to 2.83 sigma and the falloff is exp(-0.5 * 8 * r^2).
-const float MAX_STDDEV2 = 8.0;
+// Quad half-extent in squared standard deviations. Spark's default is 8 (2.83 sigma);
+// 5 (2.24 sigma) cuts the quad's area by 37% and clips the Gaussian at exp(-2.5) = 8%,
+// which Spark's own tuning notes call acceptable. Fill is the entire cost of this
+// renderer, and coverage-sized splats need every pixel of it.
+const float MAX_STDDEV2 = 5.0;
 // Dilation of the projected covariance, in square pixels, and the antialiasing floor.
 // Without it a distant splat lands inside one pixel and flickers as it moves.
 const float BLUR_PX2 = 0.3;
@@ -81,9 +83,11 @@ uniform bool use_bake = false;
 // id exactly. Off, the slot is the particle, which is the unsorted order.
 uniform sampler2D perm_tex : filter_nearest;
 uniform bool use_sort = false;
-// splat_radius / mean baked axis, so SPLAT still sets the average and the bake only
-// decides how each splat departs from it.
+// Either splat_radius / mean baked axis (SPLAT sets the average, the bake the spread) or,
+// with bake_in_cloud_units, a coverage multiple of each splat's own baked axis, which is
+// in state units and so also wants cloud_fit.
 uniform float bake_scale = 1.0;
+uniform bool bake_in_cloud_units = false;
 // The frame-rate governor's lever. Scales every splat's real size, so cost falls with
 // its square. 1 when the frame budget holds; cut hard the moment it does not.
 uniform float perf_scale = 1.0;
@@ -176,8 +180,9 @@ void vertex() {
 			vec3 e2 = t2 * bk.x - t1 * bk.y;
 			t1 = e1;
 			t2 = e2;
-			l1 = bk.z * bake_scale * mscale * perf_scale;
-			l2 = bk.w * bake_scale * mscale * perf_scale;
+			float bs = bake_scale * mscale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
+			l1 = bk.z * bs;
+			l2 = bk.w * bs;
 		} else if (density_strength > 0.01) {
 			vec3 gn = ((s.xyz - density_centre) / density_extent) * 0.5 + 0.5;
 			ivec3 gc = ivec3(clamp(gn * float(density_grid), vec3(0.0), vec3(float(density_grid) - 1.0)));

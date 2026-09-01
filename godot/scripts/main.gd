@@ -31,6 +31,11 @@ const SHARPNESS := [3.0, 3.0, 3.5, 4.0]
 # Splat radius in metres, before the cloud's own scale. Bulbs want the larger end: a
 # distance-estimate shell is a surface, and a surface wants overlapping discs.
 const SPLAT_STEPS := [0.006, 0.010, 0.016, 0.026, 0.042, 0.003]
+# Bulb mode sizes splats by coverage instead: sigma as a multiple of each splat's own
+# baked neighbourhood axis. 0.9 is bulbSplat.ts's A_SCALE, the WebXR look. Fill cost
+# rises with the square, so the ladder climbs gently and wraps to the cheap end.
+const BULB_COVERAGE := [0.9, 1.1, 1.3, 0.5, 0.7]
+var coverage_idx := 0
 const COLOUR_CYCLES := [1.0, 2.0, 3.0, 4.0]
 # Ascending, so SOLID cycles from ghost to wall instead of jumping about. Unsorted
 # "over" compositing reads thinner than the WebXR build's sorted version at the same
@@ -177,11 +182,6 @@ var _guard_hold := 0.0
 var _guard_slow := 0
 ## False while the system dash covers the app (OpenXR session visible, not focused).
 var _xr_focused := true
-## A fresh bulb spends its settle as a ball of seeds collapsing onto the surface, which is
-## both ugly and the most expensive thing the splat renderer ever draws (measured 30fps
-## for the duration). Hide it until it has settled, then fade the shell in.
-const BULB_FADE_S := 0.6
-var _bulb_fade := 1.0
 ## EXIT is armed for this long after its first press.
 const EXIT_ARM_S := 4.0
 var _exit_armed_until := -1.0
@@ -383,9 +383,14 @@ func _build_menu() -> void:
 				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
 				cloud.request_measure()),
 		WristMenu.Item.new("look", "SPLAT",
-			func(): return "%.0fmm" % (SPLAT_STEPS[splat_idx] * 1000.0) if splat_on else "off",
 			func():
-				if not splat_on:
+				if bulb_mode:
+					return "%.1fx cover" % BULB_COVERAGE[coverage_idx]
+				return "%.0fmm" % (SPLAT_STEPS[splat_idx] * 1000.0) if splat_on else "off",
+			func():
+				if bulb_mode:
+					coverage_idx = (coverage_idx + 1) % BULB_COVERAGE.size()
+				elif not splat_on:
 					splat_on = true
 				else:
 					splat_idx = (splat_idx + 1) % SPLAT_STEPS.size()
@@ -549,7 +554,8 @@ func _set_bulb_mode(on: bool) -> void:
 		# A distance-estimate shell is a surface: splat it. This is the whole reason the
 		# WebXR splat build reads better than a point cloud from the inside.
 		splat_on = true
-		splat_idx = 0     # 6mm; the WebXR cloud's mean splat is smaller still
+		splat_idx = 0     # only the pre-bake frames use this; the bake switches to coverage
+		coverage_idx = 0
 		_flame_opacity_idx = opacity_idx
 		opacity_idx = 1   # 0.22, the WebXR build's ALPHA
 		colour_idx = 1
@@ -569,8 +575,6 @@ func _set_bulb_mode(on: bool) -> void:
 		_apply_point_look()
 		_apply_exposure()
 		_bulb = null
-		_bulb_fade = 1.0
-		cloud.set_visible_cloud(true)
 		cloud.scale = Vector3.ONE
 		cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
 		_load_preset(preset_idx)
@@ -585,8 +589,6 @@ func _load_bulb(i: int) -> void:
 	# whether or not MOTION is asking for a freeze.
 	_bulb_settle = BULB_SETTLE_FRAMES
 	_bake_wait = 0
-	cloud.set_visible_cloud(false)
-	_bulb_fade = 1.0
 	cloud.set_count(int(TEX_SIZE * TEX_SIZE * BULB_PARTICLES))
 	if _bulb != null and cloud.source == _bulb:
 		# Same shader, same buffers: swap the genome in place rather than building a new
@@ -633,8 +635,6 @@ func _sync_iteration() -> void:
 			if _bulb_settle == 0:
 				cloud.request_measure()
 				_bake_wait = BAKE_DELAY_FRAMES
-				cloud.set_visible_cloud(true)
-				_bulb_fade = 0.0
 		elif _bake_wait > 0:
 			# Let the measurement land: the bake bins particles into a grid sized from
 			# the framing, and binning against a stale extent drops the outliers.
@@ -895,9 +895,6 @@ func _process(delta: float) -> void:
 		# The breath is the animation: each genome slowly reshapes whichever parameter
 		# defines its form, so the surface is never static.
 		_bulb.clock += delta * BREATH_STEPS[breath_idx]
-	if _bulb_fade < 1.0:
-		_bulb_fade = minf(1.0, _bulb_fade + delta / BULB_FADE_S)
-		cloud.set_opacity(OPACITY_STEPS[opacity_idx] * Morph.smoothstep_t(_bulb_fade))
 	_tick_morph(delta)
 	if _converge > 0:
 		_converge -= 1
@@ -1070,6 +1067,7 @@ func _apply_point_look() -> void:
 	cloud.set_opacity(OPACITY_STEPS[opacity_idx])
 	cloud.set_density_strength(DENSITY_STEPS[density_idx])
 	cloud.set_splat(splat_on, SPLAT_STEPS[splat_idx])
+	cloud.set_coverage(BULB_COVERAGE[coverage_idx] if bulb_mode else 0.0)
 	cloud.set_point_size(POINT_STEPS[point_idx])
 	cloud.set_sharpness(SHARPNESS[point_idx])
 	cloud.set_brightness(BRIGHT_STEPS[bright_idx])

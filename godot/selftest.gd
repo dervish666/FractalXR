@@ -41,8 +41,10 @@ func _init() -> void:
 		if not cloud.set_source(src):
 			failures.append("%s: %s" % [lib.name_at(i), cloud.get_error()])
 			continue
-		for _f in FRAMES:
+		for f in FRAMES:
 			cloud.iterate()
+			if f % 30 == 29:
+				await process_frame
 		var msg := _check(rd, cloud, lib.name_at(i))
 		if msg != "":
 			failures.append(msg)
@@ -71,8 +73,13 @@ func _check_bake(rd: RenderingDevice, cloud: ParticleCloud, lib: PresetLibrary) 
 	if not cloud.set_source(src):
 		return "bake %s: %s" % [name, cloud.get_error()]
 	cloud.set_splat(true, 0.02)
-	for _f in FRAMES:
+	# Yield now and then. Ninety bulb steps of 707k particles plus a sort per step in ONE
+	# frame sat at the Mac driver's fence timeout, and past it no async readback ever
+	# arrives ("timeout waiting for fence", then "measurement never landed").
+	for f in FRAMES:
 		cloud.iterate()
+		if f % 10 == 9:
+			await process_frame
 	# The bake bins against the measured framing, so wait for the measurement to land.
 	var gen := cloud.measure_generation
 	cloud.request_measure()

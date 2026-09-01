@@ -27,6 +27,12 @@ All notable changes to FractalXR are documented here. Format based on
   reader is gone. The look is unchanged.
 - The bulb iterator evaluated one distance estimate per particle per frame that the first
   projection step immediately recomputed; it no longer does.
+- **Bulb splats are sized by coverage.** The headset's own bake measured a mean neighbour axis of
+  0.014 cloud units against a default splat sigma of 0.006: each splat was 43% of the size it
+  needed to merge with its neighbours, which is why the surface read as discs whatever the
+  opacity or order. In bulb mode SPLAT is now a coverage dial (0.9x of each splat's own baked
+  axis by default, the WebXR builder's A_SCALE) instead of millimetres. The quad is trimmed
+  from 2.83 to 2.24 sigma to pay for it in fill.
 - **Bulb splats are depth-sorted.** A GPU counting sort by view depth runs every frame in
   splat mode and the vertex shader draws back-to-front through the resulting permutation.
   This was the largest remaining difference from the WebXR build's renderer, and the reason
@@ -38,8 +44,10 @@ All notable changes to FractalXR are documented here. Format based on
   now iterated in contiguous slabs and only a slab's worth of workgroups is dispatched.
 - **Palette lookup is branchless** in both point shaders (a mix chain instead of a dynamically
   indexed local array, which Adreno spills to scratch).
-- **A fresh bulb fades in once it has settled** instead of showing the ball of seeds collapsing,
-  which was both ugly and the most expensive thing the splat renderer drew (30fps for a second).
+- **Bulb switches morph.** A new bulb now starts from the old bulb's particles instead of a fresh
+  ball of seeds, so the shell projects onto the new surface over the settle: a real shape-to-shape
+  transition, and the previous bake's splat sizes stay live until the new bake lands. The old
+  seed-ball collapse was also the most expensive thing the renderer drew (30fps for a second).
 - **GLOW toggle in LOOK**, so the cost of the post chain can be measured on the wrist menu
   instead of guessed at. The menu panel is taller to make room for it and EXIT.
 - **Switching bulbs keeps your grab.** Every bulb switch reset the cloud's scale (and with it
