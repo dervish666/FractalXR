@@ -90,20 +90,27 @@ vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 	return mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
 }
 
-// Relief height in metres. Scaled by the finest texel so it looks the same at every zoom:
-// an octave of iteration count is 48 finest texels tall, the bump a couple.
-float height_of(vec4 s) {
-	float unit = texel0 * wpu;
+// Relief height in metres. The big shape is scaled by the finest texel so it looks the
+// same at every zoom: an octave of iteration count is 48 finest texels tall. The bump is
+// scaled by the texel of the level being SAMPLED instead, so its slopes are the same
+// steepness at every distance; tied to the finest texel it vanished two metres out,
+// because the height stayed put while the texels it was measured over grew.
+float height_of(vec4 s, int level) {
+	float unit0 = texel0 * wpu;
+	float unit_l = unit0 * float(1 << level);
 	float h = 0.0;
-	if (relief_mode == 1) h = -log2(1.0 + s.r) * 48.0 * relief_scale;
-	else if (relief_mode == 2) h = clamp(s.g - log2(texel0), 0.0, 16.0) * 12.0 * relief_scale;
-	h += (s.a - 0.5) * 3.0 * bump_strength * (1.0 - clamp(s.b, 0.0, 1.0));
-	return h * unit;
+	if (relief_mode == 1) h = -log2(1.0 + s.r) * 48.0 * relief_scale * unit0;
+	else if (relief_mode == 2) h = clamp(s.g - log2(texel0), 0.0, 16.0) * 12.0 * relief_scale * unit0;
+	// Two grains: the orbit texture (broad, marbled) and the iteration bands themselves,
+	// a sawtooth with a cliff at every whole count, which is the terraced Frax look.
+	float grain = (s.a - 0.5) * 4.0 + (fract(s.r) - 0.5) * 1.5 * (1.0 - clamp(s.b, 0.0, 1.0));
+	h += grain * bump_strength * unit_l;
+	return h;
 }
 
 float height_at(int level, vec2 e0) {
 	bool d;
-	return height_of(sample_level(level, e0, d));
+	return height_of(sample_level(level, e0, d), level);
 }
 
 void vertex() {
