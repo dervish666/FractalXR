@@ -18,6 +18,7 @@ uniform int max_level = 7;      // coarsest level that is complete
 uniform float texel0 = 1e-4;    // fractal units per texel at level 0
 uniform float wpu = 30.0;       // world metres per fractal unit
 uniform vec2 head_xz = vec2(0.0);       // where the viewer stands, world metres
+uniform vec4 rot = vec4(1.0, 0.0, 0.0, 1.0);   // world -> fractal rotation, two columns
 uniform ivec2 view_texel0 = ivec2(0);   // level-0 texel index of the viewer's fractal position
 uniform vec2 view_frac0 = vec2(0.0);    // and the fraction within it, so world offsets stay small
 uniform float slack = 48.0;             // texels of window kept around the viewer (see .gd)
@@ -120,7 +121,7 @@ void vertex() {
 void fragment() {
 	vec2 w = v_world.xz - head_xz;
 	// Offset from the viewer in level-0 texels. Small numbers by construction.
-	vec2 e0 = w / (wpu * texel0);
+	vec2 e0 = (mat2(rot.xy, rot.zw) * w) / (wpu * texel0);
 	float dist = length(w);
 
 	// Pick the level whose texel matches the pixel footprint, but never one whose window

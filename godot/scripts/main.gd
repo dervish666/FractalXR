@@ -118,6 +118,14 @@ const GROUND_RENDER_IDX := 2       # RENDER_STEPS[2] = 1.0
 var _render_idx_saved := 0
 const GROUND_PAN_MPS := 1.4       # metres per second at full stick
 const GROUND_ZOOM_PER_S := 0.9    # e-folds per second at full stick
+const GROUND_TURN_RAD_S := 1.2    # radians per second at full stick
+## RENDER: 2048 levels and 4096 iterations, for a still worth the wait.
+var _render_hq := false
+var _render_iter_saved := 0
+# Ground grab state: which hands hold grip, and where they were last frame.
+var _gg_hands: Array[int] = []
+var _gg_pos: Array[Vector2] = []
+var _gg_yaw := 0.0
 var library := PresetLibrary.new()
 var grab: WorldGrab = null
 var tonemap := Flam3Tonemap.new()
@@ -572,6 +580,12 @@ func _build_menu() -> void:
 			func(): return "reset view",
 			func(): ground.home(),
 			false, func(): return ground_mode),
+		# Double the level size and max the iterations: four times the fill for a still
+		# that is sharp out to the middle distance. The status line counts it in.
+		WristMenu.Item.new("look", "RENDER",
+			func(): return "hq 2048 / 4096" if _render_hq else "normal",
+			func(): _set_render_hq(not _render_hq),
+			false, func(): return ground_mode),
 		# Glow is a downsample/blur/upsample chain per eye on a tiler, and its cost has
 		# never been measured. This toggle is the instrument: flip it and read the ms.
 		WristMenu.Item.new("look", "GLOW",
@@ -588,8 +602,15 @@ func _build_menu() -> void:
 					_exit_armed_until = _uptime + EXIT_ARM_S),
 	]
 	menu.title = func():
+		if ground_mode:
+			var z := ground.zoom_factor()
+			return "%s  ·  zoom %s" % ["Julia" if ground.julia else "Mandelbrot",
+				("%.0fx" % z) if z < 1000.0 else ("%.1ex" % z)]
 		return str(library.bulbs[bulb_idx].get("name", "?")) if bulb_mode else library.name_at(preset_idx)
 	menu.status_side = func():
+		if ground_mode:
+			var pr := ground.progress()
+			return ("rendering %d%%" % int(pr * 100.0)) if pr < 1.0 else "sharp"
 		if _perf_scale < 0.999:
 			# Name the intervention, or a guarded 42mm splat looks like a broken setting.
 			return "guard %d%%" % int(_perf_scale * 100.0)
@@ -605,7 +626,7 @@ func _build_menu() -> void:
 		return "%.0f fps  ·  %d flames  ·  %.1f ms" % [
 			Engine.get_frames_per_second(), library.count(),
 			RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
-				+ cloud.iterate_us / 1000.0]
+				+ (ground.ground_us if ground_mode else cloud.iterate_us) / 1000.0]
 	# Worn like a watch: inside of the left forearm, tilted up toward the face.
 	# Along the forearm, angled up toward the face like a watch worn high on the wrist.
 	menu.transform = Transform3D(Basis(), Vector3(0.0, 0.06, 0.10))
@@ -668,6 +689,69 @@ func _set_ground_mode(on: bool) -> void:
 		render_idx = _render_idx_saved
 	if xr != null:
 		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+
+
+## Point at the ground and pull: glide until that spot is under you.
+func _ground_teleport(hand: XRController3D) -> void:
+	if hand == null or not hand.get_has_tracking_data():
+		return
+	var o := hand.global_transform.origin
+	var d := -hand.global_transform.basis.z
+	if d.y > -0.05:
+		return   # pointing at the sky
+	var t := -o.y / d.y
+	var hit := o + d * t
+	ground.glide_to(Vector2(hit.x, hit.z))
+
+
+## Grip drags the world with the hand and twists it with the wrist; two hands also zoom
+## by their spread. Returns true while any grip is held, so the sticks stay quiet.
+func _ground_grab() -> bool:
+	var hands: Array[int] = []
+	var pos: Array[Vector2] = []
+	var yaw := 0.0
+	var idx := 0
+	for c in [left_hand, right_hand]:
+		if c != null and c.get_has_tracking_data() and c.is_button_pressed("grip_click"):
+			hands.append(idx)
+			var xf: Transform3D = c.global_transform
+			pos.append(Vector2(xf.origin.x, xf.origin.z))
+			yaw = atan2(-xf.basis.z.x, -xf.basis.z.z)
+		idx += 1
+	if hands.is_empty():
+		_gg_hands = []
+		return false
+	if hands == _gg_hands:
+		if hands.size() == 1:
+			# The world follows the hand, so the viewer moves the other way.
+			ground.pan(-(pos[0] - _gg_pos[0]))
+			ground.rotate_about_head(wrapf(yaw - _gg_yaw, -PI, PI))
+		else:
+			var mid := (pos[0] + pos[1]) * 0.5
+			var pmid := (_gg_pos[0] + _gg_pos[1]) * 0.5
+			ground.pan(-(mid - pmid))
+			var d0 := _gg_pos[1] - _gg_pos[0]
+			var d1 := pos[1] - pos[0]
+			if d0.length() > 0.05 and d1.length() > 0.05:
+				ground.zoom(clampf(d1.length() / d0.length(), 0.5, 2.0))
+				ground.rotate_about_head(wrapf(d1.angle() - d0.angle(), -PI, PI))
+	_gg_hands = hands
+	_gg_pos = pos
+	_gg_yaw = yaw
+	return true
+
+
+func _set_render_hq(on: bool) -> void:
+	_render_hq = on
+	if on:
+		_render_iter_saved = ground_iter_idx
+		ground_iter_idx = GROUND_ITER.find(4096)
+		ground.set_max_iter(4096)
+		RenderingServer.call_on_render_thread(ground.set_quality.bind(2048))
+	else:
+		ground_iter_idx = _render_iter_saved
+		ground.set_max_iter(GROUND_ITER[ground_iter_idx])
+		RenderingServer.call_on_render_thread(ground.set_quality.bind(1024))
 
 
 func _apply_ground_look() -> void:
@@ -1034,7 +1118,8 @@ func _process(delta: float) -> void:
 		# The breath is the animation: each genome slowly reshapes whichever parameter
 		# defines its form, so the surface is never static.
 		_bulb.clock += delta * BREATH_STEPS[breath_idx]
-	_tick_morph(delta)
+	if not ground_mode:
+		_tick_morph(delta)   # the flame and its drift wait while you are on the ground
 	if _converge > 0:
 		_converge -= 1
 		if _converge == 0 and _morph_t >= 1.0:
@@ -1066,7 +1151,7 @@ func _process(delta: float) -> void:
 		_fail(cloud.get_error())
 	if ground_mode:
 		var hp := xr_camera.global_transform.origin
-		ground.update(Vector2(hp.x, hp.z))
+		ground.update(Vector2(hp.x, hp.z), delta)
 		return
 	# The depth sort is for the head; both eyes share one order, as Spark does.
 	cloud.set_view(xr_camera.global_transform)
@@ -1113,10 +1198,14 @@ func _handle_input(delta: float) -> void:
 			fwd = fwd.normalized()
 		if right.length_squared() > 1e-6:
 			right = right.normalized()
-		if ls.length() > 0.15:
-			ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
-		if absf(rs.y) > 0.15:
-			ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
+		var grabbing := _ground_grab()
+		if not grabbing:
+			if ls.length() > 0.15:
+				ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
+			if absf(rs.y) > 0.15:
+				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
+			if absf(rs.x) > 0.15:
+				ground.rotate_about_head(-rs.x * GROUND_TURN_RAD_S * delta)
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping.
 	elif grab == null or not grab.is_grabbing():
@@ -1132,10 +1221,14 @@ func _handle_input(delta: float) -> void:
 	if _pressed(right_hand, "trigger_click") or _key(KEY_RIGHT):
 		if _menu_active:
 			menu.activate()
-		elif not ground_mode:
+		elif ground_mode:
+			_ground_teleport(right_hand)
+		else:
 			_morph_to_preset(preset_idx + 1)
 	if _pressed(left_hand, "trigger_click") or _key(KEY_LEFT):
-		if not ground_mode:
+		if ground_mode:
+			_ground_teleport(left_hand)
+		else:
 			_morph_to_preset(preset_idx - 1)
 	if _pressed(left_hand, "menu_button") or _key(KEY_D):
 		_drift = not _drift

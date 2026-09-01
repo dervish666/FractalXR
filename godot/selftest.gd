@@ -178,7 +178,7 @@ func _check_ground(rd: RenderingDevice) -> String:
 	var t0: float = g._texel0()
 	var layer: int = (0 + g._rot) % FractalGround.LEVELS
 	var data := rd.texture_get_data(g._tex, layer)
-	var n := FractalGround.N
+	var n: int = g.n_tex
 	if data.size() < n * n * 8:
 		return "ground: short readback"
 	var inside := _ground_texel(data, n, Vector2(0.0, 0.0), t0)

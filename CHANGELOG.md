@@ -16,6 +16,13 @@ All notable changes to FractalXR are documented here. Format based on
   ITER, HOME. Left stick walks, right stick zooms about your feet. Float32, so useful zoom ends
   around 1e5; perturbation is the follow-up. The self-test fills a stack and checks two points.
 
+- **Ground mode: turning, grabbing, gliding, RENDER, and an honest status line.** Right stick X
+  turns the world about you (Y still zooms), left stick walks. Grip drags the world with the hand
+  and twists it with the wrist; two hands also zoom by their spread. Point a controller at the
+  ground and pull the trigger to glide there. RENDER doubles the level size to 2048 and sets 4096
+  iterations for a still that is sharp into the middle distance, and the menu status counts the
+  fill in ("rendering 34%" until "sharp"). The menu title shows the set and zoom factor, and the
+  flame's morph and drift pause while you are on the ground instead of ticking underneath.
 - **Ground mode: sharper, deeper, bumpier, with a sky.** The finest texel is 1.5mm (was 3) with a
   ninth level to keep the horizon; ground mode runs the full eye buffer (DETAIL 1.0x on entry,
   restored on exit) since it draws in ~6ms; ITER goes to 4096 with the fill budget scaled by the

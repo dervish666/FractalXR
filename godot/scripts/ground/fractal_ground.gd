@@ -3,7 +3,7 @@ class_name FractalGround
 
 ## The ground viewer: you stand on the fractal and it runs to the horizon.
 ##
-## A clipmap. LEVELS square textures of N texels, level i with texels twice the size of
+## A clipmap. LEVELS square textures of n_tex texels, level i with texels twice the size of
 ## level i-1, every window centred under the viewer. ground.glsl fills them (escape-time
 ## Mandelbrot or Julia, four data channels), ground.gdshader samples the level whose texel
 ## matches the pixel footprint and does all the colouring at sample time. So the frame cost
@@ -17,15 +17,16 @@ class_name FractalGround
 ## Float32 throughout, so useful zoom ends around 1e5. Perturbation is the next step and
 ## replaces escape() in ground.glsl and nothing else.
 
-## 1024 rather than 512: a level is only usable out to about (N/2 - SLACK) of its texels
-## from the viewer, and on a ground plane seen at grazing angles that window is what
-## limits sharpness in the middle distance, not the texel size. Half floats keep the
-## stack at 64MB.
-const N := 1024
+## Level size. A level is only usable out to about (n/2 - SLACK) of its texels from the
+## viewer, and on a ground plane seen at grazing angles that window radius, not the texel
+## size, is what limits sharpness in the middle distance. 1024 at half float is 72MB for
+## the stack and a full rebuild of ~9M texels; RENDER doubles it to 2048 (288MB, 36M
+## texels) for a still worth waiting for.
+var n_tex := 1024
 ## Nine, because the finest texel is 1.5mm and the horizon still wants ~180m of window.
 const LEVELS := 9
 ## Window is re-centred once the viewer drifts this many texels from its centre. The
-## shader treats N/2 - SLACK texels around the viewer as valid, so keep them in step.
+## shader treats n_tex/2 - SLACK texels around the viewer as valid, so keep them in step.
 const SLACK := 48
 ## Finest texel at the viewer's feet, in metres, at a zoom stage boundary (it grows to
 ## twice this just before the next stage). About two pixels at standing height.
@@ -71,6 +72,11 @@ var _head_xz := Vector2.ZERO
 var _ready_ok := false
 var _error := ""
 var _worked := false
+## World -> fractal rotation about the viewer (the basis only; translation is `centre`).
+## fractal = centre + M * world_xz / wpu.
+var _m := Transform2D.IDENTITY
+var _glide := Vector2.ZERO        # world metres still to travel toward a trigger target
+var _pending_peak := 0
 
 
 func get_error() -> String:
@@ -103,7 +109,7 @@ func _init() -> void:
 		_have.append(false)
 		_full.append(true)
 		_dirty.append([] as Array[Rect2i])
-	_material.set_shader_parameter("tex_size", N)
+	_material.set_shader_parameter("tex_size", n_tex)
 	_material.set_shader_parameter("num_levels", LEVELS)
 	_material.set_shader_parameter("slack", float(SLACK))
 	visible = false
@@ -128,8 +134,8 @@ func setup() -> bool:
 
 	var fmt := RDTextureFormat.new()
 	fmt.texture_type = RenderingDevice.TEXTURE_TYPE_2D_ARRAY
-	fmt.width = N
-	fmt.height = N
+	fmt.width = n_tex
+	fmt.height = n_tex
 	fmt.array_layers = LEVELS
 	# RGBA16F: smooth count to 1024 with 0.5 resolution (invisible through the log
 	# palette), distance stored as its log2 so it never underflows, flag and texture 0..1.
@@ -166,12 +172,21 @@ func _texel(level: int) -> float:
 
 ## Fractal coordinate under the viewer's head.
 func viewer_fractal() -> Vector2:
-	return centre + _head_xz / wpu
+	return centre + _m.basis_xform(_head_xz) / wpu
 
 
-## Move the fractal under the viewer by a world-space distance (metres, xz).
+## Walk: move the viewer over the fractal by a world-space distance (metres, xz).
 func pan(delta_m: Vector2) -> void:
-	centre += delta_m / wpu
+	centre += _m.basis_xform(delta_m) / wpu
+
+
+## Turn the world by `a` radians about the viewer. The mapping is fractal = centre +
+## M w / wpu; for the world point that lands where p was to keep p's value, M' = M R(-a)
+## and centre moves so the head stays on the same fractal point.
+func rotate_about_head(a: float) -> void:
+	var m2 := _m * Transform2D(-a, Vector2.ZERO)
+	centre += (_m.basis_xform(_head_xz) - m2.basis_xform(_head_xz)) / wpu
+	_m = m2
 
 
 ## Scale about the point under the viewer, so the ground at your feet stays put.
@@ -180,14 +195,66 @@ func zoom(factor: float) -> void:
 	var lo := WPU_BASE * pow(2.0, float(STAGE_MIN))
 	var hi := WPU_BASE * pow(2.0, float(STAGE_MAX + 1)) * 0.999
 	wpu = clampf(wpu * factor, lo, hi)
-	centre = vf - _head_xz / wpu
+	centre = vf - _m.basis_xform(_head_xz) / wpu
 	_sync_stage()
+
+
+## Zoom factor relative to the home view, for the status line.
+func zoom_factor() -> float:
+	return wpu / WPU_BASE
 
 
 func home() -> void:
 	wpu = WPU_BASE
+	_m = Transform2D.IDENTITY
+	_glide = Vector2.ZERO
 	centre = Vector2(-0.6, 0.0) - _head_xz / wpu
 	_sync_stage()
+
+
+## Glide so that the world point `target_xz` ends up under the viewer. Eased over about
+## a second; a new target replaces the old.
+func glide_to(target_xz: Vector2) -> void:
+	_glide = target_xz - _head_xz
+
+
+## 0..1 fill progress of the work queued since the queue was last empty.
+func progress() -> float:
+	var p := pending_texels()
+	if p == 0:
+		_pending_peak = 0
+		return 1.0
+	_pending_peak = maxi(_pending_peak, p)
+	return 1.0 - float(p) / float(maxi(1, _pending_peak))
+
+
+## Level size, live. Frees and rebuilds the stack; everything recomputes. Render thread.
+func set_quality(n: int) -> void:
+	if n == n_tex or not _ready_ok:
+		return
+	n_tex = n
+	_texture.texture_rd_rid = RID()
+	if _tex.is_valid():
+		_rd.free_rid(_tex)   # the uniform set is its dependent
+	var fmt := RDTextureFormat.new()
+	fmt.texture_type = RenderingDevice.TEXTURE_TYPE_2D_ARRAY
+	fmt.width = n_tex
+	fmt.height = n_tex
+	fmt.array_layers = LEVELS
+	fmt.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
+	fmt.usage_bits = (RenderingDevice.TEXTURE_USAGE_STORAGE_BIT
+		| RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
+		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
+	_tex = _rd.texture_create(fmt, RDTextureView.new(), [])
+	_texture.texture_rd_rid = _tex
+	_material.set_shader_parameter("levels", _texture)
+	_material.set_shader_parameter("tex_size", n_tex)
+	var img := RDUniform.new()
+	img.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+	img.binding = 0
+	img.add_id(_tex)
+	_set = _rd.uniform_set_create([img], _shader, 0)
+	invalidate()
 
 
 func set_julia(on: bool) -> void:
@@ -265,10 +332,16 @@ func _shift_out() -> void:
 
 ## Called by the host every frame while the ground is showing. head_xz is the viewer's
 ## world position on the plane.
-func update(head_xz: Vector2) -> void:
+func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	if not _ready_ok:
 		return
 	_head_xz = head_xz
+	if _glide.length() > 0.02 and delta > 0.0:
+		var f := 1.0 - exp(-delta * 3.5)
+		pan(_glide * f)
+		_glide *= 1.0 - f
+	else:
+		_glide = Vector2.ZERO
 	var vf := viewer_fractal()
 	for i in LEVELS:
 		_track_window(i, vf)
@@ -289,13 +362,14 @@ func update(head_xz: Vector2) -> void:
 	_material.set_shader_parameter("texel0", t0)
 	_material.set_shader_parameter("wpu", wpu)
 	_material.set_shader_parameter("head_xz", head_xz)
+	_material.set_shader_parameter("rot", Vector4(_m.x.x, _m.x.y, _m.y.x, _m.y.y))
 	_material.set_shader_parameter("view_texel0", vt0)
 	_material.set_shader_parameter("view_frac0", frac)
 	_material.set_shader_parameter("level_rot", _rot)
 	_material.set_shader_parameter("min_level", min_level)
 	_material.set_shader_parameter("max_level", maxi(max_level, min_level))
 	_material.set_shader_parameter("fog_end",
-		float(N / 2 - SLACK - 2) * _texel(LEVELS - 1) * wpu)
+		float(n_tex / 2 - SLACK - 2) * _texel(LEVELS - 1) * wpu)
 	RenderingServer.call_on_render_thread(_flush)
 
 
@@ -304,30 +378,30 @@ func update(head_xz: Vector2) -> void:
 func _track_window(i: int, vf: Vector2) -> void:
 	var t := _texel(i)
 	var vt := Vector2i(int(floor(vf.x / t)), int(floor(vf.y / t)))
-	var want := vt - Vector2i(N / 2, N / 2)
+	var want := vt - Vector2i(n_tex / 2, n_tex / 2)
 	if not _have[i]:
 		_win_lo[i] = want
 		_have[i] = true
 		_full[i] = true
-		_dirty[i] = [Rect2i(want, Vector2i(N, N))] as Array[Rect2i]
+		_dirty[i] = [Rect2i(want, Vector2i(n_tex, n_tex))] as Array[Rect2i]
 		return
 	var d := want - _win_lo[i]
 	if absi(d.x) <= SLACK and absi(d.y) <= SLACK:
 		return
 	var old := _win_lo[i]
-	if absi(d.x) >= N or absi(d.y) >= N:
+	if absi(d.x) >= n_tex or absi(d.y) >= n_tex:
 		_win_lo[i] = want
 		_full[i] = true
-		_dirty[i] = [Rect2i(want, Vector2i(N, N))] as Array[Rect2i]
+		_dirty[i] = [Rect2i(want, Vector2i(n_tex, n_tex))] as Array[Rect2i]
 		return
 	var rects: Array[Rect2i] = _dirty[i]
 	if d.x != 0:
-		var x0 := old.x + N if d.x > 0 else want.x
-		rects.append(Rect2i(Vector2i(x0, want.y), Vector2i(absi(d.x), N)))
+		var x0 := old.x + n_tex if d.x > 0 else want.x
+		rects.append(Rect2i(Vector2i(x0, want.y), Vector2i(absi(d.x), n_tex)))
 	if d.y != 0:
-		var y0 := old.y + N if d.y > 0 else want.y
+		var y0 := old.y + n_tex if d.y > 0 else want.y
 		var xa := maxi(old.x, want.x)
-		var xb := mini(old.x, want.x) + N
+		var xb := mini(old.x, want.x) + n_tex
 		if xb > xa:
 			rects.append(Rect2i(Vector2i(xa, y0), Vector2i(xb - xa, absi(d.y))))
 	_dirty[i] = rects
@@ -345,7 +419,7 @@ func _push_constant(level: int, r: Rect2i) -> PackedByteArray:
 	pc.encode_float(20, julia_c.y)
 	pc.encode_float(24, _texel(level))
 	pc.encode_s32(28, (level + _rot) % LEVELS)
-	pc.encode_s32(32, N)
+	pc.encode_s32(32, n_tex)
 	pc.encode_s32(36, max_iter)
 	pc.encode_s32(40, 1 if julia else 0)
 	pc.encode_float(44, 1.0 if texture_on else 0.0)
