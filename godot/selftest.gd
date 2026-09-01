@@ -50,7 +50,10 @@ func _init() -> void:
 	# The bake is three new compute shaders and a prefix sum, which is exactly the shape
 	# of thing that silently writes zeros. A visual check cannot tell "no anisotropy"
 	# from "the scan is off by a block", so check the numbers here.
-	var bake_msg := _check_bake(rd, cloud, lib)
+	# Readbacks are asynchronous now, so the bake section yields real frames for the
+	# RenderingDevice to deliver them; the flame checks above read the state image
+	# directly and need none.
+	var bake_msg: String = await _check_bake(rd, cloud, lib)
 	if bake_msg != "":
 		failures.append(bake_msg)
 
@@ -70,13 +73,22 @@ func _check_bake(rd: RenderingDevice, cloud: ParticleCloud, lib: PresetLibrary) 
 	cloud.set_splat(true, 0.02)
 	for _f in FRAMES:
 		cloud.iterate()
+	# The bake bins against the measured framing, so wait for the measurement to land.
+	var gen := cloud.measure_generation
 	cloud.request_measure()
-	for _f in 4:
+	var waited := 0
+	while cloud.measure_generation == gen and waited < 60:
 		cloud.iterate()
+		await process_frame
+		waited += 1
+	if cloud.measure_generation == gen:
+		return "bake %s: measurement never landed in %d frames" % [name, waited]
+	print("  measure landed after %d frames: fit %.2f" % [waited, cloud.target_fit])
 	cloud.bake()
 	var guard := 0
 	while cloud.is_baking() and guard < 400:
 		cloud.iterate()
+		await process_frame
 		guard += 1
 	if cloud.is_baking():
 		return "bake %s: did not finish in %d frames" % [name, guard]

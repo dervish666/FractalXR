@@ -305,12 +305,14 @@ func _build_quad() -> void:
 func update(delta: float) -> bool:
 	if not _focused:
 		visible = false
+		_set_live(false)
 		_hovered = -1
 		_show_pointer(false, 0.0)
 		return false
 	var facing := _wrist_facing()
 	_shown = clampf(_shown + (FADE_SPEED * delta if facing else -FADE_SPEED * delta), 0.0, 1.0)
 	visible = _shown > 0.01
+	_set_live(visible)
 	if _layer != null:
 		# Composition layers are not scene geometry, so reveal by growing the quad
 		# rather than scaling the node.
@@ -336,6 +338,14 @@ func update(delta: float) -> bool:
 		_restyle()
 	_refresh()
 	return _hovered >= 0
+
+
+## A SubViewport is not scene geometry: hiding the parent node does not stop it
+## rendering. Folded away, the 760x900 panel was still drawn 72 times a second.
+func _set_live(on: bool) -> void:
+	var want := SubViewport.UPDATE_ALWAYS if on else SubViewport.UPDATE_DISABLED
+	if _vp != null and _vp.render_target_update_mode != want:
+		_vp.render_target_update_mode = want
 
 
 func activate() -> void:

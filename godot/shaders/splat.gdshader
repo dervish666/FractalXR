@@ -89,11 +89,10 @@ uniform float brightness = 0.3;
 uniform float sharpness = 3.0;
 uniform vec3 cloud_center = vec3(0.0);
 uniform float cloud_fit = 1.0;
-// Where the colour data actually sits and how wide it is, measured live. A raw orbit
-// trap or flame colour index occupies a narrow off-centre band, so mapping it straight
-// onto the palette uses a sliver of the ramp and everything comes out one colour.
-uniform float colour_mean = 0.5;
-uniform float colour_spread = 0.25;
+// The palette coordinate is stretched by a fixed 4/3 about the centre before the ramp
+// lookup. A live version (measured mean and spread, which measure.glsl still sums)
+// was planned and never wired up; this constant stretch is the look that shipped.
+const float COLOUR_STRETCH = 1.0 / 0.75;
 // How many times the palette repeats across the equalised range. Equalisation spreads
 // every point evenly over one traversal of the ramp, which reads as a single gradient.
 // Repeating it two or three times gives distinct colour bands from the same data, and
@@ -116,13 +115,7 @@ const vec2 CORNERS[6] = vec2[6](
 
 vec3 palette(float t) {
 	t = clamp(t, 0.0, 1.0);
-	// Centre on the measured mean and spread by the measured deviation, so the palette
-	// is used across its whole range rather than over the narrow band the raw values
-	// happen to occupy. Three deviations covers essentially the whole distribution.
-	// The floor matters: with a tight distribution, dividing by 3*spread sends almost
-	// every point to one end of the ramp or the other, which reads as posterised rather
-	// than spread. Widen the band, never shatter it.
-	t = clamp(0.5 + (t - colour_mean) / max(0.35, 3.0 * colour_spread), 0.0, 1.0);
+	t = clamp(0.5 + (t - 0.5) * COLOUR_STRETCH, 0.0, 1.0);
 	if (palette_cycles > 1.5) {
 		// Ping-pong rather than wrap, so bands meet at a shared colour instead of
 		// snapping from the top of the ramp back to the bottom.

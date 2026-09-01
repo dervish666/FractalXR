@@ -31,12 +31,17 @@ func shader_path() -> String:
 	return "res://shaders/chaos.glsl"
 
 
+func is_frozen() -> bool:
+	return update_mod <= 0
+
+
 func set_preset(p: Dictionary) -> void:
 	_preset = p
 	display_name = str(p.get("name", "Flame"))
 	_num_t = clampi(p.get("transforms", []).size(), 1, MAX_T)
-	if _rd != null:
-		rebuild_params()
+	# No GPU work here. The genome buffer is a fixed 224 floats, created once in setup()
+	# and rewritten in place by update_params(). A morph calls this every frame, and the
+	# old rebuild_params() here freed and recreated the SSBO and uniform set each time.
 
 
 const MAX_T := 8

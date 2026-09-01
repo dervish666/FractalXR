@@ -67,6 +67,12 @@ func update(delta: float) -> void:
 	if _card != null:
 		_card.modulate.a = _shown
 	visible = _shown > 0.01
+	# The card is one static _draw; only its alpha animates. Render every frame while
+	# it fades, one last frame at the final alpha, and not at all in between. A
+	# SubViewport keeps rendering behind a hidden parent otherwise, closed or not.
+	if _vp != null:
+		_vp.render_target_update_mode = (SubViewport.UPDATE_ONCE if is_equal_approx(_shown, _target)
+			else SubViewport.UPDATE_ALWAYS)
 	if _layer != null:
 		# A zero-size quad layer is invalid, so shrink it rather than let it reach zero.
 		_layer.quad_size = PANEL_METRES * maxf(0.001, _shown)
@@ -76,7 +82,7 @@ func _build_viewport() -> void:
 	_vp = SubViewport.new()
 	_vp.size = Vector2i(ControlsCard.CARD)
 	_vp.transparent_bg = true
-	_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	_vp.render_target_update_mode = SubViewport.UPDATE_ONCE   # closed: draw the blank once, then sleep
 	_vp.disable_3d = true
 	add_child(_vp)
 

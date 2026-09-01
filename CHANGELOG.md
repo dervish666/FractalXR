@@ -5,7 +5,36 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Changed
+- **Native build: the self-inflicted stalls are gone.** A flame morph rebuilt the genome
+  storage buffer and its uniform set every frame (`FlameSource.set_preset`); it now rewrites
+  the buffer in place. Every bulb switch recompiled the compute pipeline; compiled shaders are
+  now shared per path for the life of the process and a switch swaps the genome into the
+  existing source. Every measurement, density and bake readback was a synchronous
+  `buffer_get_data`, a full GPU drain each time; all three are `buffer_get_data_async` now.
+  The wrist menu and controls card SubViewports rendered every frame whether shown or not;
+  they sleep when hidden. A frozen cloud no longer dispatches an empty compute pass, and a
+  converged framing no longer re-sends its uniforms every frame.
+- **The fps guard no longer flinches at hitches.** It cut splat size on any single frame under
+  24fps, so the stalls above (all CPU-side) made it shrink the cloud for three seconds after
+  every bulb switch. It now needs six slow frames in a row, cuts by the smoothed rate, and
+  ignores frames over 100ms.
+- **OpenXR housekeeping.** The 72Hz request is retried on `session_begun` (the rate list is
+  usually empty before it); a system recenter recenters the cloud; drift, spin and the guard
+  pause while the Quest dash covers the app.
+- **Honest colour comment.** The shaders' "measured live" colour centring was never wired up;
+  the fixed 4/3 stretch that actually shipped is now a named constant, and the dead histogram
+  reader is gone. The look is unchanged.
+- The bulb iterator evaluated one distance estimate per particle per frame that the first
+  projection step immediately recomputed; it no longer does.
+- **Switching bulbs keeps your grab.** Every bulb switch reset the cloud's scale (and with it
+  where it sat), throwing away however you had placed it. Only entering bulb mode now sets the
+  inside-the-surface scale.
+
 ### Added
+- **EXIT in the wrist menu** (its own section at the bottom). Two presses within four seconds:
+  the first arms it and the tile says so, because the menu is a ray and a trigger and one
+  stray pull should not end the session.
 - **The Quest build is ready to be a real app.** Package `uk.fractalxr.app`, label FractalXR,
   Quest 3/3S only, `INTERNET` permission dropped, and launcher icons baked from a real engine
   render instead of the placeholder circle. `godot/tools/build.sh release` produces a

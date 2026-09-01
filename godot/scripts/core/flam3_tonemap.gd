@@ -8,8 +8,11 @@ class_name Flam3Tonemap
 ## pipeline, stereo is correct and there is none of the stale-pose swimming that sank
 ## the screen-space composite in experiments/atomic_splat.
 ##
-## This requires an HDR colour buffer with the STORAGE bit, which is why the project
-## uses Forward+ rather than Forward Mobile:
+## This requires an HDR colour buffer with the STORAGE bit. The project ships on Forward
+## Mobile, which has no such buffer (README, phase 3: Forward+ costs ~80ms of draw on the
+## Quest), so on the headset this pass self-disables after one format check and main.gd
+## does not even install the Compositor there. It stays for Forward+ on the desktop and
+## for the day Mobile grows an HDR option.
 ##
 ##   Forward Mobile  format 63 = A2B10G10R10_UNORM, storage=false  -> impossible
 ##   Forward+        format 96 = R16G16B16A16_SFLOAT, storage=true -> works

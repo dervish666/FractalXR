@@ -165,9 +165,21 @@ const GUARD_CUT_FPS := 24.0      # act well above the 15fps floor: reaction take
 const GUARD_RECOVER_FPS := 66.0
 const GUARD_HOLD_S := 3.0        # after a cut, no recovery for this long
 const GUARD_FLOOR := 0.1
+## Frames under the cut line in a row before the guard acts. One slow frame is a hitch
+## (a mesh rebuild, a pipeline compile, a readback), and shrinking splats, a fill-rate
+## lever, does nothing for a CPU stall. Six in a row is a GPU that cannot keep up.
+const GUARD_SLOW_FRAMES := 6
+## Anything longer than this is a stall, not a frame rate; it is dropped from the EMA too.
+const GUARD_HITCH_S := 0.1
 var _perf_scale := 1.0
 var _fps_ema := 72.0
 var _guard_hold := 0.0
+var _guard_slow := 0
+## False while the system dash covers the app (OpenXR session visible, not focused).
+var _xr_focused := true
+## EXIT is armed for this long after its first press.
+const EXIT_ARM_S := 4.0
+var _exit_armed_until := -1.0
 
 ## Passthrough (mixed reality): the fractal floating in the actual room. The WebXR build
 ## does this with a premultiplied tone-map over the camera feed; here the compositor does
@@ -261,11 +273,14 @@ func _ready() -> void:
 		_fail("presets: %s" % library.load_error)
 		return
 
-	# flam3 replaces Godot's tonemapper rather than stacking on it; main.tscn sets the
-	# environment to LINEAR so only one curve applies.
-	var comp := Compositor.new()
-	comp.compositor_effects = [tonemap]
-	$WorldEnvironment.compositor = comp
+	# flam3 can only run on an HDR colour buffer with the STORAGE bit, which Forward
+	# Mobile does not have (README, phase 3), so on the Quest the effect self-disables
+	# and the Environment's own ACES curve plus glow (main.tscn) is the look that ships.
+	# The Compositor is only installed where the pass can actually run.
+	if RenderingServer.get_current_rendering_method() != "mobile":
+		var comp := Compositor.new()
+		comp.compositor_effects = [tonemap]
+		$WorldEnvironment.compositor = comp
 
 	_init_xr()
 	_eye_res = _current_eye_res()
@@ -448,6 +463,15 @@ func _build_menu() -> void:
 				render_idx = (render_idx + 1) % RENDER_STEPS.size()
 				if xr != null:
 					xr.render_target_size_multiplier = RENDER_STEPS[render_idx]),
+		# Two presses. The menu is driven by a ray and a trigger, and a single stray pull
+		# should not end the session; the first press arms it and says so on the tile.
+		WristMenu.Item.new("app", "EXIT",
+			func(): return "sure? press again" if _exit_armed_until > _uptime else "quit",
+			func():
+				if _exit_armed_until > _uptime:
+					get_tree().quit()
+				else:
+					_exit_armed_until = _uptime + EXIT_ARM_S),
 	]
 	menu.title = func():
 		return str(library.bulbs[bulb_idx].get("name", "?")) if bulb_mode else library.name_at(preset_idx)
@@ -521,6 +545,10 @@ func _set_bulb_mode(on: bool) -> void:
 		colour_idx = 1
 		_apply_point_look()
 		_apply_exposure()
+		# Blow it up around the viewer. Auto-framing normalises the cloud to a unit
+		# radius, so this scale is what puts you inside the surface rather than in front
+		# of it. Once only, on entry: later bulb switches keep the user's grab.
+		cloud.scale = Vector3.ONE * BULB_INSIDE_SCALE
 		_load_bulb(bulb_idx)
 	else:
 		bright_idx = _flame_bright_idx
@@ -541,17 +569,23 @@ func _load_bulb(i: int) -> void:
 	if library.bulbs.is_empty():
 		return
 	bulb_idx = wrapi(i, 0, library.bulbs.size())
-	_bulb = BulbSource.new(library.bulbs[bulb_idx])
-	_bulb.update_mod = BULB_UPDATE_MOD
 	# A fresh bulb is a ball of unprojected seeds, so it always gets its settle pass,
 	# whether or not MOTION is asking for a freeze.
 	_bulb_settle = BULB_SETTLE_FRAMES
 	_bake_wait = 0
 	cloud.set_count(int(TEX_SIZE * TEX_SIZE * BULB_PARTICLES))
-	RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
-	# Blow it up around the viewer. Auto-framing normalises the cloud to a unit radius,
-	# so this scale is what puts you inside the surface rather than in front of it.
-	cloud.scale = Vector3.ONE * BULB_INSIDE_SCALE
+	if _bulb != null and cloud.source == _bulb:
+		# Same shader, same buffers: swap the genome in place rather than building a new
+		# source, which recompiled the compute pipeline on every switch in bulb drift.
+		_bulb.set_genome(library.bulbs[bulb_idx])
+		RenderingServer.call_on_render_thread(cloud.reload_source)
+	else:
+		_bulb = BulbSource.new(library.bulbs[bulb_idx])
+		_bulb.update_mod = BULB_UPDATE_MOD
+		RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
+	# The node transform is deliberately left alone: switching bulbs used to reset the
+	# scale here, which threw away wherever the user had grabbed and sized the cloud to.
+	# Only entering bulb mode (see _set_bulb_mode) puts you inside the surface.
 	_converge = CONVERGE_FRAMES
 	cloud.request_measure()
 
@@ -617,7 +651,7 @@ func _tick_morph(delta: float) -> void:
 		# Bulbs cannot morph (there is no meaningful path between a Mandelbox scale and a
 		# KIFS fold angle), but DRIFT still promises a tour of the gallery, so honour it
 		# by cutting to the next one on the same timer rather than leaving the button dead.
-		if _drift:
+		if _drift and _xr_focused:
 			_drift_hold += delta
 			if _drift_hold >= BULB_DRIFT_HOLD:
 				_drift_hold = 0.0
@@ -643,7 +677,7 @@ func _tick_morph(delta: float) -> void:
 			_measure_countdown = MEASURE_EVERY
 			cloud.request_measure()
 	if _morph_t >= 1.0:
-		if _drift:
+		if _drift and _xr_focused:
 			_drift_hold += delta
 			if _drift_hold >= DRIFT_HOLD:
 				_drift_hold = 0.0
@@ -698,15 +732,32 @@ func _init_xr() -> void:
 		xr.foveation_level, str(xr.foveation_dynamic),
 		str(xr.foveation_with_subsampled_images),
 		ProjectSettings.get_setting("rendering/vrs/mode", 0)])
-	var rates := xr.get_available_display_refresh_rates()
-	if rates.has(TARGET_HZ):
-		xr.set_display_refresh_rate(TARGET_HZ)
+	# The refresh-rate list is usually empty until the session has begun, so ask now and
+	# again on session_begun; whichever call finds the rate wins.
+	_request_refresh_rate()
+	xr.session_begun.connect(_request_refresh_rate)
+	# A system recenter moves the origin; the cloud should follow the viewer, not the
+	# spot the old origin was.
+	xr.pose_recentered.connect(_recenter)
+	# session_visible is "visible but not focused": the Quest dash is up. Drift, spin
+	# and the guard all measure or animate against frames the runtime is throttling.
+	xr.session_visible.connect(func(): _xr_focused = false)
+	xr.session_focussed.connect(func(): _xr_focused = true)
 	# Phase 2 measured the point rendering as vertex-bound, not fill-bound: cutting the
 	# eye buffer 2.8x saved only 1ms. 0.75 lands near the Quest 3's native ~2064x2208
 	# and costs nothing visually, so take the free ~1ms and move on.
 	xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
 	print("[fractal] OpenXR up. refresh=%.1f target=%s views=%d" % [
 		xr.get_display_refresh_rate(), str(xr.get_render_target_size()), xr.get_view_count()])
+
+
+func _request_refresh_rate() -> void:
+	if xr == null:
+		return
+	var rates := xr.get_available_display_refresh_rates()
+	if rates.has(TARGET_HZ) and not is_equal_approx(xr.get_display_refresh_rate(), TARGET_HZ):
+		xr.set_display_refresh_rate(TARGET_HZ)
+		print("[fractal] refresh rate set to %.0f" % TARGET_HZ)
 
 
 ## Directly in front of the viewer, at their eye height, using only the yaw of their
@@ -727,16 +778,20 @@ func _home_transform() -> Transform3D:
 ## immediate and proportional (the further over budget, the harder the cut); recovery
 ## waits for a hold, then creeps, so it cannot oscillate against the cliff it fell off.
 func _run_guard(delta: float) -> void:
+	_guard_hold = maxf(0.0, _guard_hold - delta)
+	if delta > GUARD_HITCH_S:
+		return   # a stall, not a measurement
 	var fps := 1.0 / maxf(delta, 1e-4)
 	_fps_ema = lerpf(_fps_ema, fps, 0.08)
-	_guard_hold = maxf(0.0, _guard_hold - delta)
 	if not splat_on:
 		if _perf_scale < 1.0:
 			_perf_scale = 1.0
 			cloud.set_perf_scale(1.0)
 		return
-	if fps < GUARD_CUT_FPS:
-		_perf_scale = maxf(GUARD_FLOOR, _perf_scale * clampf(sqrt(fps / GUARD_CUT_FPS), 0.5, 0.95))
+	_guard_slow = _guard_slow + 1 if fps < GUARD_CUT_FPS else 0
+	if _guard_slow >= GUARD_SLOW_FRAMES:
+		_guard_slow = 0
+		_perf_scale = maxf(GUARD_FLOOR, _perf_scale * clampf(sqrt(_fps_ema / GUARD_CUT_FPS), 0.5, 0.95))
 		cloud.set_perf_scale(_perf_scale)
 		_guard_hold = GUARD_HOLD_S
 	elif _perf_scale < 1.0 and _guard_hold <= 0.0 and _fps_ema > GUARD_RECOVER_FPS:
@@ -814,7 +869,8 @@ func _process(delta: float) -> void:
 			help.open()
 	help.update(delta)
 	_menu_active = menu.update(delta)
-	_run_guard(delta)
+	if _xr_focused:
+		_run_guard(delta)
 	if _bulb != null:
 		# The breath is the animation: each genome slowly reshapes whichever parameter
 		# defines its form, so the surface is never static.
@@ -837,7 +893,7 @@ func _process(delta: float) -> void:
 			print("[cloud] cached framing for %s" % library.name_at(_pending_cache))
 		_pending_cache = -1
 	_sync_iteration()
-	if spin and (grab == null or not grab.is_grabbing()):
+	if spin and _xr_focused and (grab == null or not grab.is_grabbing()):
 		cloud.rotate_y(AMBIENT_SPIN * delta)
 		cloud.rotate_object_local(Vector3.RIGHT, AMBIENT_TILT * delta)
 	if grab != null:
@@ -963,13 +1019,19 @@ func _apply_palette() -> void:
 		cloud.override_palette(target)
 
 
+var _theme_cache: Dictionary = {}   # theme index -> Array[Vector3], parsed once
+
+
 func _theme_palette() -> Array:
 	if theme_idx < 0 or library.themes.is_empty():
 		return cloud.source.palette() if cloud.source != null else []
-	var pal: Array = []
-	for c in library.themes[wrapi(theme_idx, 0, library.themes.size())]:
-		pal.append(Vector3(float(c[0]), float(c[1]), float(c[2])))
-	return pal
+	var ti := wrapi(theme_idx, 0, library.themes.size())
+	if not _theme_cache.has(ti):
+		var pal: Array = []
+		for c in library.themes[ti]:
+			pal.append(Vector3(float(c[0]), float(c[1]), float(c[2])))
+		_theme_cache[ti] = pal
+	return _theme_cache[ti]
 
 
 ## Start a cross-fade from the palette currently showing to whatever theme_idx now names.
@@ -996,7 +1058,11 @@ func _apply_exposure() -> void:
 	tonemap.exposure = _base_exposure * EXPOSURE_MUL[exposure_idx]
 	var env: Environment = $WorldEnvironment.environment
 	if env != null:
-		env.tonemap_exposure = clampf(_base_exposure * 3.0 * EXPOSURE_MUL[exposure_idx], 0.05, 60.0)
+		# Runs every morph frame through _apply_tone; only touch the resource when the
+		# value has actually moved, or every frame invalidates the environment.
+		var want := clampf(_base_exposure * 3.0 * EXPOSURE_MUL[exposure_idx], 0.05, 60.0)
+		if not is_equal_approx(env.tonemap_exposure, want):
+			env.tonemap_exposure = want
 
 
 func _pressed(c: XRController3D, action: String) -> bool:

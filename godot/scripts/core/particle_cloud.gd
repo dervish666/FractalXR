@@ -24,6 +24,7 @@ var _normal_texture := Texture2DRD.new()
 var _mesh_instance: MeshInstance3D
 var _material: ShaderMaterial          # point path
 var _splat_material: ShaderMaterial    # quad path
+var _mats: Array[ShaderMaterial] = []  # both, for settings that apply to either path
 var _splat := false
 var _count := 0
 var _frame := 0
@@ -55,6 +56,9 @@ var _measure_pipeline: RID
 var _measure_set: RID
 var _stats_buf: RID
 var _measure_pending := false
+## An async readback is in flight. Requests are not queued behind it: a second
+## measure before the first lands would only re-read the same settled cloud.
+var _measure_in_flight := false
 # Local density, for sizing splats the way bulbSplat.ts does from kNN covariance.
 # 64 rather than 48: particles lie on a SURFACE, so they only occupy the cells the shell
 # passes through — roughly grid^2 of them, not grid^3. A finer grid is what makes a cell
@@ -73,7 +77,6 @@ var _norm_shader: RID
 var _norm_pipeline: RID
 var _norm_set: RID
 var _norm_buf: RID
-var _norm_readback := false
 ## Mean particles per occupied cell. The splat shader divides by this, so a cell holding
 ## the average keeps the radius the user asked for and only the departures resize.
 var density_nominal := 8.0
@@ -116,7 +119,6 @@ var _splat_radius := 0.026
 ## Progress 0..1 while baking, for the status line. The pause is worth explaining.
 var bake_progress := 0.0
 var bake_ready := false
-var _measure_readback := false
 ## Framing is eased toward these rather than snapped, so a re-measure never pops.
 var target_center := Vector3.ZERO
 var target_fit := 1.0
@@ -137,6 +139,7 @@ func _init() -> void:
 	_material.shader = load("res://shaders/points.gdshader")
 	_splat_material = ShaderMaterial.new()
 	_splat_material.shader = load("res://shaders/splat.gdshader")
+	_mats = [_material, _splat_material]
 
 	_mesh_instance = MeshInstance3D.new()
 	_mesh_instance.name = "Points"
@@ -166,7 +169,7 @@ func setup(p_tex_size: int = DEFAULT_TEX_SIZE) -> bool:
 	_normal_tex = _rd.texture_create(fmt, RDTextureView.new(), [])
 	_normal_texture.texture_rd_rid = _normal_tex
 
-	for m in [_material, _splat_material]:
+	for m in _mats:
 		m.set_shader_parameter("state_tex", _state_texture)
 		m.set_shader_parameter("tex_size", tex_size)
 	_splat_material.set_shader_parameter("normal_tex", _normal_texture)
@@ -277,15 +280,17 @@ func _run_density() -> void:
 	_rd.compute_list_set_push_constant(cl, npc, 16)
 	_rd.compute_list_dispatch(cl, int(ceil(float(GRID_CELLS) / 256.0)), 1, 1)
 	_rd.compute_list_end()
-	_norm_readback = true
+	# Asynchronous on purpose. The synchronous buffer_get_data drains the whole GPU
+	# pipeline however long ago the work finished, which is a dropped frame per call.
+	_rd.buffer_get_data_async(_norm_buf, _on_density_norm, 0, 8)
 	_splat_material.set_shader_parameter("density_extent", extent)
 	_splat_material.set_shader_parameter("density_centre", center)
 
 
-## Read the previous frame's occupancy. A frame late on purpose: by now the GPU is done
-## with it, so eight bytes come back without blocking.
-func _read_density_norm() -> void:
-	var raw := _rd.buffer_get_data(_norm_buf, 0, 8)
+## Occupancy readback, delivered by the RenderingDevice a few frames after the request.
+func _on_density_norm(raw: PackedByteArray) -> void:
+	if not _ready_ok or raw.size() < 8:
+		return
 	var occupied := raw.decode_u32(0)
 	var total := raw.decode_u32(4)
 	if occupied == 0 or total == 0:
@@ -479,11 +484,21 @@ func _bake_step() -> void:
 	if _bake_first < _count:
 		return
 
-	_baking = false
 	# One readback, once, when the whole cloud is done. The mean axis length is what
 	# turns the baked sizes (in state units, whatever the fractal happens to span) back
-	# into the radius the user asked for.
-	var raw := _rd.buffer_get_data(_bake_norm_buf, 0, 24)
+	# into the radius the user asked for. Asynchronous, so the last chunk does not end
+	# on a pipeline drain; _baking stays true until the numbers land, which keeps the
+	# cloud held still for the extra frames and costs nothing.
+	_rd.buffer_get_data_async(_bake_norm_buf, _on_bake_norm, 0, 24)
+
+
+func _on_bake_norm(raw: PackedByteArray) -> void:
+	# A bake restarted while this readback was in flight owns _baking now; leave it.
+	if _bake_first < _count:
+		return
+	_baking = false
+	if not _ready_ok or raw.size() < 24:
+		return
 	var sum_s := raw.decode_u32(0)
 	var n_s := raw.decode_u32(4)
 	var n_cov := raw.decode_u32(8)
@@ -547,8 +562,9 @@ func _setup_measure() -> void:
 	_measure_set = _rd.uniform_set_create([img, ssbo], _measure_shader, 0)
 
 
-## Ask for a fresh centroid and radius. Cheap, but it stalls on readback, so it runs
-## on a settled cloud after a load or a morph rather than every frame.
+## Ask for a fresh centroid and radius. The readback is asynchronous, so the cost is
+## the 16k-sample reduction and nothing else; results land a few frames later through
+## target_center / target_fit and measure_generation.
 func request_measure() -> void:
 	_measure_pending = true
 
@@ -579,14 +595,23 @@ func set_source(s: FractalSource) -> bool:
 	return true
 
 
+## The current source has been given a new genome in place (same shader, same buffers).
+## Everything set_source does except the GPU setup: new palette, no stale bake, reseed.
+## Render thread only, because it rewrites the parameter buffer.
+func reload_source() -> void:
+	if not _ready_ok or source == null:
+		return
+	source.update_params()
+	clear_bake()
+	apply_look()
+	_needs_seed = true
+
+
 ## Pull palette and tone settings from the active source. Called on a preset change.
 func apply_look() -> void:
 	if source == null:
 		return
-	var pal := source.palette()
-	for i in 5:
-		for m in [_material, _splat_material]:
-			m.set_shader_parameter("pal%d" % i, pal[i])
+	override_palette(source.palette())
 	# Deliberately NOT setting brightness here: the preset's pointBrightness is a
 	# starting suggestion, and stomping the user's live choice every preset change
 	# would undo the dial they just turned.
@@ -596,8 +621,12 @@ func apply_look() -> void:
 ## deliberately not written back to the genome: recolouring is a view, not an edit.
 func override_palette(pal: Array) -> void:
 	for i in mini(5, pal.size()):
-		for m in [_material, _splat_material]:
-			m.set_shader_parameter("pal%d" % i, pal[i])
+		var name: StringName = _PAL_NAMES[i]
+		for m in _mats:
+			m.set_shader_parameter(name, pal[i])
+
+
+const _PAL_NAMES: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal4"]
 
 
 ## Draw range. The mesh is a bare vertex buffer (the shader uses VERTEX_ID), so
@@ -666,19 +695,19 @@ func set_opacity(a: float) -> void:
 
 
 func set_sharpness(k: float) -> void:
-	for m in [_material, _splat_material]:
+	for m in _mats:
 		m.set_shader_parameter("sharpness", clampf(k, 1.0, 24.0))
 
 
 ## Palette repeats across the equalised range: 1 gives a single gradient, 2 or 3 give
 ## distinct colour bands from the same orbit-trap data.
 func set_palette_cycles(n: float) -> void:
-	for m in [_material, _splat_material]:
+	for m in _mats:
 		m.set_shader_parameter("palette_cycles", n)
 
 
 func set_brightness(b: float) -> void:
-	for m in [_material, _splat_material]:
+	for m in _mats:
 		m.set_shader_parameter("brightness", clampf(b, 0.05, 3.0))
 
 
@@ -698,33 +727,27 @@ func iterate() -> void:
 	_read_timestamp()
 	_rd.capture_timestamp("cloud_begin")
 
-	# Read last frame's result before issuing a new one: by now the GPU is done with it,
-	# so buffer_get_data returns without blocking.
-	if _measure_readback:
-		_measure_readback = false
-		_read_measure()
-	if _norm_readback:
-		_norm_readback = false
-		_read_density_norm()
-	if _measure_pending and _measure_pipeline.is_valid():
+	if _measure_pending and not _measure_in_flight and _measure_pipeline.is_valid():
 		_measure_pending = false
 		_dispatch_measure()
-		_measure_readback = true
 		# Density rides along with the measure: same cadence, same reason. A finished
 		# bake owns the sizing outright, so skip the grid entirely while one is live.
 		if _splat and not bake_ready:
 			_run_density()
 
-	if _baking:
+	if _baking and _bake_first < _count:
 		_bake_step()
 
-	var cl := _rd.compute_list_begin()
-	if _needs_seed:
-		source.encode(cl, _count, _frame, true)
-		_rd.compute_list_add_barrier(cl)
-		_needs_seed = false
-	source.encode(cl, _count, _frame, false)
-	_rd.compute_list_end()
+	# A frozen cloud gets no dispatch at all. The shader would return on its first line,
+	# but launching count/256 workgroups to do that is not free either.
+	if _needs_seed or not source.is_frozen():
+		var cl := _rd.compute_list_begin()
+		if _needs_seed:
+			source.encode(cl, _count, _frame, true)
+			_rd.compute_list_add_barrier(cl)
+			_needs_seed = false
+		source.encode(cl, _count, _frame, false)
+		_rd.compute_list_end()
 	_rd.capture_timestamp("cloud_end")
 
 
@@ -744,11 +767,13 @@ func _dispatch_measure() -> void:
 	_rd.compute_list_set_push_constant(cl, pc, 16)
 	_rd.compute_list_dispatch(cl, groups, 1, 1)
 	_rd.compute_list_end()
+	_measure_in_flight = true
+	_rd.buffer_get_data_async(_stats_buf, _on_measure, 0, _STATS_BYTES)
 
 
-func _read_measure() -> void:
-	var raw := _rd.buffer_get_data(_stats_buf, 0, _STATS_BYTES)
-	if raw.size() < 20:
+func _on_measure(raw: PackedByteArray) -> void:
+	_measure_in_flight = false
+	if not _ready_ok or raw.size() < 20:
 		return
 	var n := raw.decode_u32(12)
 	if n < 64:
@@ -785,35 +810,6 @@ func _read_measure() -> void:
 			c.x, c.y, c.z, radius, target_fit, n])
 
 
-## Turn the histogram into a CDF and hand it to the shaders. Mapping each point through
-## its own percentile spends the WHOLE palette instead of the narrow band the raw orbit
-## trap actually occupies, which is where the iridescence comes from.
-func _update_colour_cdf(raw: PackedByteArray, n: int) -> void:
-	var cdf := PackedFloat32Array()
-	cdf.resize(HIST_BINS)
-	var total := 0.0
-	for i in HIST_BINS:
-		total += float(raw.decode_u32((8 + i) * 4))
-	if total < 1.0:
-		return
-	var acc := 0.0
-	var occupied := 0
-	for i in HIST_BINS:
-		var c := float(raw.decode_u32((8 + i) * 4))
-		if c > 0.0:
-			occupied += 1
-		acc += c
-		cdf[i] = acc / total
-	# The CDF itself no longer reaches the shaders: equalisation was replaced by the
-	# measured mean/spread mapping, which reads better. The histogram stays because this
-	# diagnostic is how a "one colour whatever the palette says" report gets triaged.
-	# If the palette coordinate lands in only a handful of bins, equalisation has almost
-	# nothing to spread and the cloud comes out one colour whatever the palette says.
-	# Worth knowing which of those two it is before blaming the palette.
-	print("[cloud] colour: %d/%d bins used, cdf31=%.2f, raw bytes=%d" % [
-		occupied, HIST_BINS, cdf[HIST_BINS - 1], raw.size()])
-
-
 ## Ease the framing toward the last measurement. Only used when the framing for a
 ## genome is not yet known; once both endpoints are cached, set_framing drives it
 ## directly along the morph curve instead, because easing chases a moving target and
@@ -834,8 +830,18 @@ func set_framing(c: Vector3, f: float) -> void:
 	_push_framing()
 
 
+var _pushed_center := Vector3(INF, INF, INF)
+var _pushed_fit := -1.0
+
+
 func _push_framing() -> void:
-	for m in [_material, _splat_material]:
+	# ease_framing calls this every frame for the whole session; once the lerp has
+	# converged there is nothing new to send.
+	if center.is_equal_approx(_pushed_center) and is_equal_approx(fit, _pushed_fit):
+		return
+	_pushed_center = center
+	_pushed_fit = fit
+	for m in _mats:
 		m.set_shader_parameter("cloud_center", center)
 		m.set_shader_parameter("cloud_fit", fit)
 
@@ -866,6 +872,7 @@ func cleanup() -> void:
 		_state_texture.texture_rd_rid = RID()
 		_normal_texture.texture_rd_rid = RID()
 		_density_texture.texture_rd_rid = RID()
+		_bake_texture.texture_rd_rid = RID()
 		# Pipelines and uniform sets are dependents of these and are freed with them.
 		for rid: RID in [
 			_state_tex, _normal_tex, _measure_shader, _stats_buf,
@@ -875,4 +882,5 @@ func cleanup() -> void:
 		]:
 			if rid.is_valid():
 				_rd.free_rid(rid)
+		FractalSource.free_shared(_rd)
 	_ready_ok = false

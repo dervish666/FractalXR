@@ -257,10 +257,12 @@ On-device: 42mm splats with the bake's spread hit 2fps and needed a hard quit to
 
 Two guards. A hard per-splat cap (`MAX_PIXEL_RADIUS`, 192px) bounds any one ellipse. And
 a governor in `main.gd` watches the real frame time and scales every splat (`perf_scale`)
-the moment fps dives under 24 — cuts are immediate and proportional, recovery waits three
-seconds and then creeps, so it cannot oscillate against the cliff it fell off. The wrist
-menu shows "guard N%" while it is intervening, because a silently shrunk 42mm splat would
-otherwise read as a broken setting.
+once fps has sat under 24 for six frames in a row. Cuts are proportional to the smoothed
+rate, recovery waits three seconds and then creeps, so it cannot oscillate against the
+cliff it fell off. Single long frames are ignored outright: a mesh rebuild, a pipeline
+compile or a readback is a CPU stall, and shrinking splats (a fill-rate lever) does nothing
+for those except make the cloud flinch. The wrist menu shows "guard N%" while it is
+intervening, because a silently shrunk 42mm splat would otherwise read as a broken setting.
 
 ### Two bugs the self-test caught, and one it could not
 

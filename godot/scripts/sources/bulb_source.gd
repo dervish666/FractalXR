@@ -34,6 +34,10 @@ func shader_path() -> String:
 	return "res://shaders/bulb.glsl"
 
 
+func is_frozen() -> bool:
+	return update_mod <= 0
+
+
 func push_constant_size() -> int:
 	return 96
 
@@ -45,8 +49,7 @@ func wants_normals() -> bool:
 func set_genome(b: Dictionary) -> void:
 	_b = b
 	display_name = str(b.get("name", "Bulb"))
-	if _rd != null:
-		rebuild_params()
+	# The palette buffer is rewritten by update_params(); see FlameSource.set_preset.
 
 
 func palette() -> Array:

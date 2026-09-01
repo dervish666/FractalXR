@@ -197,7 +197,7 @@ void main() {
 	// For the box, aim a thin shell OUTSIDE the surface: that repels the spurious
 	// interior zeros (the core blob) instead of collapsing onto them.
 	float shellEps = (abs(p.formula - 1.0) < 0.5) ? 0.012 * p.bound : 0.0;
-	vec4 d = de(pos);
+	vec4 d;
 	vec3 n = vec3(0.0, 0.0, 1.0);
 	for (int i = 0; i < 6; i++) {
 		if (float(i) >= p.proj_steps) break;
@@ -205,7 +205,10 @@ void main() {
 		n = deGrad(pos, e);
 		pos -= n * (d.x - shellEps);
 	}
-	if (p.proj_steps < 0.5) n = deGrad(pos, e);
+	// With no projection steps nothing above ran, so evaluate once here. (Doing this
+	// unconditionally before the loop cost a full DE per particle that the first
+	// iteration then recomputed and overwrote.)
+	if (p.proj_steps < 0.5) { d = de(pos); n = deGrad(pos, e); }
 
 	// Wander tangentially so the shell fills and stays alive. Reuses n from the last
 	// projection step rather than a fresh 4-tap gradient: the point barely moved on that

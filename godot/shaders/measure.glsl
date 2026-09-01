@@ -34,8 +34,11 @@ layout(set = 0, binding = 1, std430) restrict buffer Stats {
 	// sorting, because the raw orbit trap clusters in a narrow band and a linear map
 	// spends a sliver of the palette. A sort is impossible per frame; a histogram is not,
 	// and its running total is the same CDF.
-	uint sum_c;    // palette coordinate, for centring the colour ramp
-	uint sum_c2;   // and its square, for spreading it
+	// sum_c, sum_c2 and hist are accumulated but not read back today: the shaders use
+	// a fixed stretch (COLOUR_STRETCH). Kept so a live colour mapping is a GDScript
+	// change rather than a shader one.
+	uint sum_c;
+	uint sum_c2;
 	uint hist[HIST_BINS];
 } stats;
 

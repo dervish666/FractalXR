@@ -20,6 +20,11 @@ class_name FractalSource
 var id: StringName = &"base"
 var display_name: String = "Base"
 
+## Compiled shader and pipeline per shader path, shared by every instance for the life of
+## the process. A pipeline build on Adreno is a visible hitch, and before this every bulb
+## switch and every mode change paid it again for a shader that had not changed.
+static var _pipeline_cache: Dictionary = {}
+
 var _rd: RenderingDevice
 var _shader: RID
 var _pipeline: RID
@@ -52,6 +57,12 @@ func wants_normals() -> bool:
 	return false
 
 
+## True when the source would move no particle this frame, so the host can skip the
+## dispatch outright instead of launching a compute pass that returns on its first line.
+func is_frozen() -> bool:
+	return false
+
+
 ## Per-type storage buffer contents. Return an empty array for a type that needs none.
 func param_buffer_floats() -> PackedFloat32Array:
 	return PackedFloat32Array()
@@ -78,19 +89,26 @@ func setup(rd: RenderingDevice, state_tex: RID, tex_size: int, normal_tex: RID =
 	_normal_tex = normal_tex
 	_tex_size = tex_size
 
-	var file: RDShaderFile = load(shader_path())
-	if file == null:
-		_error = "failed to load %s" % shader_path()
-		return false
-	var spirv := file.get_spirv()
-	if spirv.compile_error_compute != "":
-		_error = "%s: %s" % [shader_path(), spirv.compile_error_compute]
-		return false
-	_shader = rd.shader_create_from_spirv(spirv)
-	if not _shader.is_valid():
-		_error = "shader_create_from_spirv failed for %s" % shader_path()
-		return false
-	_pipeline = rd.compute_pipeline_create(_shader)
+	var path := shader_path()
+	if _pipeline_cache.has(path):
+		var cached: Array = _pipeline_cache[path]
+		_shader = cached[0]
+		_pipeline = cached[1]
+	else:
+		var file: RDShaderFile = load(path)
+		if file == null:
+			_error = "failed to load %s" % path
+			return false
+		var spirv := file.get_spirv()
+		if spirv.compile_error_compute != "":
+			_error = "%s: %s" % [path, spirv.compile_error_compute]
+			return false
+		_shader = rd.shader_create_from_spirv(spirv)
+		if not _shader.is_valid():
+			_error = "shader_create_from_spirv failed for %s" % path
+			return false
+		_pipeline = rd.compute_pipeline_create(_shader)
+		_pipeline_cache[path] = [_shader, _pipeline]
 
 	rebuild_params()
 	return true
@@ -150,6 +168,17 @@ func encode(cl: int, count: int, frame: int, seeding: bool) -> void:
 func cleanup() -> void:
 	if _rd == null:
 		return
-	for r in [_param_buf, _pipeline, _shader]:
-		if r != null and r.is_valid():
-			_rd.free_rid(r)
+	# The shader and pipeline stay in _pipeline_cache for the next instance; only the
+	# per-instance parameter buffer (and with it the uniform set) goes.
+	if _param_buf.is_valid():
+		_rd.free_rid(_param_buf)
+		_param_buf = RID()
+
+
+## Release the shared shaders. Once, at shutdown, from whoever owns the RenderingDevice.
+static func free_shared(rd: RenderingDevice) -> void:
+	for path in _pipeline_cache:
+		var cached: Array = _pipeline_cache[path]
+		if cached[0].is_valid():
+			rd.free_rid(cached[0])   # the pipeline is a dependent and goes with it
+	_pipeline_cache.clear()
