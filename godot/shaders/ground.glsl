@@ -6,7 +6,7 @@
 // already returns the four channels the ground shader colours from:
 //
 //   r  smooth iteration count (max_iter inside the set)
-//   g  distance estimate to the set (Milnor/Koebe)
+//   g  log2 of the distance estimate to the set (Milnor/Koebe); log so half floats keep it
 //   b  inside flag
 //   a  texture: triangle-inequality average outside, orbit-trap radius inside
 //
@@ -18,7 +18,7 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, rgba32f) uniform restrict writeonly image2DArray levels;
+layout(set = 0, binding = 0, rgba16f) uniform restrict writeonly image2DArray levels;
 
 layout(push_constant, std430) uniform PC {
 	ivec2 rect_origin;    // absolute texel index of the rectangle's first texel, this level
@@ -72,13 +72,13 @@ vec4 escape(vec2 c, vec2 z0) {
 	}
 	float avg1 = count > 0.0 ? sum / count : 0.0;
 	float avg0 = count > 1.0 ? sumPrev / (count - 1.0) : avg1;
-	if (m2 <= ESC2) return vec4(float(p.max_iter), 0.0, 1.0, clamp(sqrt(minR2), 0.0, 1.0));
+	if (m2 <= ESC2) return vec4(float(p.max_iter), -40.0, 1.0, clamp(sqrt(minR2), 0.0, 1.0));
 	float lm = log(m2) * 0.5;
 	float s = float(n) - log2(lm / LOG_ESC);
 	float de = sqrt(m2) * lm / max(1e-20, length(dz));
 	float tia = mix(avg0, avg1, clamp(s - floor(s), 0.0, 1.0));
 	float st = 1.0 - clamp(minAxis / max(1e-4, p.stalk_width), 0.0, 1.0);
-	return vec4(s, de, 0.0, mix(tia, st, p.stalk));
+	return vec4(s, log2(max(de, 1e-30)), 0.0, mix(tia, st, p.stalk));
 }
 
 void main() {

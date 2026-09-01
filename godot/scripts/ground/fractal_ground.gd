@@ -17,7 +17,11 @@ class_name FractalGround
 ## Float32 throughout, so useful zoom ends around 1e5. Perturbation is the next step and
 ## replaces escape() in ground.glsl and nothing else.
 
-const N := 512
+## 1024 rather than 512: a level is only usable out to about (N/2 - SLACK) of its texels
+## from the viewer, and on a ground plane seen at grazing angles that window is what
+## limits sharpness in the middle distance, not the texel size. Half floats keep the
+## stack at 64MB.
+const N := 1024
 const LEVELS := 8
 ## Window is re-centred once the viewer drifts this many texels from its centre. The
 ## shader treats N/2 - SLACK texels around the viewer as valid, so keep them in step.
@@ -30,7 +34,7 @@ const WPU_BASE := 30.0
 const STAGE_MIN := -4
 const STAGE_MAX := 13
 const BUDGET_MIN := 20000.0
-const BUDGET_MAX := 800000.0
+const BUDGET_MAX := 2000000.0
 const TARGET_US := 3500.0
 
 ## Fractal coordinate under world (0, 0). GDScript floats are 64-bit, so this and the
@@ -115,7 +119,9 @@ func setup() -> bool:
 	fmt.width = N
 	fmt.height = N
 	fmt.array_layers = LEVELS
-	fmt.format = RenderingDevice.DATA_FORMAT_R32G32B32A32_SFLOAT
+	# RGBA16F: smooth count to 1024 with 0.5 resolution (invisible through the log
+	# palette), distance stored as its log2 so it never underflows, flag and texture 0..1.
+	fmt.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
 	fmt.usage_bits = (RenderingDevice.TEXTURE_USAGE_STORAGE_BIT
 		| RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
 		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)

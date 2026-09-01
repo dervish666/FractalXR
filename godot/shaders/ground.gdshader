@@ -10,7 +10,7 @@ shader_type spatial;
 render_mode unshaded, cull_back, fog_disabled, shadows_disabled;
 
 uniform sampler2DArray levels : filter_nearest, repeat_disable;
-uniform int tex_size = 512;
+uniform int tex_size = 1024;
 uniform int num_levels = 8;
 uniform int level_rot = 0;      // layer of level i is (i + level_rot) % num_levels
 uniform int min_level = 0;      // finest level that is complete
@@ -89,7 +89,7 @@ vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 
 float height_of(vec4 s) {
 	if (relief_mode == 1) return -log2(1.0 + s.r) * 0.08 * relief_scale;
-	if (relief_mode == 2) return log2(max(1e-12, s.g)) * 0.03 * relief_scale;
+	if (relief_mode == 2) return s.g * 0.03 * relief_scale;   // g is already log2(distance)
 	return 0.0;
 }
 
@@ -103,9 +103,17 @@ void fragment() {
 	vec2 e0 = w / (wpu * texel0);
 	float dist = length(w);
 
-	// Pick the level whose texel matches the pixel footprint; blend the two nearest.
+	// Pick the level whose texel matches the pixel footprint, but never one whose window
+	// does not reach this point: level i is valid out to R * 2^i level-0 texels from the
+	// viewer, and choosing by footprint alone picked finer levels than that near the feet,
+	// which sampled outside the window and painted fog in straight-edged wedges. The
+	// half-R keeps floor(lod) inside its window; the blend to the next level is continuous
+	// so the hand-over never shows as a ring.
 	float fp = max(length(dFdx(e0)), length(dFdy(e0)));
-	float lod = clamp(log2(max(fp, 1e-6)), float(min_level), float(max_level));
+	float R = float(tex_size) * 0.5 - slack - 1.0;
+	float lod_fp = log2(max(fp, 1e-6));
+	float lod_win = log2(max(max(abs(e0.x), abs(e0.y)), 1e-3) / (0.5 * R));
+	float lod = clamp(max(lod_fp, lod_win), float(min_level), float(max_level));
 	int l0 = int(floor(lod));
 	int l1 = min(l0 + 1, max_level);
 	bool in0;

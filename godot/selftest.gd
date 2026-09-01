@@ -179,7 +179,7 @@ func _check_ground(rd: RenderingDevice) -> String:
 	var layer: int = (0 + g._rot) % FractalGround.LEVELS
 	var data := rd.texture_get_data(g._tex, layer)
 	var n := FractalGround.N
-	if data.size() < n * n * 16:
+	if data.size() < n * n * 8:
 		return "ground: short readback"
 	var inside := _ground_texel(data, n, Vector2(0.0, 0.0), t0)
 	var outside := _ground_texel(data, n, Vector2(0.001, 0.001), t0)
@@ -203,9 +203,9 @@ func _ground_texel(data: PackedByteArray, n: int, c: Vector2, texel: float) -> V
 	var ay := int(floor(c.y / texel))
 	var sx := ((ax % n) + n) % n
 	var sy := ((ay % n) + n) % n
-	var o := (sy * n + sx) * 16
-	return Vector4(data.decode_float(o), data.decode_float(o + 4),
-		data.decode_float(o + 8), data.decode_float(o + 12))
+	var o := (sy * n + sx) * 8   # RGBA16F
+	return Vector4(_half(data.decode_u16(o)), _half(data.decode_u16(o + 2)),
+		_half(data.decode_u16(o + 4)), _half(data.decode_u16(o + 6)))
 
 
 func _check_perm(rd: RenderingDevice, cloud: ParticleCloud) -> String:
