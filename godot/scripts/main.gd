@@ -722,19 +722,19 @@ func _ground_grab() -> bool:
 		_gg_hands = []
 		return false
 	if hands == _gg_hands:
+		# Signs settled on the headset: the ground follows the hand with these.
 		if hands.size() == 1:
-			# The world follows the hand, so the viewer moves the other way.
-			ground.pan(-(pos[0] - _gg_pos[0]))
-			ground.rotate_about_head(wrapf(yaw - _gg_yaw, -PI, PI))
+			ground.pan(pos[0] - _gg_pos[0])
+			ground.rotate_about_head(-wrapf(yaw - _gg_yaw, -PI, PI))
 		else:
 			var mid := (pos[0] + pos[1]) * 0.5
 			var pmid := (_gg_pos[0] + _gg_pos[1]) * 0.5
-			ground.pan(-(mid - pmid))
+			ground.pan(mid - pmid)
 			var d0 := _gg_pos[1] - _gg_pos[0]
 			var d1 := pos[1] - pos[0]
 			if d0.length() > 0.05 and d1.length() > 0.05:
 				ground.zoom(clampf(d1.length() / d0.length(), 0.5, 2.0))
-				ground.rotate_about_head(wrapf(d1.angle() - d0.angle(), -PI, PI))
+				ground.rotate_about_head(-wrapf(d1.angle() - d0.angle(), -PI, PI))
 	_gg_hands = hands
 	_gg_pos = pos
 	_gg_yaw = yaw
