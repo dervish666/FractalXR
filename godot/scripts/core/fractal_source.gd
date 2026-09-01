@@ -63,6 +63,12 @@ func is_frozen() -> bool:
 	return false
 
 
+## How many frames the cloud is spread over (1 = every particle every frame). The host
+## dispatches count / stride invocations and the shader maps them onto this frame's slab.
+func update_stride() -> int:
+	return 1
+
+
 ## Per-type storage buffer contents. Return an empty array for a type that needs none.
 func param_buffer_floats() -> PackedFloat32Array:
 	return PackedFloat32Array()
@@ -159,10 +165,12 @@ func encode(cl: int, count: int, frame: int, seeding: bool) -> void:
 	if not _pipeline.is_valid():
 		return
 	var n := _tex_size * _tex_size if seeding else count
+	var stride := 1 if seeding else maxi(1, update_stride())
+	var invocations := int(ceil(float(n) / float(stride)))
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline)
 	_rd.compute_list_bind_uniform_set(cl, _uniform_set, 0)
 	_rd.compute_list_set_push_constant(cl, params_bytes(n, frame, seeding), push_constant_size())
-	_rd.compute_list_dispatch(cl, int(ceil(float(n) / 256.0)), 1, 1)
+	_rd.compute_list_dispatch(cl, int(ceil(float(invocations) / 256.0)), 1, 1)
 
 
 func cleanup() -> void:

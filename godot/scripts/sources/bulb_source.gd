@@ -38,6 +38,10 @@ func is_frozen() -> bool:
 	return update_mod <= 0
 
 
+func update_stride() -> int:
+	return maxi(1, update_mod)
+
+
 func push_constant_size() -> int:
 	return 96
 

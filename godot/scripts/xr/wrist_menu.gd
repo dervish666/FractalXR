@@ -20,8 +20,10 @@ class_name WristMenu
 # Shaped for a forearm: narrow and long, rather than a square slab sitting across it.
 # The viewport is generously tall because the content is laid out top-down and anything
 # that overflows is simply clipped, with no scrollbar to tell you it happened.
-const VIEW_SIZE := Vector2i(760, 900)
-const PANEL_METRES := Vector2(0.185, 0.219)
+# Taller than it was: GLOW and the EXIT row take it to nine tile rows and five headers.
+# Pixels per metre are unchanged, so nothing else about the menu moves.
+const VIEW_SIZE := Vector2i(760, 1000)
+const PANEL_METRES := Vector2(0.185, 0.243)
 ## Tiles per row. Sections wrap instead of squeezing, so a section with six settings
 ## does not shrink every tile in it past the point of being readable or hittable.
 const COLUMNS := 4

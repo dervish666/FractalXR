@@ -35,6 +35,10 @@ func is_frozen() -> bool:
 	return update_mod <= 0
 
 
+func update_stride() -> int:
+	return maxi(1, update_mod)
+
+
 func set_preset(p: Dictionary) -> void:
 	_preset = p
 	display_name = str(p.get("name", "Flame"))

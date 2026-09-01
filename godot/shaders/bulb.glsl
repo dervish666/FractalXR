@@ -173,8 +173,6 @@ void main() {
 	uint idx = gl_GlobalInvocationID.x;
 	if (idx >= uint(p.count)) return;
 	ivec2 ip = ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);
-	uint seed = idx * 747796405u + uint(p.frame) * 2654435761u + 1u;
-
 	if (p.do_seed != 0) {
 		uint ss = idx * 747796405u + 101u;
 		imageStore(state_img, ip, vec4(randBall(ss, p.bound), rnd(ss)));
@@ -182,7 +180,18 @@ void main() {
 		return;
 	}
 	if (p.update_mod <= 0) return;
-	if (p.update_mod > 1 && int(idx) % p.update_mod != p.update_phase) return;
+	if (p.update_mod > 1) {
+		// Contiguous slabs, not idx % mod. The interleaved version left five of every
+		// six lanes idle while the sixth ran the whole loop, so on a SIMD it cost the
+		// same as updating everything (measured: 1/6 of the cloud took 3ms against
+		// 4.4ms for all of it). The host dispatches one slab's worth of workgroups and
+		// this maps them onto the slab for this frame's phase.
+		uint slab = (uint(p.count) + uint(p.update_mod) - 1u) / uint(p.update_mod);
+		idx = uint(p.update_phase) * slab + idx;
+		if (idx >= uint(p.count)) return;
+		ip = ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);
+	}
+	uint seed = idx * 747796405u + uint(p.frame) * 2654435761u + 1u;
 
 	vec4 s = imageLoad(state_img, ip);
 	vec3 pos = s.xyz;

@@ -27,6 +27,16 @@ All notable changes to FractalXR are documented here. Format based on
   reader is gone. The look is unchanged.
 - The bulb iterator evaluated one distance estimate per particle per frame that the first
   projection step immediately recomputed; it no longer does.
+- **Staggered iteration now actually saves GPU time.** MOTION 1/n and the morph's 1/6 picked
+  particles by `idx % n`, which leaves most of every SIMD wave idle while the rest run the full
+  loop: the headset measured 1/6 of the cloud at 3ms against 4.4ms for all of it. Particles are
+  now iterated in contiguous slabs and only a slab's worth of workgroups is dispatched.
+- **Palette lookup is branchless** in both point shaders (a mix chain instead of a dynamically
+  indexed local array, which Adreno spills to scratch).
+- **A fresh bulb fades in once it has settled** instead of showing the ball of seeds collapsing,
+  which was both ugly and the most expensive thing the splat renderer drew (30fps for a second).
+- **GLOW toggle in LOOK**, so the cost of the post chain can be measured on the wrist menu
+  instead of guessed at. The menu panel is taller to make room for it and EXIT.
 - **Switching bulbs keeps your grab.** Every bulb switch reset the cloud's scale (and with it
   where it sat), throwing away however you had placed it. Only entering bulb mode now sets the
   inside-the-surface scale.

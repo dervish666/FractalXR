@@ -60,11 +60,15 @@ vec3 palette(float t) {
 		float c = t * palette_cycles;
 		t = abs(fract(c * 0.5) * 2.0 - 1.0);
 	}
+	// Piecewise-linear ramp as a mix chain. The previous local vec3[5] with a dynamic
+	// index is the pattern Adreno spills to scratch memory, in a shader that runs once
+	// per vertex for a million vertices.
 	float f = t * 4.0;
-	int i0 = min(3, int(f));
-	float lf = f - float(i0);
-	vec3 cols[5] = vec3[5](pal0, pal1, pal2, pal3, pal4);
-	return mix(cols[i0], cols[i0 + 1], lf);
+	vec3 c = mix(pal0, pal1, clamp(f, 0.0, 1.0));
+	c = mix(c, pal2, clamp(f - 1.0, 0.0, 1.0));
+	c = mix(c, pal3, clamp(f - 2.0, 0.0, 1.0));
+	c = mix(c, pal4, clamp(f - 3.0, 0.0, 1.0));
+	return c;
 }
 
 void vertex() {

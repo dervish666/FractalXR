@@ -177,6 +177,11 @@ var _guard_hold := 0.0
 var _guard_slow := 0
 ## False while the system dash covers the app (OpenXR session visible, not focused).
 var _xr_focused := true
+## A fresh bulb spends its settle as a ball of seeds collapsing onto the surface, which is
+## both ugly and the most expensive thing the splat renderer ever draws (measured 30fps
+## for the duration). Hide it until it has settled, then fade the shell in.
+const BULB_FADE_S := 0.6
+var _bulb_fade := 1.0
 ## EXIT is armed for this long after its first press.
 const EXIT_ARM_S := 4.0
 var _exit_armed_until := -1.0
@@ -463,6 +468,11 @@ func _build_menu() -> void:
 				render_idx = (render_idx + 1) % RENDER_STEPS.size()
 				if xr != null:
 					xr.render_target_size_multiplier = RENDER_STEPS[render_idx]),
+		# Glow is a downsample/blur/upsample chain per eye on a tiler, and its cost has
+		# never been measured. This toggle is the instrument: flip it and read the ms.
+		WristMenu.Item.new("look", "GLOW",
+			func(): return "on" if _env().glow_enabled else "off",
+			func(): _env().glow_enabled = not _env().glow_enabled),
 		# Two presses. The menu is driven by a ray and a trigger, and a single stray pull
 		# should not end the session; the first press arms it and says so on the tile.
 		WristMenu.Item.new("app", "EXIT",
@@ -559,6 +569,8 @@ func _set_bulb_mode(on: bool) -> void:
 		_apply_point_look()
 		_apply_exposure()
 		_bulb = null
+		_bulb_fade = 1.0
+		cloud.set_visible_cloud(true)
 		cloud.scale = Vector3.ONE
 		cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
 		_load_preset(preset_idx)
@@ -573,6 +585,8 @@ func _load_bulb(i: int) -> void:
 	# whether or not MOTION is asking for a freeze.
 	_bulb_settle = BULB_SETTLE_FRAMES
 	_bake_wait = 0
+	cloud.set_visible_cloud(false)
+	_bulb_fade = 1.0
 	cloud.set_count(int(TEX_SIZE * TEX_SIZE * BULB_PARTICLES))
 	if _bulb != null and cloud.source == _bulb:
 		# Same shader, same buffers: swap the genome in place rather than building a new
@@ -619,6 +633,8 @@ func _sync_iteration() -> void:
 			if _bulb_settle == 0:
 				cloud.request_measure()
 				_bake_wait = BAKE_DELAY_FRAMES
+				cloud.set_visible_cloud(true)
+				_bulb_fade = 0.0
 		elif _bake_wait > 0:
 			# Let the measurement land: the bake bins particles into a grid sized from
 			# the framing, and binning against a stale extent drops the outliers.
@@ -751,6 +767,10 @@ func _init_xr() -> void:
 		xr.get_display_refresh_rate(), str(xr.get_render_target_size()), xr.get_view_count()])
 
 
+func _env() -> Environment:
+	return $WorldEnvironment.environment
+
+
 func _request_refresh_rate() -> void:
 	if xr == null:
 		return
@@ -875,6 +895,9 @@ func _process(delta: float) -> void:
 		# The breath is the animation: each genome slowly reshapes whichever parameter
 		# defines its form, so the surface is never static.
 		_bulb.clock += delta * BREATH_STEPS[breath_idx]
+	if _bulb_fade < 1.0:
+		_bulb_fade = minf(1.0, _bulb_fade + delta / BULB_FADE_S)
+		cloud.set_opacity(OPACITY_STEPS[opacity_idx] * Morph.smoothstep_t(_bulb_fade))
 	_tick_morph(delta)
 	if _converge > 0:
 		_converge -= 1
