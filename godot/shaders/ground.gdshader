@@ -11,7 +11,7 @@ render_mode unshaded, cull_back, fog_disabled, shadows_disabled;
 
 uniform sampler2DArray levels : filter_nearest, repeat_disable;
 uniform int tex_size = 1024;
-uniform int num_levels = 8;
+uniform int num_levels = 9;
 uniform int level_rot = 0;      // layer of level i is (i + level_rot) % num_levels
 uniform int min_level = 0;      // finest level that is complete
 uniform int max_level = 7;      // coarsest level that is complete
@@ -30,6 +30,9 @@ uniform float palette_cycles = 1.0;
 uniform float texture_strength = 0.6;   // how much the orbit texture modulates brightness
 uniform int relief_mode = 1;            // 0 flat, 1 terraces (iteration height), 2 ridges (distance)
 uniform float relief_scale = 1.0;
+// Micro-relief from the orbit texture channel, a fixed few finest texels tall, so it
+// reads as surface grain up close and smooths out with distance on its own.
+uniform float bump_strength = 1.0;
 uniform vec3 light_dir = vec3(0.45, 0.75, 0.35);
 uniform vec3 inside_colour : source_color = vec3(0.03, 0.02, 0.05);
 uniform float brightness = 1.0;
@@ -87,10 +90,20 @@ vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 	return mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
 }
 
+// Relief height in metres. Scaled by the finest texel so it looks the same at every zoom:
+// an octave of iteration count is 48 finest texels tall, the bump a couple.
 float height_of(vec4 s) {
-	if (relief_mode == 1) return -log2(1.0 + s.r) * 0.08 * relief_scale;
-	if (relief_mode == 2) return s.g * 0.03 * relief_scale;   // g is already log2(distance)
-	return 0.0;
+	float unit = texel0 * wpu;
+	float h = 0.0;
+	if (relief_mode == 1) h = -log2(1.0 + s.r) * 48.0 * relief_scale;
+	else if (relief_mode == 2) h = clamp(s.g - log2(texel0), 0.0, 16.0) * 12.0 * relief_scale;
+	h += (s.a - 0.5) * 3.0 * bump_strength * (1.0 - clamp(s.b, 0.0, 1.0));
+	return h * unit;
+}
+
+float height_at(int level, vec2 e0) {
+	bool d;
+	return height_of(sample_level(level, e0, d));
 }
 
 void vertex() {
@@ -133,16 +146,17 @@ void fragment() {
 	float inside = clamp(s.b, 0.0, 1.0);
 	col = mix(col, inside_colour * (0.4 + 1.2 * s.a), inside);
 
-	// Relief: a height from the data, its normal from screen-space derivatives of that
-	// height against the plane, lit by one fixed directional light.
-	if (relief_mode != 0) {
-		float h = height_of(s) * wpu * 0.01;
-		vec3 dpx = dFdx(v_world);
-		vec3 dpy = dFdy(v_world);
-		vec3 t1 = vec3(dpx.x, dFdx(h), dpx.z);
-		vec3 t2 = vec3(dpy.x, dFdy(h), dpy.z);
-		vec3 n = normalize(cross(t2, t1));
-		if (n.y < 0.0) n = -n;
+	// Relief: a height from the data and its normal from the neighbouring texels of the
+	// level actually sampled, so slopes carry per-texel detail up close and coarsen with
+	// distance the way terrain does. Lit by one fixed directional light.
+	if (relief_mode != 0 || bump_strength > 0.0) {
+		float step = float(1 << l0);              // one texel of that level, in level-0 texels
+		float tm = step * texel0 * wpu;           // and in metres
+		float hx1 = height_at(l0, e0 + vec2(step, 0.0));
+		float hx0 = height_at(l0, e0 - vec2(step, 0.0));
+		float hz1 = height_at(l0, e0 + vec2(0.0, step));
+		float hz0 = height_at(l0, e0 - vec2(0.0, step));
+		vec3 n = normalize(vec3(-(hx1 - hx0) / (2.0 * tm), 1.0, -(hz1 - hz0) / (2.0 * tm)));
 		vec3 L = normalize(light_dir);
 		float diff = max(dot(n, L), 0.0);
 		vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);

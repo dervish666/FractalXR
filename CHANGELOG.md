@@ -16,6 +16,14 @@ All notable changes to FractalXR are documented here. Format based on
   ITER, HOME. Left stick walks, right stick zooms about your feet. Float32, so useful zoom ends
   around 1e5; perturbation is the follow-up. The self-test fills a stack and checks two points.
 
+- **Ground mode: sharper, deeper, bumpier, with a sky.** The finest texel is 1.5mm (was 3) with a
+  ninth level to keep the horizon; ground mode runs the full eye buffer (DETAIL 1.0x on entry,
+  restored on exit) since it draws in ~6ms; ITER goes to 4096 with the fill budget scaled by the
+  count so deep settings sharpen over more frames instead of stalling one; relief normals come from
+  neighbouring texels of the sampled level rather than screen derivatives, so slopes have
+  per-texel detail that coarsens with distance like terrain, and a BUMP dial adds grain from the
+  orbit texture; SKY mirrors the ground overhead at 3, 8 or 30m for the cost of one more plane.
+
 ### Changed
 - **Native build: the self-inflicted stalls are gone.** A flame morph rebuilt the genome
   storage buffer and its uniform set every frame (`FlameSource.set_preset`); it now rewrites

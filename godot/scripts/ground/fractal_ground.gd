@@ -22,13 +22,14 @@ class_name FractalGround
 ## limits sharpness in the middle distance, not the texel size. Half floats keep the
 ## stack at 64MB.
 const N := 1024
-const LEVELS := 8
+## Nine, because the finest texel is 1.5mm and the horizon still wants ~180m of window.
+const LEVELS := 9
 ## Window is re-centred once the viewer drifts this many texels from its centre. The
 ## shader treats N/2 - SLACK texels around the viewer as valid, so keep them in step.
 const SLACK := 48
 ## Finest texel at the viewer's feet, in metres, at a zoom stage boundary (it grows to
 ## twice this just before the next stage). About two pixels at standing height.
-const TEXEL_M := 0.003
+const TEXEL_M := 0.0015
 ## World metres per fractal unit at stage 0: the whole Mandelbrot is ~90m across.
 const WPU_BASE := 30.0
 const STAGE_MIN := -4
@@ -57,6 +58,7 @@ var _set: RID
 var _tex: RID
 var _texture := Texture2DArrayRD.new()
 var _mesh_instance: MeshInstance3D
+var _sky: MeshInstance3D
 var _material: ShaderMaterial
 var _stage := 0
 var _rot := 0
@@ -86,6 +88,16 @@ func _init() -> void:
 	_mesh_instance.material_override = _material
 	_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_mesh_instance)
+	# The sky: the same ground mirrored overhead. Same textures, same shader, one more
+	# plane, so it costs fill and nothing else.
+	_sky = MeshInstance3D.new()
+	_sky.name = "Sky"
+	_sky.mesh = plane
+	_sky.material_override = _material
+	_sky.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_sky.rotation.x = PI      # face down
+	_sky.visible = false
+	add_child(_sky)
 	for i in LEVELS:
 		_win_lo.append(Vector2i.ZERO)
 		_have.append(false)
@@ -355,7 +367,9 @@ func _flush() -> void:
 		elif ground_us < TARGET_US * 0.6:
 			_budget = minf(BUDGET_MAX, _budget * 1.15)
 	_worked = false
-	var left := _budget
+	# The budget is in texels at 256 iterations; deeper counts get proportionally fewer
+	# texels a frame, so ITER 4096 sharpens over more frames rather than stalling one.
+	var left := _budget * 256.0 / float(maxi(1, max_iter))
 	var cl := -1
 	for i in range(LEVELS - 1, -1, -1):
 		var rects: Array[Rect2i] = _dirty[i]
@@ -402,6 +416,12 @@ func _read_timestamp() -> void:
 # --- look ---------------------------------------------------------------------------
 
 const _PAL_NAMES: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal4"]
+
+
+## Height of the mirrored ceiling in metres; 0 turns it off.
+func set_sky(height: float) -> void:
+	_sky.visible = height > 0.0
+	_sky.position.y = height
 
 
 func set_palette(pal: Array) -> void:

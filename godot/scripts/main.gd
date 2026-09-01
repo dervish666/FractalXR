@@ -99,7 +99,7 @@ var cloud := ParticleCloud.new()
 ## The third mode: stand on a Mandelbrot or Julia set that runs to the horizon.
 var ground := FractalGround.new()
 var ground_mode := false
-const GROUND_ITER := [256, 512, 1024, 128]
+const GROUND_ITER := [256, 512, 1024, 2048, 4096, 128]
 var ground_iter_idx := 0
 const GROUND_RELIEF := ["terraces", "ridges", "flat"]
 var ground_relief_idx := 0
@@ -108,6 +108,14 @@ var ground_texture_idx := 0
 const GROUND_FREQ := [1.0, 2.0, 4.0, 0.5]
 var ground_freq_idx := 0
 var ground_hue := 0.0
+const GROUND_BUMP := [1.0, 2.0, 0.0, 0.5]
+var ground_bump_idx := 0
+const GROUND_SKY := [0.0, 3.0, 8.0, 30.0]   # mirrored ceiling height, metres; 0 = off
+var ground_sky_idx := 0
+## Ground mode draws in ~6ms, so it runs the full eye buffer; the flame's DETAIL is put
+## back on the way out.
+const GROUND_RENDER_IDX := 2       # RENDER_STEPS[2] = 1.0
+var _render_idx_saved := 0
 const GROUND_PAN_MPS := 1.4       # metres per second at full stick
 const GROUND_ZOOM_PER_S := 0.9    # e-folds per second at full stick
 var library := PresetLibrary.new()
@@ -548,6 +556,18 @@ func _build_menu() -> void:
 				ground_hue = fmod(ground_hue + 0.125, 1.0)
 				_apply_ground_look(),
 			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "BUMP",
+			func(): return "%.1fx" % GROUND_BUMP[ground_bump_idx],
+			func():
+				ground_bump_idx = (ground_bump_idx + 1) % GROUND_BUMP.size()
+				_apply_ground_look(),
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "SKY",
+			func(): return "off" if GROUND_SKY[ground_sky_idx] == 0.0 else "mirror %.0fm" % GROUND_SKY[ground_sky_idx],
+			func():
+				ground_sky_idx = (ground_sky_idx + 1) % GROUND_SKY.size()
+				_apply_ground_look(),
+			false, func(): return ground_mode),
 		WristMenu.Item.new("look", "HOME",
 			func(): return "reset view",
 			func(): ground.home(),
@@ -639,9 +659,15 @@ func _set_ground_mode(on: bool) -> void:
 	ground.visible = on
 	cloud.set_visible_cloud(not on)
 	if on:
+		_render_idx_saved = render_idx
+		render_idx = GROUND_RENDER_IDX
 		ground.home()
 		_apply_ground_look()
 		_apply_palette()
+	else:
+		render_idx = _render_idx_saved
+	if xr != null:
+		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
 
 
 func _apply_ground_look() -> void:
@@ -649,8 +675,11 @@ func _apply_ground_look() -> void:
 	ground.set_look(&"texture_strength", GROUND_TEXTURE[ground_texture_idx])
 	ground.set_look(&"colour_freq", GROUND_FREQ[ground_freq_idx])
 	ground.set_look(&"colour_offset", ground_hue)
-	ground.set_look(&"texture_strength", GROUND_TEXTURE[ground_texture_idx])
-	ground.set_texture_on(GROUND_TEXTURE[ground_texture_idx] > 0.0)
+	ground.set_look(&"bump_strength", GROUND_BUMP[ground_bump_idx])
+	ground.set_sky(GROUND_SKY[ground_sky_idx])
+	# The texture channel feeds both the colour modulation and the bump, so it is only
+	# skipped in compute when neither wants it.
+	ground.set_texture_on(GROUND_TEXTURE[ground_texture_idx] > 0.0 or GROUND_BUMP[ground_bump_idx] > 0.0)
 	ground.set_palette_cycles(COLOUR_CYCLES[colour_idx])
 
 
