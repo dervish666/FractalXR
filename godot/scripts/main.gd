@@ -355,17 +355,24 @@ func _load_preset(i: int) -> bool:
 ## Menu spec: section, label, read, advance. Adding a setting is one entry and nothing
 ## else; the menu knows nothing about particle counts or exposures.
 func _build_menu() -> void:
+	# Which modes an item belongs to. Everything else hides, and the wrist menu drops a
+	# section whose tiles are all hidden, so each mode gets only its own controls.
+	var _vis_flame := func(): return not bulb_mode and not ground_mode
+	var _vis_cloud := func(): return not ground_mode
 	menu.items = [
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
-				library.next_serial(), library.themes))),
+				library.next_serial(), library.themes)),
+			false, _vis_flame),
 		WristMenu.Item.new("make", "MUTATE",
 			func(): return "vary this", func(): _morph_to_new(Breed.mutate(
-				library.at(preset_idx), library.next_serial()))),
+				library.at(preset_idx), library.next_serial())),
+			false, _vis_flame),
 		WristMenu.Item.new("make", "BREED",
 			func(): return "mix two", func(): _morph_to_new(Breed.crossover(
 				library.at(preset_idx), library.at(preset_idx + 1 + randi() % maxi(1, library.count() - 1)),
-				library.next_serial()))),
+				library.next_serial())),
+			false, _vis_flame),
 
 		WristMenu.Item.new("scene", "MODE",
 			func(): return "ground" if ground_mode else ("bulb" if bulb_mode else "flame"),
@@ -376,20 +383,25 @@ func _build_menu() -> void:
 				if bulb_mode:
 					_load_bulb(bulb_idx + 1)
 				else:
-					_morph_to_preset(preset_idx + 1)),
+					_morph_to_preset(preset_idx + 1),
+			false, _vis_cloud),
 		WristMenu.Item.new("scene", "DRIFT",
 			func(): return "on" if _drift else "off",
-			func(): _drift = not _drift; _drift_hold = 0.0),
+			func(): _drift = not _drift; _drift_hold = 0.0,
+			false, _vis_cloud),
 		WristMenu.Item.new("scene", "PASSTHRU",
 			func(): return passthru_label,
 			func(): _set_passthrough(not passthrough)),
 		WristMenu.Item.new("scene", "SPIN",
-			func(): return "on" if spin else "off", func(): spin = not spin),
+			func(): return "on" if spin else "off", func(): spin = not spin,
+			false, _vis_cloud),
 		WristMenu.Item.new("scene", "SPEED",
 			func(): return "%ds" % int(MORPH_STEPS[morph_idx]),
-			func(): morph_idx = (morph_idx + 1) % MORPH_STEPS.size()),
+			func(): morph_idx = (morph_idx + 1) % MORPH_STEPS.size(),
+			false, _vis_flame),
 		WristMenu.Item.new("scene", "CENTRE",
-			func(): return "reset", func(): _recenter(); cloud.request_measure()),
+			func(): return "reset", func(): _recenter(); cloud.request_measure(),
+			false, _vis_cloud),
 		WristMenu.Item.new("scene", "HELP",
 			func(): return "controls", func(): help.open()),
 
@@ -398,7 +410,8 @@ func _build_menu() -> void:
 			func():
 				particle_idx = (particle_idx + 1) % PARTICLE_STEPS.size()
 				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
-				cloud.request_measure()),
+				cloud.request_measure(),
+			false, _vis_flame),
 		WristMenu.Item.new("look", "SPLAT",
 			func():
 				if bulb_mode:
@@ -413,20 +426,24 @@ func _build_menu() -> void:
 					splat_idx = (splat_idx + 1) % SPLAT_STEPS.size()
 					if splat_idx == 0:
 						splat_on = false
-				_apply_point_look()),
+				_apply_point_look(),
+			false, _vis_cloud),
 		WristMenu.Item.new("look", "ADAPT",
 			func(): return "%d%%" % int(DENSITY_STEPS[density_idx] * 100.0),
 			func():
 				density_idx = (density_idx + 1) % DENSITY_STEPS.size()
-				_apply_point_look()),
+				_apply_point_look(),
+			false, _vis_cloud),
 		WristMenu.Item.new("look", "SOLID",
 			func(): return "%d%%" % int(OPACITY_STEPS[opacity_idx] * 100.0),
 			func():
 				opacity_idx = (opacity_idx + 1) % OPACITY_STEPS.size()
-				_apply_point_look()),
+				_apply_point_look(),
+			false, _vis_cloud),
 		WristMenu.Item.new("look", "SIZE",
 			func(): return "%.2f" % POINT_STEPS[point_idx],
-			func(): point_idx = (point_idx + 1) % POINT_STEPS.size(); _apply_point_look()),
+			func(): point_idx = (point_idx + 1) % POINT_STEPS.size(); _apply_point_look(),
+			false, _vis_flame),
 		WristMenu.Item.new("colour", "THEME",
 			func():
 				if recolor_on_drift:
@@ -435,7 +452,8 @@ func _build_menu() -> void:
 			func(): _cycle_theme()),
 		WristMenu.Item.new("colour", "AUTO",
 			func(): return "on" if recolor_on_drift else "off",
-			func(): recolor_on_drift = not recolor_on_drift),
+			func(): recolor_on_drift = not recolor_on_drift,
+			false, _vis_cloud),
 		WristMenu.Item.new("colour", "BANDS",
 			func(): return "%dx" % int(COLOUR_CYCLES[colour_idx]),
 			func():
@@ -443,7 +461,8 @@ func _build_menu() -> void:
 				_apply_point_look()),
 		WristMenu.Item.new("colour", "BRIGHT",
 			func(): return "%.3f" % BRIGHT_STEPS[bright_idx],
-			func(): bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size(); _apply_point_look()),
+			func(): bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size(); _apply_point_look(),
+			false, _vis_cloud),
 
 		WristMenu.Item.new("colour", "EXPOSURE",
 			func(): return "%.0fx" % EXPOSURE_MUL[exposure_idx],
@@ -460,7 +479,8 @@ func _build_menu() -> void:
 					if BULB_STABILITY[bulb_stability_idx] == 0:
 						_bake_wait = BAKE_DELAY_FRAMES
 				else:
-					stability_idx = (stability_idx + 1) % STABILITY.size()),
+					stability_idx = (stability_idx + 1) % STABILITY.size(),
+			false, _vis_cloud),
 		WristMenu.Item.new("look", "BAKE",
 			func():
 				if cloud.is_baking():

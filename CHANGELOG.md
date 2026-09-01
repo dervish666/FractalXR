@@ -59,6 +59,9 @@ All notable changes to FractalXR are documented here. Format based on
   ball of seeds, so the shell projects onto the new surface over the settle: a real shape-to-shape
   transition, and the previous bake's splat sizes stay live until the new bake lands. The old
   seed-ball collapse was also the most expensive thing the renderer drew (30fps for a second).
+- **The wrist menu shows only the current mode's controls.** Every tile is tagged flame, cloud
+  (flame and bulb), bulb, ground or all, and a section whose tiles are all hidden drops out with
+  its header. Thirty-five tiles across three modes had become a wall.
 - **GLOW toggle in LOOK**, so the cost of the post chain can be measured on the wrist menu
   instead of guessed at. The menu panel is taller to make room for it and EXIT.
 - **Switching bulbs keeps your grab.** Every bulb switch reset the cloud's scale (and with it

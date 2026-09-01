@@ -76,6 +76,7 @@ var _layer: OpenXRCompositionLayerQuad
 var _hovered := -1
 var _hit_distance := 0.35
 var _shown := 0.0
+var _sections: Dictionary = {}   # section name -> [header Label, GridContainer]
 var _head: Node3D
 var _pointer: Node3D
 ## An OpenXR composition layer keeps being composited when the app loses focus, so it
@@ -211,12 +212,14 @@ func _build_viewport() -> void:
 		if not seen.has(it.section):
 			seen.append(it.section)
 	for sec in seen:
-		col.add_child(_label(sec.to_upper(), 14, SECTION))
+		var head := _label(sec.to_upper(), 14, SECTION)
+		col.add_child(head)
 		var grid := GridContainer.new()
 		grid.columns = COLUMNS
 		grid.add_theme_constant_override("h_separation", 8)
 		grid.add_theme_constant_override("v_separation", 8)
 		col.add_child(grid)
+		_sections[sec] = [head, grid]
 		for i in items.size():
 			if items[i].section == sec:
 				grid.add_child(_tile(i))
@@ -360,6 +363,17 @@ func _refresh() -> void:
 	for i in items.size():
 		if _tiles[i] != null and items[i].visible_when.is_valid():
 			_tiles[i].visible = bool(items[i].visible_when.call())
+	# A section with nothing showing takes no room: header and grid go together.
+	for sec in _sections:
+		var pair: Array = _sections[sec]
+		var any := false
+		for i in items.size():
+			if items[i].section == sec and _tiles[i] != null and _tiles[i].visible:
+				any = true
+				break
+		(pair[0] as Control).visible = any
+		(pair[1] as Control).visible = any
+	for i in items.size():
 		if _values[i] != null and (_tiles[i] == null or _tiles[i].visible):
 			_values[i].text = str(items[i].read.call())
 	if title.is_valid():
