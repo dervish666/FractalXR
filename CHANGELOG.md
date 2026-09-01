@@ -6,6 +6,20 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **The Quest build is ready to be a real app.** Package `uk.fractalxr.app`, label FractalXR,
+  Quest 3/3S only, `INTERNET` permission dropped, and launcher icons baked from a real engine
+  render instead of the placeholder circle. `godot/tools/build.sh release` produces a
+  release-signed APK from a keystore made by `godot/tools/keystore.sh`; the build prints the
+  signing certificate afterwards, because a debug-signed APK on a store listing is a bug and
+  not a detail. The whole path is written down in `SIDEQUEST.md`.
+- **A first-launch controls card in the native build.** A drawn schematic of both controllers
+  with what each button does, floating where you are looking, dismissed by either trigger and
+  shown once ever (`user://state.cfg`). `HELP` in the wrist menu brings it back. Nobody was
+  going to discover the wrist-turn gesture on their own.
+- **An icon and store-art pipeline from the real engine.** `npm run art` renders any preset at
+  1024px with the glow's own alpha (`/icon.html?names=…`); `godot/tools/make_icons.py` frames it
+  on the bright core and writes every Android icon size, and `make_store_art.py` composes the
+  SideQuest listing card and background. Screenshots and the trailer stay a headset job.
 - **The three modes are now one site with mode switching.** The landing page explains what
   FractalXR is and links all three modes (flames / relief zoom / splat); the zoom and splat
   pages carry a corner nav back to the others. In-headset, the zoomer and splat viewer get a

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FractalXR — icon / store art renderer (dev)</title>
+    <style>
+      body { background: #05060a; color: #cfd8ff; font-family: ui-sans-serif, system-ui, sans-serif; margin: 18px; }
+      h1 { font-weight: 600; font-size: 20px; }
+      button { font: inherit; padding: 10px 18px; border-radius: 10px; border: 1px solid #88aaff80; background: #111a2e; color: #eef2ff; cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      #status { margin-top: 12px; color: #9fb0d8; }
+      #preview { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+      #preview img { background: #0a0614; border: 1px solid #223; border-radius: 8px; }
+      p.note { color: #6b7aa0; max-width: 680px; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h1>FractalXR icon renderer</h1>
+    <p class="note">
+      Dev-only. Renders presets at 1024px with transparent glow edges into <code>godot/art/candidates/</code>.
+      Narrow it with <code>?names=Nautilus,Glacier</code>. Feed the winner to <code>godot/tools/make_icons.py</code>.
+    </p>
+    <button id="go">Render</button>
+    <div id="status">loading…</div>
+    <div id="preview"></div>
+    <script type="module" src="/src/bake/icon.ts"></script>
+  </body>
+</html>

@@ -10,3 +10,6 @@ build/
 
 # The OpenXR vendors addon is an 82MB binary dependency; see README for the download.
 addons/
+
+# Icon source renders: regenerate with `npm run art`, they are inputs not artefacts
+art/candidates/

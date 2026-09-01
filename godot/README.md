@@ -83,6 +83,10 @@ to a point, or a genome that has gone flat in z (the missing-z-injector bug).
 | Left trigger | Previous flame |
 | Turn left wrist toward your face | Wrist menu appears |
 
+The first launch shows a card with both controllers drawn on it and what each button does,
+dismissed by either trigger and never shown again (`user://state.cfg`); `HELP` in the wrist
+menu brings it back. Nobody was ever going to guess the wrist-turn on their own.
+
 Everything else lives in the wrist menu: Flame, Drift, Spin, Points, Size, Bright,
 Exposure, Motion, Detail, Recentre, with fps and the draw/sim split underneath.
 
@@ -319,10 +323,18 @@ Already installed on this machine, listed so it can be rebuilt elsewhere:
 
 ```bash
 tools/selftest.sh          # verify the compute chain on this machine, writes .spike-out/selftest.png
-tools/build.sh             # export build/fractalxr-spike.apk
-tools/deploy.sh            # build, install, launch, stream the [perf] log
+tools/card_shot.sh         # render the first-launch controls card to .spike-out/help_card.png
+tools/build.sh             # export build/fractalxr-debug.apk (debug-signed, the dev loop)
+tools/build.sh release     # export build/fractalxr.apk, signed for the store
+tools/keystore.sh          # make the release keystore, once, ever
+tools/deploy.sh [release]  # build, install, launch, stream the [perf] log
 tools/soak.sh 900 > soak-compute.csv   # scrape 15 minutes of [perf] lines into CSV
+tools/make_icons.py art/candidates/glacier.png       # launcher icons from a real render
+tools/make_store_art.py art/candidates/vortex.png …  # SideQuest card and background
 ```
+
+Candidate renders come from the web build: `npm run art` in the repo root, then
+`/icon.html?names=Vortex,Glacier`. Publishing is written up in [`../SIDEQUEST.md`](../SIDEQUEST.md).
 
 `--xr-mode off` is load-bearing on the Mac and is baked into `tools/env.sh`. Without
 it the OpenXR loader hunts for a runtime that isn't there and hangs the process for

@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "bake": "vite --config vite.bake.config.ts",
+    "art": "vite --config vite.bake.config.ts --open /icon.html",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
     "preview": "npm run build && wrangler dev",

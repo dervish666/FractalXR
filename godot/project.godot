@@ -2,8 +2,8 @@ config_version=5
 
 [application]
 
-config/name="FractalXR Godot Spike"
-config/description="Chaos-game performance spike: RenderingDevice compute vs the WebXR build."
+config/name="FractalXR"
+config/description="Fractal flames and Mandelbulbs you can grab, scale and fly through, native on Quest."
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.7", "Mobile")
 config/icon="res://icon.svg"

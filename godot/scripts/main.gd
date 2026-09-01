@@ -87,6 +87,7 @@ const HOME_DROP := 0.15
 @onready var right_hand: XRController3D = $XROrigin3D/RightHand
 @onready var hud: Label3D = $XROrigin3D/XRCamera3D/Hud
 var menu := WristMenu.new()
+var help := HelpCard.new()
 
 var xr: OpenXRInterface = null
 var cloud := ParticleCloud.new()
@@ -117,6 +118,8 @@ var _morph_from_idx := 0
 var _pending_cache := -1
 var _cache_gen := 0
 var _menu_active := false
+## Shown once, ever, on the first launch after install. HELP in the wrist menu brings it back.
+var _help_pending := false
 var _measure_countdown := 0
 ## Framing per preset, measured once then reused. With both endpoints known a morph can
 ## interpolate the framing on the same curve as the shape, so it moves WITH the flame
@@ -271,6 +274,9 @@ func _ready() -> void:
 	var hands: Array[XRController3D] = [left_hand, right_hand]
 	grab = WorldGrab.new(hands, cloud)
 	_build_menu()
+	xr_origin.add_child(help)
+	help.setup(xr_camera)
+	_help_pending = not _help_seen()
 
 	RenderingServer.call_on_render_thread(_setup_gpu)
 
@@ -347,6 +353,8 @@ func _build_menu() -> void:
 			func(): morph_idx = (morph_idx + 1) % MORPH_STEPS.size()),
 		WristMenu.Item.new("scene", "CENTRE",
 			func(): return "reset", func(): _recenter(); cloud.request_measure()),
+		WristMenu.Item.new("scene", "HELP",
+			func(): return "controls", func(): help.open()),
 
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
@@ -800,6 +808,11 @@ func _process(delta: float) -> void:
 	if not _placed and _setup_done and xr_camera.global_transform.origin.length_squared() > 1e-6:
 		_placed = true
 		_recenter()
+		if _help_pending:
+			_help_pending = false
+			_mark_help_seen()
+			help.open()
+	help.update(delta)
 	_menu_active = menu.update(delta)
 	_run_guard(delta)
 	if _bulb != null:
@@ -850,6 +863,16 @@ func _process(delta: float) -> void:
 # X (left)               reset position       Y (left)       reseed
 
 func _handle_input(delta: float) -> void:
+	# While the card is up the triggers only dismiss it. Both are read every frame rather
+	# than short-circuited, or _pressed's edge state for the unread hand goes stale.
+	if help.is_open():
+		var r_trig := _pressed(right_hand, "trigger_click")
+		var l_trig := _pressed(left_hand, "trigger_click")
+		var key := _key(KEY_SPACE)
+		if r_trig or l_trig or key:
+			help.close()
+		return
+
 	var rs := Vector2.ZERO
 	var ls := Vector2.ZERO
 	if right_hand != null and right_hand.get_has_tracking_data():
@@ -1048,6 +1071,25 @@ func _fmt_count(n: int) -> String:
 
 func _fmt_time(s: float) -> String:
 	return "%d:%02d" % [int(s) / 60, int(s) % 60]
+
+
+## First-run state lives in user://, which survives an update but not an uninstall. One key,
+## one file: anything more would be a settings system nobody asked for.
+const STATE_PATH := "user://state.cfg"
+
+
+func _help_seen() -> bool:
+	var cfg := ConfigFile.new()
+	if cfg.load(STATE_PATH) != OK:
+		return false
+	return bool(cfg.get_value("ui", "seen_help", false))
+
+
+func _mark_help_seen() -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(STATE_PATH)  # keep whatever else is in there
+	cfg.set_value("ui", "seen_help", true)
+	cfg.save(STATE_PATH)
 
 
 func _exit_tree() -> void:
