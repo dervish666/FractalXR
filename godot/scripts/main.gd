@@ -376,6 +376,14 @@ func _build_menu() -> void:
 	var _vis_flame := func(): return not bulb_mode and not ground_mode
 	var _vis_cloud := func(): return not ground_mode
 	menu.items = [
+		# The mode strip: three segments under the title, always in the same place.
+		WristMenu.Item.new("mode", "FLAME", func(): return "",
+			func(): _set_mode("flame")).chosen_when(func(): return not bulb_mode and not ground_mode),
+		WristMenu.Item.new("mode", "BULB", func(): return "",
+			func(): _set_mode("bulb")).chosen_when(func(): return bulb_mode),
+		WristMenu.Item.new("mode", "GROUND", func(): return "",
+			func(): _set_mode("ground")).chosen_when(func(): return ground_mode),
+
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
 				library.next_serial(), library.themes)),
@@ -390,9 +398,6 @@ func _build_menu() -> void:
 				library.next_serial())),
 			false, _vis_flame),
 
-		WristMenu.Item.new("scene", "MODE",
-			func(): return "ground" if ground_mode else ("bulb" if bulb_mode else "flame"),
-			func(): _cycle_mode()),
 		WristMenu.Item.new("scene", "FLAME",
 			func(): return library.bulbs[bulb_idx].get("name", "?") if bulb_mode else "next",
 			func():
@@ -400,7 +405,11 @@ func _build_menu() -> void:
 					_load_bulb(bulb_idx + 1)
 				else:
 					_morph_to_preset(preset_idx + 1),
-			false, _vis_cloud),
+			false, _vis_cloud).stepping(func(d: int):
+				if bulb_mode:
+					_load_bulb(bulb_idx + d)
+				else:
+					_morph_to_preset(preset_idx + d)),
 		WristMenu.Item.new("scene", "DRIFT",
 			func(): return "on" if _drift else "off",
 			func(): _drift = not _drift; _drift_hold = 0.0,
@@ -414,7 +423,8 @@ func _build_menu() -> void:
 		WristMenu.Item.new("scene", "SPEED",
 			func(): return "%ds" % int(MORPH_STEPS[morph_idx]),
 			func(): morph_idx = (morph_idx + 1) % MORPH_STEPS.size(),
-			false, _vis_flame),
+			false, _vis_flame).stepping(func(d: int):
+				morph_idx = wrapi(morph_idx + d, 0, MORPH_STEPS.size())),
 		WristMenu.Item.new("scene", "CENTRE",
 			func(): return "reset", func(): _recenter(); cloud.request_measure(),
 			false, _vis_cloud),
@@ -427,7 +437,10 @@ func _build_menu() -> void:
 				particle_idx = (particle_idx + 1) % PARTICLE_STEPS.size()
 				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
 				cloud.request_measure(),
-			false, _vis_flame),
+			false, _vis_flame).stepping(func(d: int):
+				particle_idx = wrapi(particle_idx + d, 0, PARTICLE_STEPS.size())
+				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
+				cloud.request_measure()),
 		WristMenu.Item.new("look", "SPLAT",
 			func():
 				if bulb_mode:
@@ -443,29 +456,45 @@ func _build_menu() -> void:
 					if splat_idx == 0:
 						splat_on = false
 				_apply_point_look(),
-			false, _vis_cloud),
+			false, _vis_cloud).stepping(func(d: int):
+				if bulb_mode:
+					coverage_idx = wrapi(coverage_idx + d, 0, BULB_COVERAGE.size())
+				else:
+					# One ladder: off, then every size. Scrubbing left from the first
+					# size lands on off, not on the largest splat.
+					var cur := (splat_idx + 1) if splat_on else 0
+					var nxt := wrapi(cur + d, 0, SPLAT_STEPS.size() + 1)
+					splat_on = nxt > 0
+					splat_idx = maxi(0, nxt - 1)
+				_apply_point_look()),
 		WristMenu.Item.new("look", "ADAPT",
 			func(): return "%d%%" % int(DENSITY_STEPS[density_idx] * 100.0),
 			func():
 				density_idx = (density_idx + 1) % DENSITY_STEPS.size()
 				_apply_point_look(),
-			false, _vis_cloud),
+			false, _vis_cloud).stepping(func(d: int):
+				density_idx = wrapi(density_idx + d, 0, DENSITY_STEPS.size())
+				_apply_point_look()),
 		WristMenu.Item.new("look", "SOLID",
 			func(): return "%d%%" % int(OPACITY_STEPS[opacity_idx] * 100.0),
 			func():
 				opacity_idx = (opacity_idx + 1) % OPACITY_STEPS.size()
 				_apply_point_look(),
-			false, _vis_cloud),
+			false, _vis_cloud).stepping(func(d: int):
+				opacity_idx = wrapi(opacity_idx + d, 0, OPACITY_STEPS.size())
+				_apply_point_look()),
 		WristMenu.Item.new("look", "SIZE",
 			func(): return "%.2f" % POINT_STEPS[point_idx],
 			func(): point_idx = (point_idx + 1) % POINT_STEPS.size(); _apply_point_look(),
-			false, _vis_flame),
+			false, _vis_flame).stepping(func(d: int):
+				point_idx = wrapi(point_idx + d, 0, POINT_STEPS.size())
+				_apply_point_look()),
 		WristMenu.Item.new("colour", "THEME",
 			func():
 				if recolor_on_drift:
 					return "auto %d" % (theme_idx + 1) if theme_idx >= 0 else "auto"
 				return "theme %d" % (theme_idx + 1) if theme_idx >= 0 else "preset",
-			func(): _cycle_theme()),
+			func(): _cycle_theme()).stepping(func(d: int): _cycle_theme(d)),
 		WristMenu.Item.new("colour", "AUTO",
 			func(): return "on" if recolor_on_drift else "off",
 			func(): recolor_on_drift = not recolor_on_drift,
@@ -474,15 +503,20 @@ func _build_menu() -> void:
 			func(): return "%dx" % int(COLOUR_CYCLES[colour_idx]),
 			func():
 				colour_idx = (colour_idx + 1) % COLOUR_CYCLES.size()
+				_apply_point_look()).stepping(func(d: int):
+				colour_idx = wrapi(colour_idx + d, 0, COLOUR_CYCLES.size())
 				_apply_point_look()),
 		WristMenu.Item.new("colour", "BRIGHT",
 			func(): return "%.3f" % BRIGHT_STEPS[bright_idx],
 			func(): bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size(); _apply_point_look(),
-			false, _vis_cloud),
+			false, _vis_cloud).stepping(func(d: int):
+				bright_idx = wrapi(bright_idx + d, 0, BRIGHT_STEPS.size())
+				_apply_point_look()),
 
 		WristMenu.Item.new("colour", "EXPOSURE",
 			func(): return "%.0fx" % EXPOSURE_MUL[exposure_idx],
-			func(): exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size(); _apply_exposure()),
+			func(): exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size(); _apply_exposure()).stepping(
+			func(d: int): exposure_idx = wrapi(exposure_idx + d, 0, EXPOSURE_MUL.size()); _apply_exposure()),
 		WristMenu.Item.new("look", "MOTION",
 			func():
 				var m: int = BULB_STABILITY[bulb_stability_idx] if bulb_mode else STABILITY[stability_idx]
@@ -496,7 +530,13 @@ func _build_menu() -> void:
 						_bake_wait = BAKE_DELAY_FRAMES
 				else:
 					stability_idx = (stability_idx + 1) % STABILITY.size(),
-			false, _vis_cloud),
+			false, _vis_cloud).stepping(func(d: int):
+				if bulb_mode:
+					bulb_stability_idx = wrapi(bulb_stability_idx + d, 0, BULB_STABILITY.size())
+					if BULB_STABILITY[bulb_stability_idx] == 0:
+						_bake_wait = BAKE_DELAY_FRAMES
+				else:
+					stability_idx = wrapi(stability_idx + d, 0, STABILITY.size())),
 		WristMenu.Item.new("look", "BAKE",
 			func():
 				if cloud.is_baking():
@@ -519,13 +559,11 @@ func _build_menu() -> void:
 					return "held"
 				return "off" if BREATH_STEPS[breath_idx] == 0.0 else "%.0fx" % BREATH_STEPS[breath_idx],
 			func(): breath_idx = (breath_idx + 1) % BREATH_STEPS.size(),
-			false, func(): return bulb_mode),
+			false, func(): return bulb_mode).stepping(func(d: int):
+				breath_idx = wrapi(breath_idx + d, 0, BREATH_STEPS.size())),
 		WristMenu.Item.new("look", "DETAIL",
 			func(): return "%.2fx" % RENDER_STEPS[render_idx],
-			func():
-				render_idx = (render_idx + 1) % RENDER_STEPS.size()
-				if xr != null:
-					xr.render_target_size_multiplier = RENDER_STEPS[render_idx]),
+			func(): _step_detail(1)).stepping(func(d: int): _step_detail(d)),
 		WristMenu.Item.new("look", "SET",
 			func(): return "julia" if ground.julia else "mandelbrot",
 			func(): ground.set_julia(not ground.julia),
@@ -539,43 +577,57 @@ func _build_menu() -> void:
 			func():
 				ground_iter_idx = (ground_iter_idx + 1) % GROUND_ITER.size()
 				ground.set_max_iter(GROUND_ITER[ground_iter_idx]),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).stepping(func(d: int):
+				ground_iter_idx = wrapi(ground_iter_idx + d, 0, GROUND_ITER.size())
+				ground.set_max_iter(GROUND_ITER[ground_iter_idx])),
 		WristMenu.Item.new("look", "RELIEF",
 			func(): return GROUND_RELIEF[ground_relief_idx],
 			func():
 				ground_relief_idx = (ground_relief_idx + 1) % GROUND_RELIEF.size()
 				_apply_ground_look(),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).stepping(func(d: int):
+				ground_relief_idx = wrapi(ground_relief_idx + d, 0, GROUND_RELIEF.size())
+				_apply_ground_look()),
 		WristMenu.Item.new("look", "TEXTURE",
 			func(): return "%d%%" % int(GROUND_TEXTURE[ground_texture_idx] * 100.0),
 			func():
 				ground_texture_idx = (ground_texture_idx + 1) % GROUND_TEXTURE.size()
 				_apply_ground_look(),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).stepping(func(d: int):
+				ground_texture_idx = wrapi(ground_texture_idx + d, 0, GROUND_TEXTURE.size())
+				_apply_ground_look()),
 		WristMenu.Item.new("look", "FREQ",
 			func(): return "%.1fx" % GROUND_FREQ[ground_freq_idx],
 			func():
 				ground_freq_idx = (ground_freq_idx + 1) % GROUND_FREQ.size()
 				_apply_ground_look(),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).stepping(func(d: int):
+				ground_freq_idx = wrapi(ground_freq_idx + d, 0, GROUND_FREQ.size())
+				_apply_ground_look()),
 		WristMenu.Item.new("look", "HUE",
 			func(): return "%.2f" % ground_hue,
 			func():
 				ground_hue = fmod(ground_hue + 0.125, 1.0)
 				_apply_ground_look(),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).stepping(func(d: int):
+				ground_hue = fposmod(ground_hue + 0.125 * d, 1.0)
+				_apply_ground_look()),
 		WristMenu.Item.new("look", "BUMP",
 			func(): return "%.1fx" % GROUND_BUMP[ground_bump_idx],
 			func():
 				ground_bump_idx = (ground_bump_idx + 1) % GROUND_BUMP.size()
 				_apply_ground_look(),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).stepping(func(d: int):
+				ground_bump_idx = wrapi(ground_bump_idx + d, 0, GROUND_BUMP.size())
+				_apply_ground_look()),
 		WristMenu.Item.new("look", "SKY",
 			func(): return "off" if GROUND_SKY[ground_sky_idx] == 0.0 else "mirror %.0fm" % GROUND_SKY[ground_sky_idx],
 			func():
 				ground_sky_idx = (ground_sky_idx + 1) % GROUND_SKY.size()
 				_apply_ground_look(),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).stepping(func(d: int):
+				ground_sky_idx = wrapi(ground_sky_idx + d, 0, GROUND_SKY.size())
+				_apply_ground_look()),
 		WristMenu.Item.new("look", "HOME",
 			func(): return "reset view",
 			func(): ground.home(),
@@ -665,14 +717,36 @@ func _morph_to_preset(i: int) -> void:
 ## Switch between the flame gallery and the bulb gallery. Both are FractalSources over
 ## the same particle cloud, so everything else is untouched.
 ## flame -> bulb -> ground -> flame.
+func _step_detail(d: int) -> void:
+	render_idx = wrapi(render_idx + d, 0, RENDER_STEPS.size())
+	if xr != null:
+		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+
+
 func _cycle_mode() -> void:
 	if ground_mode:
-		_set_ground_mode(false)
+		_set_mode("flame")
 	elif bulb_mode:
-		_set_bulb_mode(false)
-		_set_ground_mode(true)
+		_set_mode("ground")
 	else:
+		_set_mode("bulb")
+
+
+## Jump straight to a mode from the strip. Leaving a mode undoes its entry side effects
+## before the next one applies its own, in the same order the cycle always did.
+func _set_mode(kind: String) -> void:
+	var want_bulb := kind == "bulb"
+	var want_ground := kind == "ground"
+	if bulb_mode == want_bulb and ground_mode == want_ground:
+		return
+	if ground_mode and not want_ground:
+		_set_ground_mode(false)
+	if bulb_mode and not want_bulb:
+		_set_bulb_mode(false)
+	if want_bulb and not bulb_mode:
 		_set_bulb_mode(true)
+	if want_ground and not ground_mode:
+		_set_ground_mode(true)
 
 
 func _set_ground_mode(on: bool) -> void:
@@ -1209,7 +1283,7 @@ func _handle_input(delta: float) -> void:
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping.
 	elif grab == null or not grab.is_grabbing():
-		if absf(rs.x) > 0.15:
+		if absf(rs.x) > 0.15 and not menu.wants_stick():
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
 			var fwd := -xr_camera.global_transform.basis.z
@@ -1266,13 +1340,12 @@ func _handle_input(delta: float) -> void:
 ## saying the same thing about how fine a particle reads, and splitting them across
 ## three buttons would just mean hunting for a combination that already pairs up.
 ## Recolour the live cloud from the theme list, without touching its genome.
-func _cycle_theme() -> void:
+func _cycle_theme(dir: int = 1) -> void:
 	if library.themes.is_empty():
 		return
 	_begin_theme_blend()
-	theme_idx += 1
-	if theme_idx >= library.themes.size():
-		theme_idx = -1
+	# -1 is "the genome's own palette", one slot before the first theme.
+	theme_idx = wrapi(theme_idx + 1 + dir, 0, library.themes.size() + 1) - 1
 	_apply_palette()
 
 
@@ -1289,9 +1362,11 @@ func _apply_palette() -> void:
 				Morph.smoothstep_t(_theme_blend)))
 		cloud.override_palette(mixed)
 		ground.set_palette(mixed)
+		menu.set_palette(mixed)
 	else:
 		cloud.override_palette(target)
 		ground.set_palette(target)
+		menu.set_palette(target)
 
 
 var _theme_cache: Dictionary = {}   # theme index -> Array[Vector3], parsed once
