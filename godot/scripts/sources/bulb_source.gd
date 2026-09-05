@@ -90,17 +90,39 @@ func param_buffer_floats() -> PackedFloat32Array:
 	return f
 
 
-func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
+func bound() -> float:
+	return float(_b.get("bound", 1.3))
+
+
+## The formula parameters at this moment of the breath, keyed by the uniform names the
+## march shader uses. One source of truth for both the compute path and the marcher.
+func march_params() -> Dictionary:
 	var t := clock * float(_b.get("speed", 0.1))
 	# Breathing: each formula modulates the parameter that defines its shape.
-	var power := float(_b.get("power", 8.0)) + float(_b.get("powerBreath", 0.0)) * sin(t)
-	var scale := float(_b.get("scale", 2.0)) + float(_b.get("scaleBreath", 0.0)) * sin(t * 0.83)
-	var ang_a := float(_b.get("kAngleA", 0.0)) + float(_b.get("kAngleBreath", 0.0)) * sin(t)
-	var ang_b := float(_b.get("kAngleB", 0.0)) + float(_b.get("kAngleBreath", 0.0)) * cos(t * 0.7)
 	var jc: Array = _b.get("juliaC", [0.0, 0.0, 0.0])
 	var orbit := float(_b.get("juliaOrbit", 0.0))
-	var c := Vector3(float(jc[0]), float(jc[1]), float(jc[2])) + Vector3(
-		sin(t) * orbit, cos(t * 0.9) * orbit, sin(t * 1.3) * orbit)
+	return {
+		"power": float(_b.get("power", 8.0)) + float(_b.get("powerBreath", 0.0)) * sin(t),
+		"scale": float(_b.get("scale", 2.0)) + float(_b.get("scaleBreath", 0.0)) * sin(t * 0.83),
+		"k_angle_a": float(_b.get("kAngleA", 0.0)) + float(_b.get("kAngleBreath", 0.0)) * sin(t),
+		"k_angle_b": float(_b.get("kAngleB", 0.0)) + float(_b.get("kAngleBreath", 0.0)) * cos(t * 0.7),
+		"julia_c": Vector3(float(jc[0]), float(jc[1]), float(jc[2])) + Vector3(
+			sin(t) * orbit, cos(t * 0.9) * orbit, sin(t * 1.3) * orbit),
+		"mandelbulb": 1.0 if bool(_b.get("mandelbulb", true)) else 0.0,
+		"formula": float(FORMULA_IDS.get(str(_b.get("formula", "mandelbulb")), 0.0)),
+		"min_r": float(_b.get("minR", 0.5)),
+		"fixed_r": float(_b.get("fixedR", 1.0)),
+		"bound": bound(),
+	}
+
+
+func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
+	var mp := march_params()
+	var power: float = mp["power"]
+	var scale: float = mp["scale"]
+	var ang_a: float = mp["k_angle_a"]
+	var ang_b: float = mp["k_angle_b"]
+	var c: Vector3 = mp["julia_c"]
 
 	var b := PackedByteArray()
 	b.resize(96)
@@ -117,12 +139,12 @@ func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
 	b.encode_float(36, c.y)
 	b.encode_float(40, c.z)
 	b.encode_float(44, 0.0)
-	b.encode_float(48, 1.0 if bool(_b.get("mandelbulb", true)) else 0.0)
-	b.encode_float(52, float(FORMULA_IDS.get(str(_b.get("formula", "mandelbulb")), 0.0)))
+	b.encode_float(48, mp["mandelbulb"])
+	b.encode_float(52, mp["formula"])
 	b.encode_float(56, scale)
-	b.encode_float(60, float(_b.get("minR", 0.5)))
-	b.encode_float(64, float(_b.get("fixedR", 1.0)))
-	b.encode_float(68, float(_b.get("bound", 1.3)))
+	b.encode_float(60, mp["min_r"])
+	b.encode_float(64, mp["fixed_r"])
+	b.encode_float(68, mp["bound"])
 	b.encode_float(72, proj_steps)
 	b.encode_float(76, jitter)
 	b.encode_float(80, ang_a)

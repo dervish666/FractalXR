@@ -96,6 +96,15 @@ var help := HelpCard.new()
 
 var xr: OpenXRInterface = null
 var cloud := ParticleCloud.new()
+## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
+## so it shares grabs and framing; SURFACE picks splats or a step budget.
+var march := BulbMarch.new()
+const SURFACE_STEPS := [0, 48, 96]
+const SURFACE_NAMES := ["splats", "march 48", "march 96"]
+## The marcher shades a lit surface in [0,1]; the splat brightness ladder tops out at 1.0
+## for "over" blending, so this is the scale that puts the two on the same exposure.
+const MARCH_GAIN := 1.2
+var surface_idx := 0
 ## The third mode: stand on a Mandelbrot or Julia set that runs to the horizon.
 var ground := FractalGround.new()
 var ground_mode := false
@@ -303,6 +312,7 @@ const BULB_EXPOSURE_IDX := 0      # points are already bright, so do not push th
 
 func _ready() -> void:
 	add_child(cloud)
+	cloud.add_child(march)
 	add_child(ground)
 
 	if not library.load_all():
@@ -561,6 +571,13 @@ func _build_menu() -> void:
 			func(): breath_idx = (breath_idx + 1) % BREATH_STEPS.size(),
 			false, func(): return bulb_mode).stepping(func(d: int):
 				breath_idx = wrapi(breath_idx + d, 0, BREATH_STEPS.size())),
+		# Splats or a raymarched surface. The ms readout in the footer is the verdict.
+		WristMenu.Item.new("look", "SURFACE",
+			func(): return SURFACE_NAMES[surface_idx],
+			func(): surface_idx = (surface_idx + 1) % SURFACE_STEPS.size(); _apply_surface(),
+			false, func(): return bulb_mode).stepping(func(d: int):
+				surface_idx = wrapi(surface_idx + d, 0, SURFACE_STEPS.size())
+				_apply_surface()),
 		WristMenu.Item.new("look", "DETAIL",
 			func(): return "%.2fx" % RENDER_STEPS[render_idx],
 			func(): _step_detail(1)).stepping(func(d: int): _step_detail(d)),
@@ -863,7 +880,10 @@ func _set_bulb_mode(on: bool) -> void:
 		# of it. Once only, on entry: later bulb switches keep the user's grab.
 		cloud.scale = Vector3.ONE * BULB_INSIDE_SCALE
 		_load_bulb(bulb_idx)
+		_apply_surface()
 	else:
+		surface_idx = 0
+		_apply_surface()
 		bright_idx = _flame_bright_idx
 		exposure_idx = _flame_exposure_idx
 		opacity_idx = _flame_opacity_idx
@@ -896,6 +916,7 @@ func _load_bulb(i: int) -> void:
 		_bulb = BulbSource.new(library.bulbs[bulb_idx])
 		_bulb.update_mod = BULB_UPDATE_MOD
 		RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
+	march.configure(_bulb)
 	# The node transform is deliberately left alone: switching bulbs used to reset the
 	# scale here, which threw away wherever the user had grabbed and sized the cloud to.
 	# Only entering bulb mode (see _set_bulb_mode) puts you inside the surface.
@@ -1192,6 +1213,8 @@ func _process(delta: float) -> void:
 		# The breath is the animation: each genome slowly reshapes whichever parameter
 		# defines its form, so the surface is never static.
 		_bulb.clock += delta * BREATH_STEPS[breath_idx]
+		if march.is_on():
+			march.tick(_bulb, cloud.center, cloud.fit)
 	if not ground_mode:
 		_tick_morph(delta)   # the flame and its drift wait while you are on the ground
 	if _converge > 0:
@@ -1363,10 +1386,12 @@ func _apply_palette() -> void:
 		cloud.override_palette(mixed)
 		ground.set_palette(mixed)
 		menu.set_palette(mixed)
+		march.set_palette(mixed)
 	else:
 		cloud.override_palette(target)
 		ground.set_palette(target)
 		menu.set_palette(target)
+		march.set_palette(target)
 
 
 var _theme_cache: Dictionary = {}   # theme index -> Array[Vector3], parsed once
@@ -1400,6 +1425,17 @@ func _apply_point_look() -> void:
 	cloud.set_point_size(POINT_STEPS[point_idx])
 	cloud.set_sharpness(SHARPNESS[point_idx])
 	cloud.set_brightness(BRIGHT_STEPS[bright_idx])
+	march.set_palette_cycles(COLOUR_CYCLES[colour_idx])
+	march.set_gain(BRIGHT_STEPS[bright_idx] * MARCH_GAIN)
+
+
+## Show either the splatted cloud or the marched surface, never both. Ground mode owns
+## the cloud's visibility itself, so this only speaks when the cloud is the scene.
+func _apply_surface() -> void:
+	var marching: bool = bulb_mode and SURFACE_STEPS[surface_idx] > 0
+	march.set_steps(SURFACE_STEPS[surface_idx] if bulb_mode else 0)
+	if not ground_mode:
+		cloud.set_visible_cloud(not marching)
 
 
 ## On Forward Mobile the flam3 pass cannot run (fixed-point colour buffer, no storage
