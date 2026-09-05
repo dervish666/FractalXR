@@ -86,8 +86,10 @@ func get_error() -> String:
 func _init() -> void:
 	_material = ShaderMaterial.new()
 	_material.shader = load("res://shaders/ground.gdshader")
-	var plane := PlaneMesh.new()
-	plane.size = Vector2(600.0, 600.0)
+	# A radial grid centred on the head, ring spacing growing with distance, so the
+	# vertex shader can displace real height: fine where you stand, coarse where the
+	# fog takes over. update() keeps it under the viewer.
+	var plane := _radial_mesh()
 	_mesh_instance = MeshInstance3D.new()
 	_mesh_instance.name = "Ground"
 	_mesh_instance.mesh = plane
@@ -113,6 +115,46 @@ func _init() -> void:
 	_material.set_shader_parameter("num_levels", LEVELS)
 	_material.set_shader_parameter("slack", float(SLACK))
 	visible = false
+
+
+const MESH_RINGS := 160
+const MESH_SECTORS := 192
+const MESH_R0 := 0.04        # first ring, metres
+const MESH_R_MAX := 320.0    # past fog_end
+
+
+## Rings of vertices with geometric radius growth: about 6% of the distance between
+## rings, so the sample level the vertex shader picks tracks the fragment's. No
+## T-junctions to stitch, one draw, ~30k vertices.
+static func _radial_mesh() -> ArrayMesh:
+	var verts := PackedVector3Array()
+	var idx := PackedInt32Array()
+	var g := pow(MESH_R_MAX / MESH_R0, 1.0 / float(MESH_RINGS - 1))
+	verts.append(Vector3.ZERO)
+	for k in MESH_RINGS:
+		var r := MESH_R0 * pow(g, k)
+		for j in MESH_SECTORS:
+			var a := TAU * float(j) / float(MESH_SECTORS)
+			verts.append(Vector3(r * cos(a), 0.0, r * sin(a)))
+	# Centre fan.
+	for j in MESH_SECTORS:
+		var j1 := (j + 1) % MESH_SECTORS
+		idx.append_array([0, 1 + j, 1 + j1])
+	for k in MESH_RINGS - 1:
+		var b0 := 1 + k * MESH_SECTORS
+		var b1 := b0 + MESH_SECTORS
+		for j in MESH_SECTORS:
+			var j1 := (j + 1) % MESH_SECTORS
+			idx.append_array([b0 + j, b1 + j, b1 + j1, b0 + j, b1 + j1, b0 + j1])
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_INDEX] = idx
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	# Displaced in the vertex shader, so the true bounds are not the flat ones.
+	m.custom_aabb = AABB(Vector3(-MESH_R_MAX, -60.0, -MESH_R_MAX), Vector3(2.0 * MESH_R_MAX, 120.0, 2.0 * MESH_R_MAX))
+	return m
 
 
 ## Build the GPU side. Render thread only.
@@ -336,6 +378,10 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	if not _ready_ok:
 		return
 	_head_xz = head_xz
+	# The mesh is finest at its centre; keep that under the viewer.
+	_mesh_instance.position = Vector3(head_xz.x, 0.0, head_xz.y)
+	_sky.position.x = head_xz.x
+	_sky.position.z = head_xz.y
 	if _glide.length() > 0.02 and delta > 0.0:
 		var f := 1.0 - exp(-delta * 3.5)
 		pan(_glide * f)

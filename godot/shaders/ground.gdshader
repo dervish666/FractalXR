@@ -29,12 +29,23 @@ uniform float colour_freq = 1.0;        // palette repeats per doubling of itera
 uniform float colour_offset = 0.0;      // slides the palette along the count
 uniform float palette_cycles = 1.0;
 uniform float texture_strength = 0.6;   // how much the orbit texture modulates brightness
-uniform int relief_mode = 1;            // 0 flat, 1 terraces (iteration height), 2 ridges (distance)
+uniform int relief_mode = 3;            // 0 flat, 1 terraces (iteration height), 2 ridges (distance), 3 terrain (terraces + contours)
 uniform float relief_scale = 1.0;
+// Slope exaggeration for the lighting only: the normal is built from the true height
+// gradient times this, so a shallow terrace still reads as a step. Hillshade maps do
+// the same; a 1:1 gradient looks flat from head height.
+uniform float relief_contrast = 2.5;
+// Real displacement: the mesh is a radial grid centred on the head, and each vertex
+// rises by its height minus the height under your feet, so the floor stays at floor
+// level and the fractal rises and falls around you. 0 turns it off.
+uniform float displace = 1.0;
+// The radial mesh's ring spacing as a fraction of distance; picks the sampling level
+// in the vertex stage, where there are no derivatives to measure a footprint with.
+uniform float mesh_spacing = 0.06;
 // Micro-relief from the orbit texture channel, a fixed few finest texels tall, so it
 // reads as surface grain up close and smooths out with distance on its own.
 uniform float bump_strength = 1.0;
-uniform vec3 light_dir = vec3(0.45, 0.75, 0.35);
+uniform vec3 light_dir = vec3(0.5, 0.5, 0.35);   // a low sun: terrain reads by its shadows
 uniform vec3 inside_colour : source_color = vec3(0.03, 0.02, 0.05);
 uniform float brightness = 1.0;
 uniform vec3 pal0;
@@ -96,25 +107,46 @@ vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 // scaled by the texel of the level being SAMPLED instead, so its slopes are the same
 // steepness at every distance; tied to the finest texel it vanished two metres out,
 // because the height stayed put while the texels it was measured over grew.
-float height_of(vec4 s, int level) {
+float height_of(vec4 s, int level, bool with_grain) {
 	float unit0 = texel0 * wpu;
 	float unit_l = unit0 * float(1 << level);
 	float h = 0.0;
-	if (relief_mode == 1) h = -log2(1.0 + s.r) * 48.0 * relief_scale * unit0;
+	if (relief_mode == 1 || relief_mode == 3) h = -log2(1.0 + s.r) * 48.0 * relief_scale * unit0;
 	else if (relief_mode == 2) h = clamp(s.g - log2(texel0), 0.0, 16.0) * 12.0 * relief_scale * unit0;
 	// Two grains: the orbit texture (broad, marbled) and the iteration bands themselves,
 	// a sawtooth with a cliff at every whole count, which is the terraced Frax look.
 	float grain = (s.a - 0.5) * 4.0 + (fract(s.r) - 0.5) * 1.5 * (1.0 - clamp(s.b, 0.0, 1.0));
-	h += grain * bump_strength * unit_l;
+	if (with_grain) h += grain * bump_strength * unit_l;
 	return h;
 }
 
 float height_at(int level, vec2 e0) {
 	bool d;
-	return height_of(sample_level(level, e0, d), level);
+	return height_of(sample_level(level, e0, d), level, true);
 }
 
 void vertex() {
+	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	if (displace > 0.5 && (relief_mode != 0 || bump_strength > 0.0)) {
+		vec2 w = wp.xz - head_xz;
+		vec2 e0 = (mat2(rot.xy, rot.zw) * w) / (wpu * texel0);
+		float R = float(tex_size) * 0.5 - slack - 1.0;
+		// Same two limits as the fragment: never a level whose window does not reach the
+		// vertex, and never one finer than the mesh can show at this distance.
+		float lod_win = log2(max(max(abs(e0.x), abs(e0.y)), 1e-3) / (0.5 * R));
+		float lod_fp = log2(max(length(w) * mesh_spacing, 1e-6) / (texel0 * wpu));
+		int l = int(clamp(max(lod_win, lod_fp), float(min_level), float(max_level)));
+		bool inside;
+		vec4 sv = sample_level(l, e0, inside);
+		// The big shape only. The grain is per-texel and scales with the level's texel,
+		// so displacing it at coarse levels raised a field of metre-high spikes on the
+		// horizon; it stays a shading term, which is where it belongs.
+		bool dh;
+		float h_head = height_of(sample_level(min_level, vec2(0.0), dh), min_level, false);
+		float h = inside ? height_of(sv, l, false) - h_head : 0.0;
+		// Local up, so the mirrored sky displaces toward the viewer as a reflection would.
+		VERTEX.y += h;
+	}
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
@@ -164,12 +196,33 @@ void fragment() {
 		float hx0 = height_at(l0, e0 - vec2(step, 0.0));
 		float hz1 = height_at(l0, e0 + vec2(0.0, step));
 		float hz0 = height_at(l0, e0 - vec2(0.0, step));
-		vec3 n = normalize(vec3(-(hx1 - hx0) / (2.0 * tm), 1.0, -(hz1 - hz0) / (2.0 * tm)));
+		float hc = height_of(sa, l0, true);
+		vec3 n = normalize(vec3(-(hx1 - hx0) * relief_contrast / (2.0 * tm), 1.0,
+			-(hz1 - hz0) * relief_contrast / (2.0 * tm)));
 		vec3 L = normalize(light_dir);
 		float diff = max(dot(n, L), 0.0);
 		vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
 		float spec = pow(max(dot(normalize(L + V), n), 0.0), 24.0) * 0.25;
-		col = col * (0.3 + 0.7 * diff) + spec * (1.0 - inside);
+		// Cavity: a positive Laplacian is a hollow, and hollows sit in shade. This is
+		// what stops a terrain read like a bas-relief with a torch on it.
+		float lap = (hx1 + hx0 + hz1 + hz0 - 4.0 * hc) / tm;
+		float cavity = 1.0 - 0.4 * clamp(lap * 0.6, 0.0, 1.0);
+		col = (col * (0.25 + 0.75 * diff) + spec * (1.0 - inside)) * cavity;
+	}
+
+	// Contour lines at every whole iteration count, as a topographic map draws its
+	// heights; every fourth is heavier. They fade where the bands crowd past a pixel,
+	// or the far distance would just go dark.
+	if (relief_mode == 3) {
+		float band = s.r;
+		float wd = fwidth(band);
+		float f = min(fract(band), 1.0 - fract(band));
+		float line = 1.0 - smoothstep(0.0, wd * 1.2 + 0.015, f);
+		float f4 = min(fract(band * 0.25), 1.0 - fract(band * 0.25)) * 4.0;
+		float heavy = 1.0 - smoothstep(0.0, wd * 2.0 + 0.03, f4);
+		float fade = 1.0 - smoothstep(0.12, 0.35, wd);
+		float ink = clamp(0.45 * line + 0.35 * heavy, 0.0, 0.7) * fade * (1.0 - inside);
+		col *= 1.0 - ink;
 	}
 
 	col *= brightness;
