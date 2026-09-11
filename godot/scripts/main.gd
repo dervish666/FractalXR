@@ -111,8 +111,10 @@ var ground_mode := false
 const GROUND_ITER := [256, 512, 1024, 2048, 4096, 128]
 var ground_iter_idx := 0
 const GROUND_RELIEF := ["terrain", "terraces", "ridges", "flat"]
-## Height multiplier on the relief, the terrain's vertical exaggeration.
-const GROUND_HEIGHT := [1.0, 2.0, 4.0, 0.5]
+## Vertical exaggeration of the displaced terrain. 0 keeps the lit relief but leaves the
+## mesh flat: the shading is anchored to the world by construction, the displacement
+## re-levels under the viewer and bobs as you walk, so flat is the default.
+const GROUND_HEIGHT := [0.0, 1.0, 2.0, 4.0, 0.5]
 var ground_relief_idx := 0
 var ground_height_idx := 0
 const GROUND_TEXTURE := [0.6, 1.0, 0.0, 0.3]
@@ -609,7 +611,9 @@ func _build_menu() -> void:
 				ground_relief_idx = wrapi(ground_relief_idx + d, 0, GROUND_RELIEF.size())
 				_apply_ground_look()),
 		WristMenu.Item.new("look", "HEIGHT",
-			func(): return "%.1fx" % GROUND_HEIGHT[ground_height_idx],
+			func():
+				var h: float = GROUND_HEIGHT[ground_height_idx]
+				return "flat" if h == 0.0 else "%.1fx" % h,
 			func():
 				ground_height_idx = (ground_height_idx + 1) % GROUND_HEIGHT.size()
 				_apply_ground_look(),
@@ -858,7 +862,9 @@ func _set_render_hq(on: bool) -> void:
 
 func _apply_ground_look() -> void:
 	ground.set_look(&"relief_mode", [3, 1, 2, 0][ground_relief_idx])
-	ground.set_look(&"relief_scale", GROUND_HEIGHT[ground_height_idx])
+	var h: float = GROUND_HEIGHT[ground_height_idx]
+	ground.set_look(&"displace", 1.0 if h > 0.0 else 0.0)
+	ground.set_look(&"relief_scale", h if h > 0.0 else 1.0)
 	ground.set_look(&"texture_strength", GROUND_TEXTURE[ground_texture_idx])
 	ground.set_look(&"colour_freq", GROUND_FREQ[ground_freq_idx])
 	ground.set_look(&"colour_offset", ground_hue)

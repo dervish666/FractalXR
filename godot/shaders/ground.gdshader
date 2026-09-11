@@ -21,6 +21,11 @@ uniform vec2 head_xz = vec2(0.0);       // where the viewer stands, world metres
 uniform vec4 rot = vec4(1.0, 0.0, 0.0, 1.0);   // world -> fractal rotation, two columns
 uniform ivec2 view_texel0 = ivec2(0);   // level-0 texel index of the viewer's fractal position
 uniform vec2 view_frac0 = vec2(0.0);    // and the fraction within it, so world offsets stay small
+// The floor reference, in level-0 texels from the viewer: the terrain is lowered by the
+// height at this point so it sits at floor level. The host lags it behind the viewer
+// over a couple of seconds; sampling under the head itself made the whole field jump
+// every time you stepped over a terrace.
+uniform vec2 level_e0 = vec2(0.0);
 uniform float slack = 48.0;             // texels of window kept around the viewer (see .gd)
 uniform float fog_end = 100.0;          // metres; the coarsest window ends a little past this
 uniform vec3 fog_colour : source_color = vec3(0.02, 0.02, 0.04);
@@ -136,14 +141,27 @@ void vertex() {
 		float lod_win = log2(max(max(abs(e0.x), abs(e0.y)), 1e-3) / (0.5 * R));
 		float lod_fp = log2(max(length(w) * mesh_spacing, 1e-6) / (texel0 * wpu));
 		int l = int(clamp(max(lod_win, lod_fp), float(min_level), float(max_level)));
+		// Snap the vertex to the centre of the texel it samples, so it sits on a fixed
+		// world point and reads one texel exactly. The rings slide with the viewer, and
+		// without this every triangle re-interpolated between new sample points each
+		// frame and the whole surface swam as you walked. Ring spacing is at least one
+		// texel of the chosen level, so neighbours never cross.
+		float sc = float(1 << l);
+		ivec2 rem = view_texel0 - ((view_texel0 >> l) << l);
+		vec2 t = (vec2(rem) + view_frac0 + e0) / sc;
+		vec2 e0s = (floor(t) + 0.5) * sc - vec2(rem) - view_frac0;
+		vec2 ws = (transpose(mat2(rot.xy, rot.zw)) * e0s) * (wpu * texel0);
+		VERTEX += transpose(mat3(MODEL_MATRIX)) * vec3(ws.x - w.x, 0.0, ws.y - w.y);
 		bool inside;
-		vec4 sv = sample_level(l, e0, inside);
+		vec4 sv = sample_level(l, e0s, inside);
 		// The big shape only. The grain is per-texel and scales with the level's texel,
 		// so displacing it at coarse levels raised a field of metre-high spikes on the
 		// horizon; it stays a shading term, which is where it belongs.
+		float lod_ref = log2(max(max(abs(level_e0.x), abs(level_e0.y)), 1e-3) / (0.5 * R));
+		int lr = int(clamp(lod_ref, float(min_level), float(max_level)));
 		bool dh;
-		float h_head = height_of(sample_level(min_level, vec2(0.0), dh), min_level, false);
-		float h = inside ? height_of(sv, l, false) - h_head : 0.0;
+		float h_ref = height_of(sample_level(lr, level_e0, dh), lr, false);
+		float h = inside ? height_of(sv, l, false) - h_ref : 0.0;
 		// Local up, so the mirrored sky displaces toward the viewer as a reflection would.
 		VERTEX.y += h;
 	}

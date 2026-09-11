@@ -76,6 +76,8 @@ var _worked := false
 ## fractal = centre + M * world_xz / wpu.
 var _m := Transform2D.IDENTITY
 var _glide := Vector2.ZERO        # world metres still to travel toward a trigger target
+var _level_f := Vector2.ZERO      # fractal point the floor is levelled to; lags the viewer
+var _level_set := false
 var _pending_peak := 0
 
 
@@ -251,6 +253,7 @@ func home() -> void:
 	_m = Transform2D.IDENTITY
 	_glide = Vector2.ZERO
 	centre = Vector2(-0.6, 0.0) - _head_xz / wpu
+	_level_set = false
 	_sync_stage()
 
 
@@ -392,6 +395,14 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	for i in LEVELS:
 		_track_window(i, vf)
 
+	# The floor reference drifts after the viewer with a two-second time constant, so
+	# stepping over a terrace eases the ground down instead of dropping it.
+	if not _level_set or delta <= 0.0:
+		_level_f = vf
+		_level_set = true
+	else:
+		_level_f = _level_f.lerp(vf, 1.0 - exp(-delta / 2.0))
+
 	var t0 := _texel0()
 	var vt0 := Vector2i(int(floor(vf.x / t0)), int(floor(vf.y / t0)))
 	var frac := Vector2(vf.x / t0 - float(vt0.x), vf.y / t0 - float(vt0.y))
@@ -411,6 +422,7 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_material.set_shader_parameter("rot", Vector4(_m.x.x, _m.x.y, _m.y.x, _m.y.y))
 	_material.set_shader_parameter("view_texel0", vt0)
 	_material.set_shader_parameter("view_frac0", frac)
+	_material.set_shader_parameter("level_e0", (_level_f - vf) / t0)
 	_material.set_shader_parameter("level_rot", _rot)
 	_material.set_shader_parameter("min_level", min_level)
 	_material.set_shader_parameter("max_level", maxi(max_level, min_level))
