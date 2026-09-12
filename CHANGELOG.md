@@ -6,6 +6,37 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **Bulb mode opens as a toy.** Entry now puts the bulb hand-sized (0.55 m radius) just over a
+  metre ahead and a little below the eyes instead of 2.1x around you. Sam: "a lot better when
+  it's smaller and in front of the user, like something to be played with." Grab still scales it.
+- **Marcher interior groundwork (desktop only).** `_enter_inside()` puts your head in the shape's
+  roomiest hollow at walking scale, turned so the nearest wall is ahead, and switches to the
+  raymarched surface. It is not on the headset menu: measured at 85-103 ms GPU per frame at 48
+  steps on a 0.6x eye buffer (every pixel of both eyes marching), and full-res 96 steps faulted
+  the GPU. It needs a quarter-res pass with reprojection before it is a feature. The hollows
+  come from a CPU port of the five distance estimates
+  (`BulbSource.de`, cross-checked against the shader's own code by `tools/de_check.sh`) and a
+  dev tool, `tools/rooms.sh`, that precomputes each bulb's true extent and best enclosed room
+  into `data/rooms.json`. The marcher now starts its rays at the measured extent (the seed
+  bound of the scale-2 Mandelbox sat well inside it, which painted a ball of noise), walks out
+  of solid when the head is in a wall, stops iterating below the pixel footprint, keeps its
+  cover mesh inside the far plane at any scale, and has a 160-step SURFACE tier.
+- **TREE mode: a fractal tree as real geometry.** A fourth segment on the mode strip. Oak,
+  pine, willow and coral shapes from recursive branching into a MultiMesh of tapered
+  cylinders, with glowing leaf discs at the tips; it grows from the base over six seconds and
+  bends in one wind field by height, all in the shaders. SHAPE, DEPTH, WIND, LEAVES, SEED and
+  REGROW tiles; the right trigger reseeds, the left regrows; grab, scale and SPIN apply as
+  they do to the cloud. Takes the theme palette.
+- **ORBIT (ground mode): the orbit of the point under your hand.** Point at the floor and
+  the iteration z -> z^2 + c from that spot hangs in the air as a chain of beads, climbing a
+  little per step: inside the set it circles and settles, outside it flies off to the bailout.
+  Julia mode iterates from the point with the ground's constant. 64-bit on the CPU, so it
+  stays honest past the texture's zoom limit. ORBIT tile to switch it off.
+
+### Fixed
+- **Mandelbox distance estimate bailed out too early.** At |z| > 6 the estimate was not a
+  lower bound (97% of sampled points had solid within the promised radius); it bails at
+  |z| > 100 now in the compute shader, the marcher and the CPU port alike.
 - **Ground mode in the native build: stand on the fractal.** MODE now cycles flame, bulb,
   ground. A Mandelbrot or Julia set is the floor and runs to the horizon: crisp at your feet,
   smooth in the distance, and the frame cost does not depend on zoom or iteration count. It is

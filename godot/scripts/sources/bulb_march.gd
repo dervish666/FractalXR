@@ -26,9 +26,10 @@ func _init() -> void:
 
 
 ## Size the box for a genome. Back faces only, so it has to cover the silhouette from
-## outside: twice the DE's bound in state units, and auto-framing never lifts fit past 1.
+## outside: twice the marcher's sphere in state units, and auto-framing never lifts fit
+## past 1.
 func configure(src: BulbSource) -> void:
-	(mesh as BoxMesh).size = Vector3.ONE * (4.0 * src.bound())
+	(mesh as BoxMesh).size = Vector3.ONE * (4.0 * src.march_bound())
 
 
 func set_steps(n: int) -> void:
@@ -59,5 +60,7 @@ func tick(src: BulbSource, center: Vector3, fit: float) -> void:
 	var mp := src.march_params()
 	for k in mp:
 		_mat.set_shader_parameter(k, mp[k])
+	# The marcher's sphere is the shape's measured extent, not the particle seed ball.
+	_mat.set_shader_parameter("bound", src.march_bound())
 	_mat.set_shader_parameter("cloud_center", center)
 	_mat.set_shader_parameter("cloud_fit", fit)

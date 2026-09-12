@@ -1,0 +1,212 @@
+{
+  "Cathedral": {
+    "clearance": 0.2893,
+    "enclosed": 0.0,
+    "extent": 1.283,
+    "inside": [
+      1.0855,
+      -0.0479,
+      0.0127
+    ]
+  },
+  "Citadel": {
+    "clearance": 0.0512,
+    "enclosed": 0.93,
+    "extent": 3.283,
+    "inside": [
+      -1.637,
+      -0.0079,
+      1.729
+    ]
+  },
+  "Classic": {
+    "clearance": 0.0558,
+    "enclosed": 0.0,
+    "extent": 1.104,
+    "inside": [
+      -0.0855,
+      0.3923,
+      -0.8468
+    ]
+  },
+  "Cobalt": {
+    "clearance": 0.2117,
+    "enclosed": 0.0,
+    "extent": 1.244,
+    "inside": [
+      0.6484,
+      -0.619,
+      0.5568
+    ]
+  },
+  "Coral": {
+    "clearance": 0.0258,
+    "enclosed": 0.0,
+    "extent": 1.066,
+    "inside": [
+      -0.2387,
+      0.0697,
+      -0.8711
+    ]
+  },
+  "Frostbulb": {
+    "clearance": 0.0558,
+    "enclosed": 0.0,
+    "extent": 1.104,
+    "inside": [
+      -0.0855,
+      0.3923,
+      -0.8468
+    ]
+  },
+  "Halcyon": {
+    "clearance": 0.2627,
+    "enclosed": 0.0,
+    "extent": 1.243,
+    "inside": [
+      0.6781,
+      0.8045,
+      -0.0057
+    ]
+  },
+  "Lattice": {
+    "clearance": 0.3576,
+    "enclosed": 0.0,
+    "extent": 1.678,
+    "inside": [
+      -1.4191,
+      0.0578,
+      -0.084
+    ]
+  },
+  "Mandelbox": {
+    "clearance": 0.093,
+    "enclosed": 1.0,
+    "extent": 9.899,
+    "inside": [
+      3.9942,
+      -1.9919,
+      -3.4867
+    ]
+  },
+  "Mercury": {
+    "clearance": 0.3456,
+    "enclosed": 0.0,
+    "extent": 1.398,
+    "inside": [
+      -0.9173,
+      -0.7334,
+      -0.1751
+    ]
+  },
+  "Nebula": {
+    "clearance": 0.0458,
+    "enclosed": 0.0,
+    "extent": 1.093,
+    "inside": [
+      0.4746,
+      0.468,
+      -0.6476
+    ]
+  },
+  "Pollen": {
+    "clearance": 0.219,
+    "enclosed": 0.0,
+    "extent": 1.272,
+    "inside": [
+      0.0994,
+      -0.0194,
+      1.0758
+    ]
+  },
+  "Pyramid": {
+    "clearance": 0.8026,
+    "enclosed": 0.0,
+    "extent": 1.513,
+    "inside": [
+      -0.9021,
+      0.6363,
+      0.6398
+    ]
+  },
+  "Quartz": {
+    "clearance": 0.1638,
+    "enclosed": 0.0,
+    "extent": 1.236,
+    "inside": [
+      0.0218,
+      -0.0181,
+      1.0495
+    ]
+  },
+  "Quaternion": {
+    "clearance": 0.3501,
+    "enclosed": 0.0,
+    "extent": 1.42,
+    "inside": [
+      0.681,
+      0.4864,
+      0.8672
+    ]
+  },
+  "Snowflake": {
+    "clearance": 0.954,
+    "enclosed": 0.0,
+    "extent": 2.0,
+    "inside": [
+      -1.1949,
+      1.0768,
+      0.5482
+    ]
+  },
+  "Spire": {
+    "clearance": 0.0139,
+    "enclosed": 0.0,
+    "extent": 1.053,
+    "inside": [
+      -0.356,
+      -0.0765,
+      0.8172
+    ]
+  },
+  "Starflower": {
+    "clearance": 0.1177,
+    "enclosed": 0.0,
+    "extent": 1.178,
+    "inside": [
+      0.997,
+      -0.0354,
+      -0.0022
+    ]
+  },
+  "Stellated": {
+    "clearance": 1.0513,
+    "enclosed": 0.0,
+    "extent": 1.38,
+    "inside": [
+      -0.7063,
+      0.3846,
+      0.8174
+    ]
+  },
+  "Tetra": {
+    "clearance": 1.1683,
+    "enclosed": 0.0,
+    "extent": 1.635,
+    "inside": [
+      -0.8996,
+      0.9476,
+      0.4037
+    ]
+  },
+  "Thornwood": {
+    "clearance": 0.2344,
+    "enclosed": 0.0,
+    "extent": 1.5,
+    "inside": [
+      1.2665,
+      -0.031,
+      0.0048
+    ]
+  }
+}

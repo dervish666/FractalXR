@@ -99,8 +99,31 @@ var cloud := ParticleCloud.new()
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
 ## so it shares grabs and framing; SURFACE picks splats or a step budget.
 var march := BulbMarch.new()
-const SURFACE_STEPS := [0, 48, 96]
-const SURFACE_NAMES := ["splats", "march 48", "march 96"]
+const SURFACE_STEPS := [0, 48, 96, 160]
+const SURFACE_NAMES := ["splats", "march 48", "march 96", "march 160"]
+## ENTER scales the shape so the roomiest hollow has this much clearance around the
+## head. A scale-2 Mandelbox is a solid cube whose pores are 2% of its bound, so it
+## comes out at ~27x; a negative-scale box has rooms and stays near the floor of the
+## range. Either way you stand in fractal walls a stride away.
+const INSIDE_CLEARANCE_M := 2.5
+const INSIDE_SCALE_MIN := 4.0
+const INSIDE_SCALE_MAX := 60.0
+## Inside, every pixel of both eyes marches, where from outside only the silhouette did.
+## At 96 steps full-res the Quest's GPU faulted (kgsl page faults, the app died), so
+## ENTER caps the steps and drops the eye buffer to the smallest DETAIL step through the
+## same path the RENDER tile uses (changing foveation in the same frame broke the
+## framebuffer: "all textures in a framebuffer should be the same size", every draw).
+## And it bails: past INSIDE_BAIL_MS for INSIDE_BAIL_FRAMES frames it goes back to
+## splats by itself and says what it measured, so the headset is never left choking.
+const INSIDE_STEPS_IDX := 1        # SURFACE_STEPS[1] = 48
+const INSIDE_RENDER_IDX := 0       # RENDER_STEPS[0] = 0.6
+const INSIDE_BAIL_MS := 45.0
+const INSIDE_BAIL_FRAMES := 8
+var _inside := false
+var _inside_render_saved := 0
+var _inside_slow := 0
+var _inside_bailed_ms := 0.0
+var _inside_bailed_until := 0.0
 ## The marcher shades a lit surface in [0,1]; the splat brightness ladder tops out at 1.0
 ## for "over" blending, so this is the scale that puts the two on the same exposure.
 const MARCH_GAIN := 1.2
@@ -108,6 +131,20 @@ var surface_idx := 0
 ## The third mode: stand on a Mandelbrot or Julia set that runs to the horizon.
 var ground := FractalGround.new()
 var ground_mode := false
+## The orbit of the point under the pointing hand, drawn above the ground.
+var orbit := OrbitTrace.new()
+var orbit_on := true
+## The fourth: a fractal tree as real geometry, grown in front of you. Child of the cloud
+## so grab, scale and spin apply; the cloud's own draw is hidden underneath it.
+var tree := FractalTree.new()
+var tree_mode := false
+const TREE_DISTANCE := 2.2        # metres in front of the head, on the floor; it towers
+const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
+const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
+const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
+var tree_shape_idx := 0
+var tree_wind_idx := 0
+var tree_depth_idx := 0
 const GROUND_ITER := [256, 512, 1024, 2048, 4096, 128]
 var ground_iter_idx := 0
 const GROUND_RELIEF := ["terrain", "terraces", "ridges", "flat"]
@@ -272,7 +309,13 @@ var _flame_opacity_idx := 2
 ## better from within, so bulbs are placed to enclose the viewer by default.
 # Enclosing but not cavernous. At 3.4 you are so deep inside a sparse shell that it
 # reads as scattered dust rather than a surface.
-const BULB_INSIDE_SCALE := 2.1
+## Bulb entry: a toy, not a room. Auto-framing normalises the cloud to a unit radius,
+## so this is metres of radius; it sits BULB_HOME_DISTANCE ahead, a little below the
+## eyes. Sam, 2026-09-12: "looks a lot better when it's smaller and in front of the
+## user, like something to be played with rather than looked at." Grab scales it up.
+const BULB_TOY_SCALE := 0.55
+const BULB_HOME_DISTANCE := 1.1
+const BULB_HOME_DROP := 0.3
 # The distance estimate costs roughly fifteen DE evaluations per particle per step,
 # against a handful of multiply-adds for the chaos game: measured at 37.8ms for 1.05M
 # particles, against 2.8ms for the same count of flame. src/engine/Simulation.ts hits
@@ -318,7 +361,9 @@ const BULB_EXPOSURE_IDX := 0      # points are already bright, so do not push th
 func _ready() -> void:
 	add_child(cloud)
 	cloud.add_child(march)
+	cloud.add_child(tree)
 	add_child(ground)
+	add_child(orbit)
 
 	if not library.load_all():
 		_fail("presets: %s" % library.load_error)
@@ -388,16 +433,37 @@ func _load_preset(i: int) -> bool:
 func _build_menu() -> void:
 	# Which modes an item belongs to. Everything else hides, and the wrist menu drops a
 	# section whose tiles are all hidden, so each mode gets only its own controls.
-	var _vis_flame := func(): return not bulb_mode and not ground_mode
-	var _vis_cloud := func(): return not ground_mode
+	var _vis_flame := func(): return not bulb_mode and not ground_mode and not tree_mode
+	var _vis_cloud := func(): return not ground_mode and not tree_mode
+	var _vis_grab := func(): return not ground_mode    # the tree is grabbed and spun too
+	var _vis_tree := func(): return tree_mode
 	menu.items = [
-		# The mode strip: three segments under the title, always in the same place.
+		# The mode strip: four segments under the title, always in the same place.
 		WristMenu.Item.new("mode", "FLAME", func(): return "",
-			func(): _set_mode("flame")).chosen_when(func(): return not bulb_mode and not ground_mode),
+			func(): _set_mode("flame")).chosen_when(func(): return not bulb_mode and not ground_mode and not tree_mode),
 		WristMenu.Item.new("mode", "BULB", func(): return "",
 			func(): _set_mode("bulb")).chosen_when(func(): return bulb_mode),
 		WristMenu.Item.new("mode", "GROUND", func(): return "",
 			func(): _set_mode("ground")).chosen_when(func(): return ground_mode),
+		WristMenu.Item.new("mode", "TREE", func(): return "",
+			func(): _set_mode("tree")).chosen_when(func(): return tree_mode),
+
+		WristMenu.Item.new("make", "SHAPE",
+			func(): return FractalTree.SHAPE_NAMES[tree_shape_idx],
+			func():
+				tree_shape_idx = (tree_shape_idx + 1) % FractalTree.SHAPE_NAMES.size()
+				tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx]),
+			false, _vis_tree).stepping(func(d: int):
+				tree_shape_idx = wrapi(tree_shape_idx + d, 0, FractalTree.SHAPE_NAMES.size())
+				tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])),
+		WristMenu.Item.new("make", "SEED",
+			func(): return "#%d" % tree.seed_value,
+			func(): tree.reseed(),
+			false, _vis_tree),
+		WristMenu.Item.new("make", "REGROW",
+			func(): return "from seed",
+			func(): tree.regrow(),
+			false, _vis_tree),
 
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
@@ -434,7 +500,7 @@ func _build_menu() -> void:
 			func(): _set_passthrough(not passthrough)),
 		WristMenu.Item.new("scene", "SPIN",
 			func(): return "on" if spin else "off", func(): spin = not spin,
-			false, _vis_cloud),
+			false, _vis_grab),
 		WristMenu.Item.new("scene", "SPEED",
 			func(): return "%ds" % int(MORPH_STEPS[morph_idx]),
 			func(): morph_idx = (morph_idx + 1) % MORPH_STEPS.size(),
@@ -442,7 +508,7 @@ func _build_menu() -> void:
 				morph_idx = wrapi(morph_idx + d, 0, MORPH_STEPS.size())),
 		WristMenu.Item.new("scene", "CENTRE",
 			func(): return "reset", func(): _recenter(); cloud.request_measure(),
-			false, _vis_cloud),
+			false, _vis_grab),
 		WristMenu.Item.new("scene", "HELP",
 			func(): return "controls", func(): help.open()),
 
@@ -583,6 +649,11 @@ func _build_menu() -> void:
 			false, func(): return bulb_mode).stepping(func(d: int):
 				surface_idx = wrapi(surface_idx + d, 0, SURFACE_STEPS.size())
 				_apply_surface()),
+		# ENTER (stand inside the shape at its roomiest hollow) is not on the headset menu.
+		# Measured 2026-09-12: 85-103 ms GPU at 48 steps on a 0.6x eye buffer, every pixel
+		# of both eyes marching, and the bail-out left the renderer in a broken pipeline
+		# state that the GPU then faulted on. _enter_inside() stays for the desktop shot
+		# harness and for the day the interior gets a quarter-res pass with reprojection.
 		WristMenu.Item.new("look", "DETAIL",
 			func(): return "%.2fx" % RENDER_STEPS[render_idx],
 			func(): _step_detail(1)).stepping(func(d: int): _step_detail(d)),
@@ -664,6 +735,35 @@ func _build_menu() -> void:
 			func(): return "reset view",
 			func(): ground.home(),
 			false, func(): return ground_mode),
+		# The orbit of the point under the pointing hand, hung in the air over the map.
+		WristMenu.Item.new("look", "ORBIT",
+			func(): return "on" if orbit_on else "off",
+			func():
+				orbit_on = not orbit_on
+				orbit.visible = false,
+			false, func(): return ground_mode),
+		WristMenu.Item.new("look", "DEPTH",
+			func(): return "%d · %s" % [tree.effective_depth(), _fmt_count(tree.branch_count)],
+			func():
+				tree_depth_idx = (tree_depth_idx + 1) % TREE_DEPTH_DELTA.size()
+				tree.depth_delta = TREE_DEPTH_DELTA[tree_depth_idx]
+				tree.build(),
+			false, _vis_tree).stepping(func(d: int):
+				tree_depth_idx = wrapi(tree_depth_idx + d, 0, TREE_DEPTH_DELTA.size())
+				tree.depth_delta = TREE_DEPTH_DELTA[tree_depth_idx]
+				tree.build()),
+		WristMenu.Item.new("look", "WIND",
+			func(): return TREE_WIND_NAMES[tree_wind_idx],
+			func():
+				tree_wind_idx = (tree_wind_idx + 1) % TREE_WIND.size()
+				tree.set_wind(TREE_WIND[tree_wind_idx]),
+			false, _vis_tree).stepping(func(d: int):
+				tree_wind_idx = wrapi(tree_wind_idx + d, 0, TREE_WIND.size())
+				tree.set_wind(TREE_WIND[tree_wind_idx])),
+		WristMenu.Item.new("look", "LEAVES",
+			func(): return "on" if tree.leaves_on else "off",
+			func(): tree.set_leaves(not tree.leaves_on),
+			false, _vis_tree),
 		# Double the level size and max the iterations: four times the fill for a still
 		# that is sharp out to the middle distance. The status line counts it in.
 		WristMenu.Item.new("look", "RENDER",
@@ -686,12 +786,17 @@ func _build_menu() -> void:
 					_exit_armed_until = _uptime + EXIT_ARM_S),
 	]
 	menu.title = func():
+		if tree_mode:
+			return "%s  ·  %s branches" % [tree.shape.capitalize(), _fmt_count(tree.branch_count)]
 		if ground_mode:
 			var z := ground.zoom_factor()
 			return "%s  ·  zoom %s" % ["Julia" if ground.julia else "Mandelbrot",
 				("%.0fx" % z) if z < 1000.0 else ("%.1ex" % z)]
 		return str(library.bulbs[bulb_idx].get("name", "?")) if bulb_mode else library.name_at(preset_idx)
 	menu.status_side = func():
+		if tree_mode:
+			var gp := tree.grow_progress()
+			return ("growing %d%%" % int(gp * 100.0)) if gp < 1.0 else "grown"
 		if ground_mode:
 			var pr := ground.progress()
 			return ("rendering %d%%" % int(pr * 100.0)) if pr < 1.0 else "sharp"
@@ -700,6 +805,10 @@ func _build_menu() -> void:
 			return "guard %d%%" % int(_perf_scale * 100.0)
 		if cloud.is_baking():
 			return "baking %d%%" % int(cloud.bake_progress * 100.0)
+		if _inside:
+			return "inside · %.1fx eye" % RENDER_STEPS[render_idx]
+		if _inside_bailed_until > _uptime:
+			return "inside bailed: %.0f ms" % _inside_bailed_ms
 		if bulb_mode and _bulb_settle > 0:
 			return "settling"
 		if _morph_t < 1.0:
@@ -710,7 +819,7 @@ func _build_menu() -> void:
 		return "%.0f fps  ·  %d flames  ·  %.1f ms" % [
 			Engine.get_frames_per_second(), library.count(),
 			RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
-				+ (ground.ground_us if ground_mode else cloud.iterate_us) / 1000.0]
+				+ (ground.ground_us if ground_mode else (0.0 if tree_mode else cloud.iterate_us)) / 1000.0]
 	# Worn like a watch: inside of the left forearm, tilted up toward the face.
 	# Along the forearm, angled up toward the face like a watch worn high on the wrist.
 	menu.transform = Transform3D(Basis(), Vector3(0.0, 0.06, 0.10))
@@ -756,8 +865,10 @@ func _step_detail(d: int) -> void:
 
 
 func _cycle_mode() -> void:
-	if ground_mode:
+	if tree_mode:
 		_set_mode("flame")
+	elif ground_mode:
+		_set_mode("tree")
 	elif bulb_mode:
 		_set_mode("ground")
 	else:
@@ -769,21 +880,45 @@ func _cycle_mode() -> void:
 func _set_mode(kind: String) -> void:
 	var want_bulb := kind == "bulb"
 	var want_ground := kind == "ground"
-	if bulb_mode == want_bulb and ground_mode == want_ground:
+	var want_tree := kind == "tree"
+	if bulb_mode == want_bulb and ground_mode == want_ground and tree_mode == want_tree:
 		return
 	if ground_mode and not want_ground:
 		_set_ground_mode(false)
+	if tree_mode and not want_tree:
+		_set_tree_mode(false)
 	if bulb_mode and not want_bulb:
 		_set_bulb_mode(false)
 	if want_bulb and not bulb_mode:
 		_set_bulb_mode(true)
 	if want_ground and not ground_mode:
 		_set_ground_mode(true)
+	if want_tree and not tree_mode:
+		_set_tree_mode(true)
+
+
+## The tree stands on the floor in front of you and grows. The cloud underneath keeps
+## its source but is hidden and not iterated, so the tree has the frame to itself.
+func _set_tree_mode(on: bool) -> void:
+	tree_mode = on
+	tree.visible = on
+	cloud.set_visible_cloud(not on)
+	if on:
+		if tree.branch_count == 0:
+			tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
+		tree.set_wind(TREE_WIND[tree_wind_idx])
+		tree.regrow()
+		_recenter()
+		_apply_palette()
+	else:
+		_recenter()
+		cloud.request_measure()
 
 
 func _set_ground_mode(on: bool) -> void:
 	ground_mode = on
 	ground.visible = on
+	orbit.visible = false
 	cloud.set_visible_cloud(not on)
 	if on:
 		_render_idx_saved = render_idx
@@ -799,15 +934,39 @@ func _set_ground_mode(on: bool) -> void:
 
 ## Point at the ground and pull: glide until that spot is under you.
 func _ground_teleport(hand: XRController3D) -> void:
-	if hand == null or not hand.get_has_tracking_data():
-		return
+	var hit = _hand_floor_hit(hand)
+	if hit != null:
+		ground.glide_to(hit)
+
+
+## Where the hand's ray meets the floor, as world xz, or null when there is no tracked
+## hand or it points at the sky. On the desktop (no XR) the controller node's own
+## transform stands in, which is what the shot harness poses.
+func _hand_floor_hit(hand: XRController3D) -> Variant:
+	if hand == null or (xr != null and not hand.get_has_tracking_data()):
+		return null
 	var o := hand.global_transform.origin
 	var d := -hand.global_transform.basis.z
 	if d.y > -0.05:
-		return   # pointing at the sky
+		return null
 	var t := -o.y / d.y
 	var hit := o + d * t
-	ground.glide_to(Vector2(hit.x, hit.z))
+	return Vector2(hit.x, hit.z)
+
+
+## The orbit trace follows the right hand's spot on the floor, except while the wrist
+## menu has the ray.
+func _tick_orbit() -> void:
+	if not orbit_on or _menu_active:
+		orbit.visible = false
+		return
+	var hit = _hand_floor_hit(right_hand)
+	if hit == null:
+		orbit.visible = false
+		return
+	orbit.visible = true
+	orbit.update(ground.world_to_fractal(hit), ground.julia, ground.julia_c,
+		ground.fractal_to_world, hit)
 
 
 ## Grip drags the world with the hand and twists it with the wrist; two hands also zoom
@@ -893,13 +1052,12 @@ func _set_bulb_mode(on: bool) -> void:
 		colour_idx = 1
 		_apply_point_look()
 		_apply_exposure()
-		# Blow it up around the viewer. Auto-framing normalises the cloud to a unit
-		# radius, so this scale is what puts you inside the surface rather than in front
-		# of it. Once only, on entry: later bulb switches keep the user's grab.
-		cloud.scale = Vector3.ONE * BULB_INSIDE_SCALE
+		# Hand-sized, in front. Once only, on entry: later bulb switches keep the grab.
+		cloud.scale = Vector3.ONE * BULB_TOY_SCALE
 		_load_bulb(bulb_idx)
 		_apply_surface()
 	else:
+		_leave_inside()
 		surface_idx = 0
 		_apply_surface()
 		bright_idx = _flame_bright_idx
@@ -916,9 +1074,90 @@ func _set_bulb_mode(on: bool) -> void:
 	_recenter()
 
 
+## Put the head in the shape's roomiest hollow, scaled so that hollow is
+## INSIDE_CLEARANCE_M across. Switches to the marcher if the splats were showing, and
+## stops the ambient spin: a world turning about a point behind a wall is the one
+## motion no one wants from inside.
+func _enter_inside() -> void:
+	if _bulb == null or not bulb_mode:
+		return
+	if SURFACE_STEPS[surface_idx] == 0 or surface_idx > INSIDE_STEPS_IDX:
+		surface_idx = INSIDE_STEPS_IDX
+		_apply_surface()
+	spin = false
+	if not _inside:
+		_inside_render_saved = render_idx
+	_inside = true
+	_inside_slow = 0
+	render_idx = INSIDE_RENDER_IDX
+	if xr != null:
+		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+	var p := _bulb.find_hollow()
+	var d := maxf(_bulb.de(p), 1e-4)
+	var local := (p - cloud.center) * cloud.fit
+	# Clearance is in state units; local units are state * fit; world is local * scale.
+	var s := clampf(INSIDE_CLEARANCE_M / (d * cloud.fit), INSIDE_SCALE_MIN, INSIDE_SCALE_MAX)
+	# Turn the shape so its nearest wall is straight ahead: the roomiest spot in a solid
+	# body is beside its surface, and arriving with the surface behind you reads as
+	# nothing happening. The wall lies down the DE gradient.
+	var h := d * 0.05
+	var g := Vector3(
+		_bulb.de(p + Vector3(h, 0, 0)) - _bulb.de(p - Vector3(h, 0, 0)),
+		_bulb.de(p + Vector3(0, h, 0)) - _bulb.de(p - Vector3(0, h, 0)),
+		_bulb.de(p + Vector3(0, 0, h)) - _bulb.de(p - Vector3(0, 0, h)))
+	var basis := Basis()
+	if g.length_squared() > 1e-12:
+		var wall_local := (-g).normalized()
+		var wall_world := (cloud.global_transform.basis * wall_local).normalized()
+		var fwd := -xr_camera.global_transform.basis.z
+		fwd.y = 0.0
+		if fwd.length_squared() > 1e-6 and wall_world.length_squared() > 1e-6:
+			fwd = fwd.normalized()
+			var axis := wall_world.cross(fwd)
+			if axis.length_squared() > 1e-8:
+				basis = Basis(axis.normalized(), wall_world.angle_to(fwd)) * cloud.global_transform.basis.orthonormalized()
+			else:
+				basis = cloud.global_transform.basis.orthonormalized()
+	else:
+		basis = cloud.global_transform.basis.orthonormalized()
+	var head := xr_camera.global_transform.origin
+	cloud.global_transform = Transform3D(basis.scaled(Vector3.ONE * s), Vector3.ZERO)
+	cloud.global_position = head - cloud.global_transform.basis * local
+	print("[bulb] inside %s at state %s clearance %.4f scale %.1f" % [
+		library.bulbs[bulb_idx].get("name", "?"), str(p), d, s])
+
+
+## Back to the normal eye buffer and foveation. Called when the marcher goes away, the
+## bulb changes under you, or bulb mode ends.
+func _leave_inside() -> void:
+	if not _inside:
+		return
+	_inside = false
+	render_idx = _inside_render_saved
+	if xr != null:
+		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+
+
+## The interior's safety valve, run every frame while inside.
+func _guard_inside() -> void:
+	var gpu_ms := RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
+	if gpu_ms > INSIDE_BAIL_MS:
+		_inside_slow += 1
+	else:
+		_inside_slow = 0
+	if _inside_slow >= INSIDE_BAIL_FRAMES:
+		_inside_bailed_ms = gpu_ms
+		_inside_bailed_until = _uptime + 8.0
+		print("[bulb] inside bailed: %.0f ms gpu at %s steps, %.2fx eye" % [
+			gpu_ms, str(SURFACE_STEPS[surface_idx]), RENDER_STEPS[render_idx]])
+		surface_idx = 0
+		_apply_surface()   # not marching any more, so this also leaves the interior
+
+
 func _load_bulb(i: int) -> void:
 	if library.bulbs.is_empty():
 		return
+	_leave_inside()
 	bulb_idx = wrapi(i, 0, library.bulbs.size())
 	# A fresh bulb is a ball of unprojected seeds, so it always gets its settle pass,
 	# whether or not MOTION is asking for a freeze.
@@ -1125,8 +1364,10 @@ func _home_transform() -> Transform3D:
 	if fwd.length_squared() < 1e-4:
 		fwd = Vector3.FORWARD
 	fwd = fwd.normalized()
-	var pos := cam.origin + fwd * HOME_DISTANCE
-	pos.y = cam.origin.y - HOME_DROP
+	var dist := BULB_HOME_DISTANCE if bulb_mode else HOME_DISTANCE
+	var drop := BULB_HOME_DROP if bulb_mode else HOME_DROP
+	var pos := cam.origin + fwd * dist
+	pos.y = cam.origin.y - drop
 	return Transform3D(Basis(), pos)
 
 
@@ -1197,6 +1438,15 @@ func _set_passthrough(on: bool) -> void:
 
 func _recenter() -> void:
 	var t := _home_transform()
+	if tree_mode:
+		# Trunk base on the floor, a few strides ahead, unit scale.
+		var cam := xr_camera.global_transform
+		var fwd := -cam.basis.z
+		fwd.y = 0.0
+		if fwd.length_squared() < 1e-4:
+			fwd = Vector3.FORWARD
+		fwd = fwd.normalized()
+		t = Transform3D(Basis(), Vector3(cam.origin.x, 0.0, cam.origin.z) + fwd * TREE_DISTANCE)
 	if grab != null:
 		grab.reset(t)
 	else:
@@ -1233,7 +1483,9 @@ func _process(delta: float) -> void:
 		_bulb.clock += delta * BREATH_STEPS[breath_idx]
 		if march.is_on():
 			march.tick(_bulb, cloud.center, cloud.fit)
-	if not ground_mode:
+		if _inside:
+			_guard_inside()
+	if not ground_mode and not tree_mode:
 		_tick_morph(delta)   # the flame and its drift wait while you are on the ground
 	if _converge > 0:
 		_converge -= 1
@@ -1254,7 +1506,8 @@ func _process(delta: float) -> void:
 	_sync_iteration()
 	if spin and _xr_focused and not ground_mode and (grab == null or not grab.is_grabbing()):
 		cloud.rotate_y(AMBIENT_SPIN * delta)
-		cloud.rotate_object_local(Vector3.RIGHT, AMBIENT_TILT * delta)
+		if not tree_mode:   # a tree turns; it does not tip over
+			cloud.rotate_object_local(Vector3.RIGHT, AMBIENT_TILT * delta)
 	if grab != null:
 		grab.update(delta)
 	_handle_input(delta)
@@ -1267,6 +1520,10 @@ func _process(delta: float) -> void:
 	if ground_mode:
 		var hp := xr_camera.global_transform.origin
 		ground.update(Vector2(hp.x, hp.z), delta)
+		_tick_orbit()
+		return
+	if tree_mode:
+		tree.tick(delta)
 		return
 	# The depth sort is for the head; both eyes share one order, as Spark does.
 	cloud.set_view(xr_camera.global_transform)
@@ -1338,11 +1595,15 @@ func _handle_input(delta: float) -> void:
 			menu.activate()
 		elif ground_mode:
 			_ground_teleport(right_hand)
+		elif tree_mode:
+			tree.reseed()
 		else:
 			_morph_to_preset(preset_idx + 1)
 	if _pressed(left_hand, "trigger_click") or _key(KEY_LEFT):
 		if ground_mode:
 			_ground_teleport(left_hand)
+		elif tree_mode:
+			tree.regrow()
 		else:
 			_morph_to_preset(preset_idx - 1)
 	if _pressed(left_hand, "menu_button") or _key(KEY_D):
@@ -1405,11 +1666,15 @@ func _apply_palette() -> void:
 		ground.set_palette(mixed)
 		menu.set_palette(mixed)
 		march.set_palette(mixed)
+		tree.set_palette(mixed)
+		orbit.set_palette(mixed)
 	else:
 		cloud.override_palette(target)
 		ground.set_palette(target)
 		menu.set_palette(target)
 		march.set_palette(target)
+		tree.set_palette(target)
+		orbit.set_palette(target)
 
 
 var _theme_cache: Dictionary = {}   # theme index -> Array[Vector3], parsed once
@@ -1451,6 +1716,8 @@ func _apply_point_look() -> void:
 ## the cloud's visibility itself, so this only speaks when the cloud is the scene.
 func _apply_surface() -> void:
 	var marching: bool = bulb_mode and SURFACE_STEPS[surface_idx] > 0
+	if not marching:
+		_leave_inside()
 	march.set_steps(SURFACE_STEPS[surface_idx] if bulb_mode else 0)
 	if not ground_mode:
 		cloud.set_visible_cloud(not marching)

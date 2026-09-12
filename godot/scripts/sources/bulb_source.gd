@@ -116,6 +116,219 @@ func march_params() -> Dictionary:
 	}
 
 
+## CPU port of the march shader's distance estimators, for placing the viewer: the
+## shader cannot tell the host where the hollows are. Same formulas, same iteration
+## counts, same early-outs, so the two agree to float precision (tools/de_check.sh
+## renders the shader's copy and compares). Keep all three in step.
+func de(p: Vector3) -> float:
+	return de_with(p, march_params())
+
+
+func de_with(p: Vector3, mp: Dictionary) -> float:
+	var f: float = mp["formula"]
+	var d: float
+	if f > 3.5:
+		d = _de_kifs(p, mp, true)
+	elif f > 2.5:
+		d = _de_quat(p, mp)
+	elif f > 1.5:
+		d = _de_kifs(p, mp, false)
+	elif f > 0.5:
+		d = _de_box(p, mp)
+	else:
+		d = _de_bulb(p, mp)
+	# The quaternion set at its exact origin is 0/0 in both ports. Inside the set is
+	# the honest reading, and a NaN would win every comparison in find_hollow.
+	if is_nan(d) or is_inf(d):
+		return 0.0
+	return d
+
+
+func _de_bulb(q: Vector3, mp: Dictionary) -> float:
+	var power: float = mp["power"]
+	var z := q
+	var c: Vector3 = q if mp["mandelbulb"] > 0.5 else mp["julia_c"]
+	var dr := 1.0
+	var r := z.length()
+	for i in 8:
+		r = z.length()
+		if r > 2.0:
+			break
+		var rr := maxf(r, 1e-9)
+		var theta := acos(clampf(z.z / rr, -1.0, 1.0))
+		var phi := atan2(z.y, z.x)
+		dr = pow(rr, power - 1.0) * power * dr + 1.0
+		var zr := pow(rr, power)
+		theta *= power
+		phi *= power
+		z = zr * Vector3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + c
+	return 0.5 * log(maxf(r, 1e-9)) * r / maxf(dr, 1e-6)
+
+
+func _de_box(q: Vector3, mp: Dictionary) -> float:
+	var scale: float = mp["scale"]
+	var min_r: float = mp["min_r"]
+	var fixed_r: float = mp["fixed_r"]
+	var offset: Vector3 = q if mp["mandelbulb"] > 0.5 else mp["julia_c"]
+	var z := q
+	var dr := 1.0
+	var min_r2 := min_r * min_r
+	var fixed_r2 := fixed_r * fixed_r
+	for i in 10:
+		z = z.clamp(Vector3(-1, -1, -1), Vector3(1, 1, 1)) * 2.0 - z
+		var r2 := z.dot(z)
+		if r2 < min_r2:
+			var t := fixed_r2 / min_r2
+			z *= t
+			dr *= t
+		elif r2 < fixed_r2:
+			var t := fixed_r2 / r2
+			z *= t
+			dr *= t
+		z = scale * z + offset
+		dr = dr * absf(scale) + 1.0
+		if z.dot(z) > 1e4:
+			break
+	return z.length() / maxf(absf(dr), 1e-6)
+
+
+func _de_kifs(q: Vector3, mp: Dictionary, tetra: bool) -> float:
+	var s: float = mp["scale"]
+	var off: Vector3 = mp["julia_c"]
+	var fixed_r: float = mp["fixed_r"]
+	var ka: float = mp["k_angle_a"]
+	var kb: float = mp["k_angle_b"]
+	var z := q
+	var dr := 1.0
+	var sa := sin(ka)
+	var ca := cos(ka)
+	var sb := sin(kb)
+	var cb := cos(kb)
+	for i in 12:
+		z = Vector3(z.x, ca * z.y - sa * z.z, sa * z.y + ca * z.z)
+		if tetra:
+			if z.x + z.y < 0.0:
+				z = Vector3(-z.y, -z.x, z.z)
+			if z.x + z.z < 0.0:
+				z = Vector3(-z.z, z.y, -z.x)
+			if z.y + z.z < 0.0:
+				z = Vector3(z.x, -z.z, -z.y)
+		else:
+			z = z.abs()
+			if z.x - z.y < 0.0:
+				z = Vector3(z.y, z.x, z.z)
+			if z.x - z.z < 0.0:
+				z = Vector3(z.z, z.y, z.x)
+			if z.y - z.z < 0.0:
+				z = Vector3(z.x, z.z, z.y)
+		z = Vector3(cb * z.x - sb * z.y, sb * z.x + cb * z.y, z.z)
+		z = z * s - off * (s - 1.0)
+		dr *= s
+	return (z.length() - fixed_r) / absf(dr)
+
+
+func _de_quat(pos: Vector3, mp: Dictionary) -> float:
+	var z := Vector4(pos.x, pos.y, pos.z, 0.0)
+	var jc: Vector3 = mp["julia_c"]
+	var c: Vector4 = z if mp["mandelbulb"] > 0.5 else Vector4(jc.x, jc.y, jc.z, 0.0)
+	var md2 := 1.0
+	var m2 := z.dot(z)
+	for i in 11:
+		md2 *= 4.0 * m2
+		var yzw := Vector3(z.y, z.z, z.w)
+		var sq := Vector4(z.x * z.x - yzw.dot(yzw), 2.0 * z.x * z.y, 2.0 * z.x * z.z, 2.0 * z.x * z.w)
+		z = sq + c
+		m2 = z.dot(z)
+		if m2 > 256.0:
+			break
+	return 0.25 * log(m2) * sqrt(m2 / md2)
+
+
+## Per-bulb geometry the shader cannot tell the host: the shape's true radial extent
+## and its best enclosed room, precomputed by tools/rooms.sh into data/rooms.json
+## (the enclosure search is a million DE evaluations per bulb, far too slow for a
+## button press on the headset). Keyed by bulb name; a bulb without a record falls
+## back to the preset bound and a clearance-only scatter.
+const ROOMS_PATH := "res://data/rooms.json"
+static var _rooms: Dictionary = {}
+static var _rooms_loaded := false
+
+
+static func _load_rooms() -> void:
+	if _rooms_loaded:
+		return
+	_rooms_loaded = true
+	var f := FileAccess.open(ROOMS_PATH, FileAccess.READ)
+	if f == null:
+		push_warning("[bulb] no %s; ENTER falls back to a clearance scatter" % ROOMS_PATH)
+		return
+	var parsed = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) == TYPE_DICTIONARY:
+		_rooms = parsed
+
+
+func room() -> Dictionary:
+	_load_rooms()
+	return _rooms.get(display_name, {})
+
+
+## Radius of the sphere the marcher starts its rays at, in state units. The preset
+## bound is the seed ball for the particles and can sit well inside the shape (the
+## scale-2 Mandelbox reaches 9.8 against a bound of 5.2), and a sphere that cuts
+## through solid paints every ray as a hit at its entry: a ball of noise.
+func march_bound() -> float:
+	var r := room()
+	if r.has("extent"):
+		return maxf(bound(), float(r["extent"])) * 1.08
+	return bound() * 1.15
+
+
+## The point ENTER stands the viewer at, in state units. From the precomputed room
+## when there is one (refined locally, because the breath has moved the walls since
+## the tool ran), else the point of greatest clearance in a scatter through the inner
+## two thirds of the shape.
+func find_hollow() -> Vector3:
+	var mp := march_params()
+	var b := bound()
+	var best := Vector3.ZERO
+	var best_d := de_with(best, mp)
+	var golden := PI * (3.0 - sqrt(5.0))
+	var r := room()
+	var radius := b * 0.66
+	if r.has("inside"):
+		var inside: Array = r["inside"]
+		best = Vector3(float(inside[0]), float(inside[1]), float(inside[2]))
+		best_d = de_with(best, mp)
+		radius = maxf(float(r.get("clearance", 0.05)), 0.02) * 1.5
+	else:
+		const N := 600
+		for i in N:
+			var t := (float(i) + 0.5) / float(N)
+			var y := 1.0 - 2.0 * t
+			var rr := sqrt(maxf(0.0, 1.0 - y * y))
+			var a := golden * float(i)
+			var p := Vector3(cos(a) * rr, y, sin(a) * rr) * (radius * pow(t, 1.0 / 3.0))
+			var d := de_with(p, mp)
+			if d > best_d:
+				best_d = d
+				best = p
+		radius = b * 0.08
+	# Local refinement: a tighter scatter around the seed. Stays within the room, so a
+	# stored room cannot be swapped for the exterior a wall away.
+	var centre := best
+	for i in 160:
+		var t := (float(i) + 0.5) / 160.0
+		var y := 1.0 - 2.0 * t
+		var rr := sqrt(maxf(0.0, 1.0 - y * y))
+		var a := golden * float(i) * 1.7
+		var p := centre + Vector3(cos(a) * rr, y, sin(a) * rr) * (radius * pow(t, 1.0 / 3.0))
+		var d := de_with(p, mp)
+		if d > best_d:
+			best_d = d
+			best = p
+	return best
+
+
 func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
 	var mp := march_params()
 	var power: float = mp["power"]
