@@ -1,21 +1,24 @@
 extends Node3D
 class_name OrbitTrace
 
-## The orbit of the point under your hand, drawn in the air above the ground: iterate
-## z -> z^2 + c from the spot the controller points at and hang each z as a bead over
-## its own place on the map, climbing a little per step so the chain lifts off the floor.
-## Inside the set the chain spirals and settles; outside it flies off to the bailout.
-## This is what the colours on the floor are made of, shown live.
+## The orbit of the point under your hand, drawn as a small constellation hovering over
+## the spot: iterate z -> z^2 + c from where the controller points and place each z at
+## a fixed metric scale around that spot (SCALE_M per fractal unit, the map's own
+## orientation), climbing a little per step. Inside the set it circles and settles;
+## outside it flies to the bailout, a metre away at most. Mapping the orbit to the
+## world's zoom instead (2026-09-11) hopped between points tens of metres apart and
+## streaked lines to the horizon; Sam: "weird lines when moving or looking about".
 ##
 ## Iteration runs in 64-bit floats on the CPU, so it stays honest well past the float32
-## texture's zoom limit; the beads are one MultiMesh of tiny spheres, plus one line strip.
+## texture's zoom limit; beads and links are two MultiMeshes.
 
 const MAX_POINTS := 120          # a bounded orbit's chain; enough to show it settle
 const BAILOUT2 := 16.0          # |z|^2; radius 4, past the classic 2 so the tail shows
-const RISE_M := 0.012           # height gained per step
-const BASE_M := 0.04            # first bead above the floor
-const TOP_M := 1.6              # never higher than this
-const REACH_M := 40.0           # world radius the tail is clamped to
+const SCALE_M := 0.22           # metres per fractal unit; |z| <= 4 keeps it within a metre
+const RISE_M := 0.004           # height gained per step
+const BASE_M := 0.75            # the constellation's floor, above the map
+const TOP_M := 1.5              # never higher than this
+const REACH_M := 1.2            # world radius around the spot, for the culling bounds
 
 var point_count := 0
 var _beads: MultiMeshInstance3D
@@ -111,8 +114,9 @@ static func iterate(p: Vector2, julia: bool, julia_c: Vector2) -> PackedVector2A
 	return out
 
 
-## Draw the orbit of the fractal point `p`. `to_world` maps a fractal point to world xz.
-func update(p: Vector2, julia: bool, julia_c: Vector2, to_world: Callable, hand_xz: Vector2) -> void:
+## Draw the orbit of the fractal point `p` over the world spot `hand_xz`. `dir_to_world`
+## turns a fractal-space offset into a world direction (the map's rotation, no zoom).
+func update(p: Vector2, julia: bool, julia_c: Vector2, dir_to_world: Callable, hand_xz: Vector2) -> void:
 	var orbit := iterate(p, julia, julia_c)
 	var n := orbit.size()
 	point_count = n
@@ -123,18 +127,16 @@ func update(p: Vector2, julia: bool, julia_c: Vector2, to_world: Callable, hand_
 		lmm.visible_instance_count = 0
 		return
 	var escaped := n < MAX_POINTS
-	# The first link starts at the spot itself, on the floor.
-	var prev := Vector3(hand_xz.x, BASE_M, hand_xz.y)
+	# The first link rises from the spot itself, on the floor, to the constellation.
+	var prev := Vector3(hand_xz.x, 0.03, hand_xz.y)
 	for k in n:
-		var w: Vector2 = to_world.call(orbit[k])
-		var d := w - hand_xz
-		if d.length() > REACH_M:
-			w = hand_xz + d.normalized() * REACH_M
+		var d: Vector2 = dir_to_world.call((orbit[k] - p) * SCALE_M)
+		var w := hand_xz + d
 		var t := float(k) / float(maxi(n - 1, 1))
 		var y := minf(BASE_M + RISE_M * float(k), TOP_M)
 		var pos := Vector3(w.x, y, w.y)
 		var c := _colour(t if not escaped else t * 0.8)
-		var r := lerpf(0.028, 0.009, t)
+		var r := lerpf(0.02, 0.006, t)
 		mm.set_instance_transform(k, Transform3D(Basis().scaled(Vector3.ONE * r), pos))
 		mm.set_instance_color(k, c)
 		# The links fade along the chain: a periodic orbit retraces the same few legs a

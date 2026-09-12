@@ -23,6 +23,10 @@ func _init() -> void:
 	# has somewhere to hang its beads.
 	main.right_hand.position = Vector3(0.3, 1.2, -0.2)
 	main.right_hand.rotation_degrees = Vector3(-35.0, 8.0, 0.0)
+	# Turn the left wrist away from the face: at the controller's default pose the panel
+	# faces the head, the menu counts as showing, and the trace hides while it shows.
+	main.left_hand.position = Vector3(-0.3, 1.0, -0.2)
+	main.left_hand.rotation_degrees = Vector3(0.0, 0.0, 180.0)
 	for i in 240:
 		await process_frame
 	var img := root.get_viewport().get_texture().get_image()

@@ -963,9 +963,9 @@ func _hand_floor_hit(hand: XRController3D) -> Variant:
 
 
 ## The orbit trace follows the right hand's spot on the floor, except while the wrist
-## menu has the ray.
+## menu is showing (its ray is the menu's then, and the chain read as stray lines).
 func _tick_orbit() -> void:
-	if not orbit_on or _menu_active:
+	if not orbit_on or _menu_active or menu.visible:
 		orbit.visible = false
 		return
 	var hit = _hand_floor_hit(right_hand)
@@ -974,7 +974,7 @@ func _tick_orbit() -> void:
 		return
 	orbit.visible = true
 	orbit.update(ground.world_to_fractal(hit), ground.julia, ground.julia_c,
-		ground.fractal_to_world, hit)
+		ground.fractal_dir_to_world, hit)
 
 
 ## Grip drags the world with the hand and twists it with the wrist; two hands also zoom

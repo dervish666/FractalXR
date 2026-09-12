@@ -229,6 +229,12 @@ func fractal_to_world(f: Vector2) -> Vector2:
 	return _m.basis_xform_inv((f - centre) * wpu)
 
 
+## A fractal-space direction turned into a world direction, without the zoom: the orbit
+## trace draws at its own fixed scale but keeps the map's orientation.
+func fractal_dir_to_world(v: Vector2) -> Vector2:
+	return _m.basis_xform_inv(v)
+
+
 ## Walk: move the viewer over the fractal by a world-space distance (metres, xz).
 func pan(delta_m: Vector2) -> void:
 	centre += _m.basis_xform(delta_m) / wpu
