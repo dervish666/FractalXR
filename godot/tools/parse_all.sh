@@ -16,7 +16,12 @@ while IFS= read -r f; do
 	files=$((files+1))
 	if check "$f"; then errors=$((errors+1)); echo "PARSE FAIL $f"; fi
 done < <(find scripts tools -name '*.gd' | sort)
+# A fresh checkout (CI) has no .spike-out yet; without the directory the control file
+# was never written and its "parse" read as clean, which is exactly the failure this
+# control exists to catch.
+mkdir -p "$PROJ/.spike-out"
 printf 'extends Node\nfunc _ready() -> void:\n\tvar x = (\n' > "$PROJ/.spike-out/broken_control.gd"
+if [ ! -s "$PROJ/.spike-out/broken_control.gd" ]; then echo "PARSEALL FAIL could not write the control file"; exit 1; fi
 control=PASS
 if check .spike-out/broken_control.gd; then control=FAIL; fi
 verdict=PASS; [ "$errors" -eq 0 ] && [ "$control" = FAIL ] || verdict=FAIL
