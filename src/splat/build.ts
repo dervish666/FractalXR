@@ -28,10 +28,14 @@ export async function buildBulbSplats(
   const per = Math.ceil(want / threads)
   const progress = new Array<number>(threads).fill(0)
 
+  // Handles live outside the promises: when one sampler fails, Promise.all rejects at
+  // once and the siblings would otherwise keep every core busy behind a failed banner.
+  const workers: Worker[] = []
   const slices = await Promise.all(
     Array.from({ length: threads }, (_, i) =>
       new Promise<SampleDone>((resolve, reject) => {
         const w = new Worker(new URL('./sample.worker.ts', import.meta.url), { type: 'module' })
+        workers.push(w)
         w.onerror = (err) => {
           w.terminate()
           reject(new Error(`sampler ${i} failed: ${err.message}`))
@@ -50,7 +54,9 @@ export async function buildBulbSplats(
         w.postMessage({ want: per, seed: 0x1a2b3c4d + i * 0x9e3779b9, quality } satisfies SampleRequest)
       }),
     ),
-  )
+  ).finally(() => {
+    for (const w of workers) w.terminate()
+  })
 
   const total = slices.reduce((a, s) => a + s.count, 0)
   const sampleMs = performance.now() - t0

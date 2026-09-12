@@ -19,8 +19,8 @@
     "node": ">=22"
   },
   "dependencies": {
-    "three": "^0.184.0",
-    "@sparkjsdev/spark": "^2.1.0"
+    "@sparkjsdev/spark": "^2.1.0",
+    "three": "^0.184.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.42.1",
@@ -28,6 +28,6 @@
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
-    "wrangler": "^4.103.0"
+    "wrangler": "^4.131.1"
   }
 }

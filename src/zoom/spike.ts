@@ -366,7 +366,8 @@ const DAMP = 2.2
 let camDist = 1.35
 let orbitYaw = 0
 let orbitPitch = 0
-let sway = true
+// Camera sway is the one motion here that is not the user's; off when they asked for less.
+let sway = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 const placeCamera = (t: number): void => {
   const sx = sway ? Math.sin(t * 0.25) * 0.14 : 0
   const sy = sway ? Math.sin(t * 0.19 + 1.1) * 0.08 : 0

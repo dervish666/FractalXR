@@ -44,6 +44,13 @@ import { createMRButton } from './xr/MRButton'
 import { switchMode } from './modes'
 
 // Replace the landing overlay with a readable message (no innerHTML — keep the codebase XSS-free).
+// The UI's accent is the top stop of whatever is on screen: a bulb has its own palette,
+// and the wrist menu and guide used to wear a flame colour you could not see in bulb mode.
+function accentColour(): [number, number, number] {
+  const pal = sim.mode === 'bulb' ? currentBulb.palette : toGenome.palette
+  return pal[pal.length - 1]
+}
+
 function showFatal(msg: string, hint: string): void {
   const o = document.getElementById('overlay')
   if (!o) return
@@ -81,6 +88,12 @@ renderer.xr.setReferenceSpaceType('local-floor')
 renderer.xr.setFramebufferScaleFactor(1.5) // supersample above native panel res for sharpness (applies at session entry); AdaptiveQuality sheds particle count if the GPU can't keep up
 renderer.xr.setFoveation(0) // zero foveation → full resolution edge-to-edge; AdaptiveQuality raises it only under real load
 document.body.appendChild(renderer.domElement)
+// Backgrounding on the headset or a GPU reset loses the context; without this the app
+// sat on a frozen last frame with nothing said.
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault()
+  showFatal('The graphics context was lost.', 'Reload the page to start again.')
+})
 document.body.appendChild(VRButton.createButton(renderer))
 // "Enter MR" — immersive-ar passthrough; the flame floats in the real room. The
 // button hides itself on devices without immersive-ar, so the VR path is untouched.
@@ -496,7 +509,7 @@ flamePoints.setPointSize(pointSize)
 
 // in-VR controls guide — a "what the buttons do" card that pops in front of you on
 // session start (and reopens from the menu's HELP cell); dismisses on first grab/press.
-const guide = new ControlsGuide(() => toGenome.palette[toGenome.palette.length - 1])
+const guide = new ControlsGuide(() => accentColour())
 overlayScene.add(guide.root)
 // show it every time someone enters (not first-run-only) — the same headset is handed
 // to a stream of newcomers; a quick grab/press makes it vanish for the experienced user.
@@ -566,7 +579,7 @@ const menu = new WristMenu(
     auto: autoGenerate,
     passthrough: passthroughOn,
     arAvailable: sessionIsAR,
-    accent: toGenome.palette[toGenome.palette.length - 1],
+    accent: accentColour(),
     currentPreset: sim.mode === 'bulb' ? BULB_GALLERY.indexOf(currentBulb) : GALLERY.indexOf(toGenome),
     particles: fmtCount(userCount),
     size: pointSize.toFixed(1),

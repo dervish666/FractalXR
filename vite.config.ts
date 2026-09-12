@@ -12,6 +12,7 @@ export default defineConfig({
   server: {
     host: true, // expose on LAN
     port: 5173,
+    strictPort: true, // the headset loop is `adb reverse tcp:5173`; a silent move to 5174 reads as a broken app
   },
   base: './', // relative paths so static-host deploys work from any subpath
   build: {
