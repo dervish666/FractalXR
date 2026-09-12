@@ -58,6 +58,8 @@ const EXPOSURE_MUL := [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
 # primary budget lever rather than a free win, so the default sits low and climbs
 # only if the measurement says there is room.
 const RENDER_STEPS := [0.6, 0.75, 1.0, 1.25]     # eye buffer multiplier
+const FOVEA_STEPS := [0, 1, 2, 3]                # fixed foveation level; 0 = off
+var fovea_idx := 0
 const ITER_STEPS := [1, 2, 4, 6, 8]
 const STABILITY := [0, 1, 2, 4, 8, 16]   # 1/n of the cloud per frame; 0 = frozen
 # A morph iterates the cloud the whole way through, so by the time it finishes the
@@ -180,7 +182,6 @@ var _gg_yaw := 0.0
 var library := PresetLibrary.new()
 var grab: WorldGrab = null
 var tonemap := Flam3Tonemap.new()
-var tone_on := true
 
 var preset_idx := 0
 var particle_idx := 0      # 1.05M: 8.2ms app GPU, zero stale frames, no reprojection
@@ -770,6 +771,19 @@ func _build_menu() -> void:
 			func(): return "hq 2048 / 4096" if _render_hq else "normal",
 			func(): _set_render_hq(not _render_hq),
 			false, func(): return ground_mode),
+		# Fixed foveated rendering, the largest fragment-cost lever on a Quest. Off by
+		# default because the cloud showed it at the edges; this dial is the instrument
+		# for measuring it per mode (ground and tree may take it for free). Applied a
+		# frame later, on its own: changing it in the same frame as the eye buffer broke
+		# the framebuffer (2026-09-12 log).
+		WristMenu.Item.new("look", "FOVEA",
+			func(): return "off" if fovea_idx == 0 else "fixed %d" % FOVEA_STEPS[fovea_idx],
+			func():
+				fovea_idx = (fovea_idx + 1) % FOVEA_STEPS.size()
+				call_deferred("_apply_foveation"),
+			false).stepping(func(d: int):
+				fovea_idx = wrapi(fovea_idx + d, 0, FOVEA_STEPS.size())
+				call_deferred("_apply_foveation")),
 		# Glow is a downsample/blur/upsample chain per eye on a tiler, and its cost has
 		# never been measured. This toggle is the instrument: flip it and read the ms.
 		WristMenu.Item.new("look", "GLOW",
@@ -864,15 +878,6 @@ func _step_detail(d: int) -> void:
 		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
 
 
-func _cycle_mode() -> void:
-	if tree_mode:
-		_set_mode("flame")
-	elif ground_mode:
-		_set_mode("tree")
-	elif bulb_mode:
-		_set_mode("ground")
-	else:
-		_set_mode("bulb")
 
 
 ## Jump straight to a mode from the strip. Leaving a mode undoes its entry side effects
@@ -927,7 +932,10 @@ func _set_ground_mode(on: bool) -> void:
 		_apply_ground_look()
 		_apply_palette()
 	else:
-		render_idx = _render_idx_saved
+		# Restore the flame's DETAIL only if it was not changed here; a value picked on
+		# the ground is a choice, not the mode's default.
+		if render_idx == GROUND_RENDER_IDX:
+			render_idx = _render_idx_saved
 	if xr != null:
 		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
 
@@ -1036,6 +1044,9 @@ func _apply_ground_look() -> void:
 
 
 func _set_bulb_mode(on: bool) -> void:
+	if on and library.bulbs.is_empty():
+		push_error("[bulb] presets.json has no bulbs; staying in flame mode")
+		return
 	bulb_mode = on
 	if on:
 		_flame_bright_idx = bright_idx
@@ -1136,6 +1147,14 @@ func _leave_inside() -> void:
 	render_idx = _inside_render_saved
 	if xr != null:
 		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+
+
+func _apply_foveation() -> void:
+	if xr == null or not xr.is_foveation_supported():
+		return
+	xr.set_foveation_level(FOVEA_STEPS[fovea_idx])
+	xr.set_foveation_dynamic(false)
+	print("[fractal] foveation level=%d dynamic=false" % FOVEA_STEPS[fovea_idx])
 
 
 ## The interior's safety valve, run every frame while inside.
@@ -1741,6 +1760,10 @@ func _apply_exposure() -> void:
 func _pressed(c: XRController3D, action: String) -> bool:
 	if c == null:
 		return false
+	# An untracked hand reads every button as released; the frame tracking returns
+	# would then register a rising edge on a button held the whole time.
+	if xr != null and not c.get_has_tracking_data():
+		return false
 	var now := c.is_button_pressed(action)
 	var key := "%s/%s" % [c.name, action]
 	var was: bool = _prev.get(key, false)
@@ -1787,10 +1810,14 @@ func _update_hud(delta: float) -> void:
 	]
 	if _status != "":
 		lines.append(_status)
-	hud.text = "\n".join(lines)
+	if hud.visible:   # retired to the wrist; the perf print below is what this is for now
+		hud.text = "\n".join(lines)
 
 	# Log the levers that could be quietly reducing image quality over time, so the
-	# degradation can be attributed instead of guessed at.
+	# degradation can be attributed instead of guessed at. Debug builds only: it is
+	# fifteen formatted fields four times a second, and logcat writes can block.
+	if not OS.is_debug_build():
+		return
 	var vp_size := get_viewport().get_visible_rect().size
 	print("[perf] t=%.1f fps=%.1f draw_ms=%.3f sim_ms=%.3f fov=%d dyn=%s rt=%s vp=%dx%d scale3d=%.2f preset=%s count=%d point=%.1f iters=%d eye=%dx%d" % [
 		_uptime, fps, gpu, sim,

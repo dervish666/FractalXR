@@ -169,7 +169,7 @@ class ControlsCard extends Control:
 
 		# The one thing nobody discovers on their own.
 		draw_string(font, Vector2(0, CARD.y - 112),
-			"Turn your left wrist toward your face for the menu",
+			"Flame mode shown. Left wrist up for the menu: FLAME · BULB · GROUND · TREE",
 			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, NOTE_SIZE, DIM)
 		draw_string(font, Vector2(0, CARD.y - 52), "Pull either trigger to begin",
 			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, LABEL_SIZE, ACCENT)

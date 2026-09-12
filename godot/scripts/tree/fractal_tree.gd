@@ -124,12 +124,15 @@ func build() -> int:
 		leaf_count = 0
 		return 0
 
-	# Segments: [pos, dir, len, r, level, dist, on_trunk]. Iterative, so depth is not a
-	# stack risk.
+	# Segments: [pos, dir, len, r, level, dist, on_trunk]. Breadth-first with a cursor
+	# (pop_front is O(n) per call), so when the cap bites it drops the deepest level
+	# evenly across the tree instead of keeping one fully explored strand.
 	var segs: Array = []
-	var stack: Array = [[Vector3.ZERO, Vector3.UP, 1.0, trunk_r, 0, 0.0, true]]
-	while not stack.is_empty():
-		var s: Array = stack.pop_back()
+	var queue: Array = [[Vector3.ZERO, Vector3.UP, 1.0, trunk_r, 0, 0.0, true]]
+	var head := 0
+	while head < queue.size():
+		var s: Array = queue[head]
+		head += 1
 		segs.append(s)
 		if segs.size() >= MAX_BRANCHES:
 			break
@@ -160,7 +163,7 @@ func build() -> int:
 			d = (d + Vector3.DOWN * droop * level_frac * (0.4 if leader else 1.0)).normalized()
 			var ln: float = s[2] * lr * (1.0 + jitter * 0.4 * (_rng.randf() - 0.5))
 			var r: float = s[3] * (0.85 if leader else rr)
-			stack.append([tip, d, ln, r, level + 1, s[5] + s[2], leader])
+			queue.append([tip, d, ln, r, level + 1, s[5] + s[2], leader])
 
 	# Normalise so the tallest point sits at height_m, radii and lengths together.
 	var top := 0.0

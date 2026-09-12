@@ -33,7 +33,35 @@ All notable changes to FractalXR are documented here. Format based on
   Julia mode iterates from the point with the ground's constant. 64-bit on the CPU, so it
   stays honest past the texture's zoom limit. ORBIT tile to switch it off.
 
+### Changed
+- **Optimisation pass (native build), from the 2026-09-12 audit.** The splat mesh is four
+  indexed corners per particle instead of six loose vertices, so the covariance build and eigen
+  solve run a third fewer times (pixel-identical: diffed against a before render, inside
+  run-to-run noise). The ground relief fetches one 4x4 texel block for the centre and the four
+  gradient samples instead of five separate bilinears, 24 fetches down to 16 per pixel with
+  relief on (pixel-identical, diffed with the trace off). The wrist menu re-reads its tile values
+  at 8 Hz and on hover change instead of every frame, restyles mode tiles only when their state
+  flips, and stops animating once folded. The orbit trace links are a MultiMesh of thin
+  cylinders instead of an ImmediateMesh rebuilt every frame. The invisible HUD label no longer
+  has its text built. A FOVEA tile (off, fixed 1, 2, 3) joins GLOW as a measurement instrument;
+  the default stays off until the headset says otherwise.
+
 ### Fixed
+- **Bulb mode refuses to start on an empty bulb list** instead of indexing it every frame.
+- **DETAIL changed on the ground now survives leaving ground mode**; before, the flame's saved
+  value was restored blindly.
+- **A tracking dropout no longer fires a phantom press** when the hand comes back.
+- **Tree depth +2 no longer degrades to a single strand**: the branch cap now truncates the
+  deepest level evenly (breadth-first build).
+- **The first-run card says which mode it describes** and names the four modes.
+- **The perf log line only prints in debug builds.**
+- **Dev tools**: every shot harness now clears its watchdog on any exit (a failed run used to
+  leave a pkill that killed the next run four minutes later); `tools/soak.sh` parses the current
+  perf line format (it had been producing a CSV of raw log lines under nine empty columns).
+- **Web: ENTER MR failures show on the button** ("MR UNAVAILABLE") instead of a silent catch.
+- **Web: missing assets return 404** instead of the flames page with a 200; the four pages are
+  independent static entries, so the SPA fallback bought nothing and hid broken asset paths.
+- Removed dead code: `_cycle_mode`, `tone_on`.
 - **Mandelbox distance estimate bailed out too early.** At |z| > 6 the estimate was not a
   lower bound (97% of sampled points had solid within the promised radius); it bails at
   |z| > 100 now in the compute shader, the marcher and the CPU port alike.

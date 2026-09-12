@@ -51,13 +51,24 @@ export function createMRButton(renderer: WebGLRenderer): HTMLElement {
       button.textContent = 'ENTER MR'
       button.onclick = (): void => {
         if (currentSession === null) {
-          xr.requestSession('immersive-ar', sessionOptions).then(onSessionStarted).catch(() => {})
+          button.textContent = 'STARTING MR…'
+          xr.requestSession('immersive-ar', sessionOptions)
+            .then(onSessionStarted)
+            .catch((err: unknown) => {
+              // Passthrough refused, or another session holds the device. Say so on
+              // the button; a silent catch left it reading ENTER MR with nothing happening.
+              console.warn('[MR] requestSession failed', err)
+              button.textContent = 'MR UNAVAILABLE'
+              setTimeout(() => { if (currentSession === null) button.textContent = 'ENTER MR' }, 2500)
+            })
         } else {
           currentSession.end()
         }
       }
     })
-    .catch(() => {})
+    .catch((err: unknown) => {
+      console.warn('[MR] isSessionSupported failed', err)
+    })
 
   return button
 }
