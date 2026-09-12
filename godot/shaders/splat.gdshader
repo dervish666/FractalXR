@@ -5,7 +5,7 @@
 // cloud read as dust from inside a shell and why no point-size setting ever changed
 // anything. Real size needs real geometry.
 //
-// The mesh is six dummy vertices per particle. VERTEX_ID carries everything: the
+// The mesh is four dummy vertices per particle, indexed. VERTEX_ID carries everything: the
 // particle index and which corner this is. So the mesh is a bare resize with no
 // attributes to fill, and changing the particle count stays cheap.
 shader_type spatial;
@@ -118,9 +118,8 @@ varying vec3 v_col;
 varying vec2 v_off;
 varying float v_alpha;
 
-const vec2 CORNERS[6] = vec2[6](
-	vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
-	vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+const vec2 CORNERS[4] = vec2[4](
+	vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
 
 vec3 palette(float t) {
 	t = clamp(t, 0.0, 1.0);
@@ -143,13 +142,13 @@ vec3 palette(float t) {
 }
 
 void vertex() {
-	int slot = VERTEX_ID / 6;
+	int slot = VERTEX_ID / 4;   // indexed draw: four corners per splat
 	int pid = slot;
 	if (use_sort) {
 		int pw = textureSize(perm_tex, 0).x;
 		pid = int(texelFetch(perm_tex, ivec2(slot % pw, slot / pw), 0).r + 0.5);
 	}
-	v_off = CORNERS[VERTEX_ID % 6];
+	v_off = CORNERS[VERTEX_ID % 4];
 
 	vec4 s = texelFetch(state_tex, ivec2(pid % tex_size, pid / tex_size), 0);
 	bool bad = !(s.x == s.x) || !(s.y == s.y) || !(s.z == s.z);

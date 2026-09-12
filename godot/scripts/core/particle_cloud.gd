@@ -663,14 +663,25 @@ func set_count(n: int) -> void:
 	if n == _count:
 		return
 	_count = n
-	# Six dummy vertices per particle when splatting (two triangles), one when pointing.
-	# VERTEX_ID carries the particle index and the corner, so there are no attributes to
-	# fill and the build is a resize either way.
+	# Four dummy vertices per particle when splatting, indexed into two triangles, one
+	# vertex when pointing. VERTEX_ID (the index value under an indexed draw) carries the
+	# particle index and the corner, so there are no attributes to fill. Indexed rather
+	# than six loose vertices because the whole covariance build and eigen solve run per
+	# vertex: the post-transform cache reuses the two shared corners, a third fewer runs.
 	var verts := PackedVector3Array()
-	verts.resize(n * 6 if _splat else n)
+	verts.resize(n * 4 if _splat else n)
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
+	if _splat:
+		var idx := PackedInt32Array()
+		idx.resize(n * 6)
+		for i in n:
+			var b := i * 4
+			var o := i * 6
+			idx[o] = b; idx[o + 1] = b + 1; idx[o + 2] = b + 2
+			idx[o + 3] = b; idx[o + 4] = b + 2; idx[o + 5] = b + 3
+		arrays[Mesh.ARRAY_INDEX] = idx
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(
 		Mesh.PRIMITIVE_TRIANGLES if _splat else Mesh.PRIMITIVE_POINTS, arrays,

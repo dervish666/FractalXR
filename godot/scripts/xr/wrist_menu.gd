@@ -121,6 +121,11 @@ var _head: Node3D
 var _pointer: Node3D
 var _step_dir := 0
 var _step_timer := 0.0
+## Values are read from Callables and formatted into Labels; doing that every frame
+## was ~150 Callable calls and 50 String allocations per frame with the menu up.
+const REFRESH_S := 0.12
+var _refresh_accum := REFRESH_S
+var _chosen_last: Array[bool] = []
 var _wants_stick := false
 ## An OpenXR composition layer keeps being composited when the app loses focus, so it
 ## draws OVER the Quest system menu and hides the system pointer. That is not a cosmetic
@@ -549,7 +554,8 @@ func update(delta: float) -> bool:
 	if not visible:
 		_hovered = -1
 		_show_pointer(false, 0.0, 0.0)
-		_animate(delta)
+		if _shown > 0.0:   # still folding away; once settled there is nothing to animate
+			_animate(delta)
 		return false
 
 	var hit := _pointer_pixel()
@@ -569,7 +575,10 @@ func update(delta: float) -> bool:
 	_scrub(delta)
 	_show_pointer(true, _hit_distance, _hover[_hovered] if _hovered >= 0 else 0.0)
 	_animate(delta)
-	_refresh()
+	_refresh_accum += delta
+	if _refresh_accum >= REFRESH_S or was != _hovered:
+		_refresh_accum = 0.0
+		_refresh()
 	return _hovered >= 0
 
 
@@ -677,7 +686,14 @@ func _animate(delta: float) -> void:
 		if absf(p.modulate.a - alpha) > 0.002:
 			p.modulate.a = alpha
 			moving = true
-		if moving or (items[i].selected.is_valid()):
+		# A mode tile restyles when its chosen state flips, not every frame.
+		var chosen := items[i].selected.is_valid() and bool(items[i].selected.call())
+		if _chosen_last.size() <= i:
+			_chosen_last.resize(_tiles.size())
+		if chosen != _chosen_last[i]:
+			_chosen_last[i] = chosen
+			moving = true
+		if moving:
 			p.pivot_offset = p.size * 0.5
 			var s := (0.92 + 0.08 * pour) * (1.0 + 0.02 * h - 0.05 * _pulse[i])
 			p.scale = Vector2.ONE * s

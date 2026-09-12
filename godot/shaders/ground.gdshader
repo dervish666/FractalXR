@@ -130,6 +130,35 @@ float height_at(int level, vec2 e0) {
 	return height_of(sample_level(level, e0, d), level, true);
 }
 
+// The relief normal needs the bilinear sample one texel either side of the point in x
+// and z. Those four and the centre share one 4x4 block of texels, so fetch the block
+// once (16 fetches) instead of five separate bilinears (20). Same arithmetic, same
+// result: each height is height_of() of the bilinear vec4, as before.
+void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float hz0, out float hz1) {
+	ivec2 vt = view_texel0 >> level;
+	ivec2 rem = view_texel0 - (vt << level);
+	float sc = float(1 << level);
+	vec2 f = (vec2(rem) + view_frac0 + e0) / sc - 0.5;
+	vec2 fl = floor(f);
+	vec2 w = f - fl;
+	ivec2 base = vt + ivec2(fl);
+	vec4 t[16];
+	for (int j = 0; j < 4; j++) {
+		for (int i = 0; i < 4; i++) {
+			t[j * 4 + i] = fetch(level, base + ivec2(i - 1, j - 1));
+		}
+	}
+	// Bilinear over the cell whose lower-left texel is block (1+dx, 1+dz).
+	vec4 sx0 = mix(mix(t[5 - 1], t[6 - 1], w.x), mix(t[9 - 1], t[10 - 1], w.x), w.y);
+	vec4 sx1 = mix(mix(t[5 + 1], t[6 + 1], w.x), mix(t[9 + 1], t[10 + 1], w.x), w.y);
+	vec4 sz0 = mix(mix(t[5 - 4], t[6 - 4], w.x), mix(t[9 - 4], t[10 - 4], w.x), w.y);
+	vec4 sz1 = mix(mix(t[5 + 4], t[6 + 4], w.x), mix(t[9 + 4], t[10 + 4], w.x), w.y);
+	hx0 = height_of(sx0, level, true);
+	hx1 = height_of(sx1, level, true);
+	hz0 = height_of(sz0, level, true);
+	hz1 = height_of(sz1, level, true);
+}
+
 void vertex() {
 	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	if (displace > 0.5 && (relief_mode != 0 || bump_strength > 0.0)) {
@@ -210,10 +239,11 @@ void fragment() {
 	if (relief_mode != 0 || bump_strength > 0.0) {
 		float step = float(1 << l0);              // one texel of that level, in level-0 texels
 		float tm = step * texel0 * wpu;           // and in metres
-		float hx1 = height_at(l0, e0 + vec2(step, 0.0));
-		float hx0 = height_at(l0, e0 - vec2(step, 0.0));
-		float hz1 = height_at(l0, e0 + vec2(0.0, step));
-		float hz0 = height_at(l0, e0 - vec2(0.0, step));
+		float hx0;
+		float hx1;
+		float hz0;
+		float hz1;
+		relief_heights(l0, e0, hx0, hx1, hz0, hz1);
 		float hc = height_of(sa, l0, true);
 		vec3 n = normalize(vec3(-(hx1 - hx0) * relief_contrast / (2.0 * tm), 1.0,
 			-(hz1 - hz0) * relief_contrast / (2.0 * tm)));
