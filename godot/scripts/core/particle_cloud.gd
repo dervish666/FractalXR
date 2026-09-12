@@ -173,23 +173,20 @@ func setup(p_tex_size: int = DEFAULT_TEX_SIZE) -> bool:
 		m.set_shader_parameter("state_tex", _state_texture)
 		m.set_shader_parameter("tex_size", tex_size)
 	_splat_material.set_shader_parameter("normal_tex", _normal_texture)
-	_setup_measure()
-	_setup_density()
-	_setup_bake()
-	_setup_sort()
+	if not (_setup_measure() and _setup_density() and _setup_bake() and _setup_sort()):
+		return false
 	_ready_ok = true
 	return true
 
 
-func _setup_density() -> void:
-	var file: RDShaderFile = load("res://shaders/density.glsl")
-	if file == null:
-		return
-	var spirv := file.get_spirv()
-	if spirv.compile_error_compute != "":
-		push_error("[cloud] density: %s" % spirv.compile_error_compute)
-		return
-	_density_shader = _rd.shader_create_from_spirv(spirv)
+## Every pass records its failure in _error and returns false, so a missing or broken
+## shader is a message on screen and setup() stops, instead of a silent return followed
+## by a cascade of invalid-RID errors from the passes that depend on it.
+func _setup_density() -> bool:
+	_density_shader = _compile("res://shaders/density.glsl", "density")
+	if not _density_shader.is_valid():
+		_error = "density.glsl failed to compile (see the log)"
+		return false
 	_density_pipeline = _rd.compute_pipeline_create(_density_shader)
 	_density_buf = _rd.storage_buffer_create(GRID_CELLS * 4, PackedByteArray())
 
@@ -222,14 +219,10 @@ func _setup_density() -> void:
 	ssbo.add_id(_density_buf)
 	_density_set = _rd.uniform_set_create([img, ssbo], _density_shader, 0)
 
-	var nfile: RDShaderFile = load("res://shaders/density_norm.glsl")
-	if nfile == null:
-		return
-	var nspirv := nfile.get_spirv()
-	if nspirv.compile_error_compute != "":
-		push_error("[cloud] density_norm: %s" % nspirv.compile_error_compute)
-		return
-	_norm_shader = _rd.shader_create_from_spirv(nspirv)
+	_norm_shader = _compile("res://shaders/density_norm.glsl", "density_norm")
+	if not _norm_shader.is_valid():
+		_error = "density_norm.glsl failed to compile (see the log)"
+		return false
 	_norm_pipeline = _rd.compute_pipeline_create(_norm_shader)
 	_norm_buf = _rd.storage_buffer_create(8, PackedByteArray())
 	var nsrc := RDUniform.new()
@@ -245,6 +238,7 @@ func _setup_density() -> void:
 	nst.binding = 2
 	nst.add_id(_norm_buf)
 	_norm_set = _rd.uniform_set_create([nsrc, nimg, nst], _norm_shader, 0)
+	return true
 
 
 func _run_density() -> void:
@@ -328,12 +322,16 @@ func _image(binding: int, tex: RID) -> RDUniform:
 	return u
 
 
-func _setup_bake() -> void:
+func _setup_bake() -> bool:
 	_scan_shader = _compile("res://shaders/bake_scan.glsl", "bake_scan")
 	_scatter_shader = _compile("res://shaders/bake_scatter.glsl", "bake_scatter")
 	_shape_shader = _compile("res://shaders/bake_shape.glsl", "bake_shape")
 	if not (_scan_shader.is_valid() and _scatter_shader.is_valid() and _shape_shader.is_valid()):
-		return
+		_error = "a bake shader failed to compile (see the log)"
+		return false
+	if not _density_buf.is_valid():
+		_error = "bake setup ran without the density buffer"
+		return false
 	_scan_pipeline = _rd.compute_pipeline_create(_scan_shader)
 	_scatter_pipeline = _rd.compute_pipeline_create(_scatter_shader)
 	_shape_pipeline = _rd.compute_pipeline_create(_shape_shader)
@@ -360,6 +358,7 @@ func _setup_bake() -> void:
 
 	_scan_set = _rd.uniform_set_create(
 		[_ssbo(0, _density_buf), _ssbo(1, _off_buf), _ssbo(2, _bsum_buf)], _scan_shader, 0)
+	return true
 
 
 ## The sorted list is one slot per particle, so it has to follow the count.
@@ -561,15 +560,11 @@ func clear_bake() -> void:
 	_splat_material.set_shader_parameter("use_bake", false)
 
 
-func _setup_measure() -> void:
-	var file: RDShaderFile = load("res://shaders/measure.glsl")
-	if file == null:
-		return
-	var spirv := file.get_spirv()
-	if spirv.compile_error_compute != "":
-		push_error("[cloud] measure: %s" % spirv.compile_error_compute)
-		return
-	_measure_shader = _rd.shader_create_from_spirv(spirv)
+func _setup_measure() -> bool:
+	_measure_shader = _compile("res://shaders/measure.glsl", "measure")
+	if not _measure_shader.is_valid():
+		_error = "measure.glsl failed to compile (see the log)"
+		return false
 	_measure_pipeline = _rd.compute_pipeline_create(_measure_shader)
 	# 8 scalars plus a 32-bin histogram.
 	_stats_buf = _rd.storage_buffer_create(_STATS_BYTES, PackedByteArray())
@@ -582,6 +577,7 @@ func _setup_measure() -> void:
 	ssbo.binding = 1
 	ssbo.add_id(_stats_buf)
 	_measure_set = _rd.uniform_set_create([img, ssbo], _measure_shader, 0)
+	return true
 
 
 ## Ask for a fresh centroid and radius. The readback is asynchronous, so the cost is
@@ -909,12 +905,13 @@ var _view_mv := Transform3D.IDENTITY
 var _sorting := false
 
 
-func _setup_sort() -> void:
+func _setup_sort() -> bool:
 	_sort_count_shader = _compile("res://shaders/sort_count.glsl", "sort_count")
 	_sort_scatter_shader = _compile("res://shaders/sort_scatter.glsl", "sort_scatter")
 	if not (_sort_count_shader.is_valid() and _sort_scatter_shader.is_valid()
 			and _scan_pipeline.is_valid()):
-		return
+		_error = "a sort shader failed to compile (see the log)"
+		return false
 	_sort_count_pipeline = _rd.compute_pipeline_create(_sort_count_shader)
 	_sort_scatter_pipeline = _rd.compute_pipeline_create(_sort_scatter_shader)
 	_sort_cnt_buf = _rd.storage_buffer_create(SORT_BUCKETS * 4, PackedByteArray())
@@ -941,6 +938,7 @@ func _setup_sort() -> void:
 		_image(0, _state_tex), _ssbo(1, _sort_off_buf), _ssbo(2, _sort_cur_buf), _image(3, _perm_tex),
 	], _sort_scatter_shader, 0)
 	_sort_ok = true
+	return true
 
 
 ## The view the sort is for: camera transform in world space. Called by the host every

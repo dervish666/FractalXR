@@ -1,7 +1,7 @@
 name: build
 
 # Move the one gate (tsc + vite build) off the dev laptop and into CI, so a push can't
-# outrun a clean type-check before Cloudflare Pages auto-deploys main.
+# outrun a clean type-check before Cloudflare Workers auto-deploys main.
 on:
   push:
     branches: [main]
@@ -19,3 +19,32 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+
+  # The native build had no gate at all: 11k lines of GDScript and shaders reached main on
+  # a green tick from the web build. The GPU self-test cannot run on a runner (headless
+  # Godot has no RenderingDevice), but parsing every script and compiling every spatial
+  # shader can, and each tool feeds itself a broken control so a silent pass is impossible.
+  godot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot 4.7.2 (headless)
+        run: |
+          curl -sSL -o godot.zip https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
+          unzip -q godot.zip
+          sudo mv Godot_v4.7.2-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
+      - name: Import
+        working-directory: godot
+        run: godot --xr-mode off --path . --headless --import || true
+      - name: Parse every script (with a broken control)
+        working-directory: godot
+        run: |
+          out=$(GODOT=godot bash tools/parse_all.sh 2>&1); echo "$out"
+          echo "$out" | grep -q "^PARSEALL PASS"
+      - name: Compile every spatial shader (with a broken control)
+        working-directory: godot
+        run: |
+          out=$(GODOT=godot bash tools/shader_check.sh shaders/*.gdshader 2>&1); echo "$out"
+          echo "$out" | grep -q "broken.gdshader params=0"
+          ! echo "$out" | grep -v broken.gdshader | grep -q "params=0"

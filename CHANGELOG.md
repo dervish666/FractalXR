@@ -5,7 +5,16 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-12
+
+The first release that is mostly the native Quest build. Web entries are unchanged in
+substance; the version fields in `package.json` and `godot/export_presets.cfg` now move
+together (the APK had sat at 0.1.0, build code 1, since the first export).
+
 ### Added
+- **CI parses every GDScript and compiles every spatial shader** on push and PR, with a
+  broken control in each step so a silent pass is impossible. The GPU self-test still needs a
+  real RenderingDevice and stays a laptop step (`godot/tools/selftest.sh`).
 - **Bulb mode opens as a toy.** Entry now puts the bulb hand-sized (0.55 m radius) just over a
   metre ahead and a little below the eyes instead of 2.1x around you. Sam: "a lot better when
   it's smaller and in front of the user, like something to be played with." Grab still scales it.
@@ -55,6 +64,9 @@ All notable changes to FractalXR are documented here. Format based on
   deepest level evenly (breadth-first build).
 - **The first-run card says which mode it describes** and names the four modes.
 - **The perf log line only prints in debug builds.**
+- **Cloud setup failures are loud.** Every compute pass (measure, density, bake, sort) records
+  a message and stops setup, so a broken shader is a line on screen and in the self-test
+  (`SELFTEST detail: measure.glsl failed to compile`) instead of a cascade of invalid-RID errors.
 - **Dev tools**: every shot harness now clears its watchdog on any exit (a failed run used to
   leave a pkill that killed the next run four minutes later); `tools/soak.sh` parses the current
   perf line format (it had been producing a CSV of raw log lines under nine empty columns).
