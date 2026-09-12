@@ -61,6 +61,11 @@ All notable changes to FractalXR are documented here. Format based on
 - **Web: ENTER MR failures show on the button** ("MR UNAVAILABLE") instead of a silent catch.
 - **Web: missing assets return 404** instead of the flames page with a 200; the four pages are
   independent static entries, so the SPA fallback bought nothing and hid broken asset paths.
+- **Web: the wrist menu and controls guide take the bulb's palette in bulb mode**; they wore an
+  unseen flame's accent. A lost WebGL context now says so instead of freezing on the last frame.
+  A failed splat sampler terminates its siblings. The dev server refuses to move off 5173 (the
+  headset loop is `adb reverse` on that port). The zoom app's sway honours reduced motion and
+  its controls legend passes AA contrast. `npm audit fix` cleared the six dev-only advisories.
 - Removed dead code: `_cycle_mode`, `tone_on`.
 - **Mandelbox distance estimate bailed out too early.** At |z| > 6 the estimate was not a
   lower bound (97% of sampled points had solid within the promised radius); it bails at
