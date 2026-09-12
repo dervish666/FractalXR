@@ -19,9 +19,14 @@ func _init() -> void:
 	main.ground.centre = Vector2(-0.55, 0.62)
 	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
 	main.xr_camera.rotation_degrees = Vector3(-22.0, 0.0, 0.0)
+	# Pose the right hand as a pointer at a spot on the floor ahead, so the orbit trace
+	# has somewhere to hang its beads.
+	main.right_hand.position = Vector3(0.3, 1.2, -0.2)
+	main.right_hand.rotation_degrees = Vector3(-35.0, 8.0, 0.0)
 	for i in 240:
 		await process_frame
 	var img := root.get_viewport().get_texture().get_image()
 	var err := img.save_png("res://.spike-out/ground.png")
-	print("GROUNDSHOT %s progress=%.2f" % ["PASS" if err == OK else "FAIL %d" % err, main.ground.progress()])
+	print("GROUNDSHOT %s progress=%.2f orbit=%d visible=%s" % ["PASS" if err == OK else "FAIL %d" % err,
+		main.ground.progress(), main.orbit.point_count, str(main.orbit.visible)])
 	quit(0 if err == OK else 1)

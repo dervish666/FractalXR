@@ -219,6 +219,16 @@ func viewer_fractal() -> Vector2:
 	return centre + _m.basis_xform(_head_xz) / wpu
 
 
+## World xz (metres) to the fractal point under it, and back. The mapping is
+## fractal = centre + M w / wpu with M a rotation, so the inverse is its transpose.
+func world_to_fractal(w: Vector2) -> Vector2:
+	return centre + _m.basis_xform(w) / wpu
+
+
+func fractal_to_world(f: Vector2) -> Vector2:
+	return _m.basis_xform_inv((f - centre) * wpu)
+
+
 ## Walk: move the viewer over the fractal by a world-space distance (metres, xz).
 func pan(delta_m: Vector2) -> void:
 	centre += _m.basis_xform(delta_m) / wpu
