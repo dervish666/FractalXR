@@ -659,6 +659,10 @@ func set_count(n: int) -> void:
 	if n == _count:
 		return
 	_count = n
+	# A permutation only covers the old draw range.  In particular, growing the mesh
+	# without invalidating it would make its new slots sample stale ids until the next
+	# view change happened to trigger a sort.
+	_sort_valid = false
 	# Four dummy vertices per particle when splatting, indexed into two triangles, one
 	# vertex when pointing. VERTEX_ID (the index value under an indexed draw) carries the
 	# particle index and the corner, so there are no attributes to fill. Indexed rather
@@ -705,6 +709,9 @@ func set_splat(on: bool, radius: float) -> void:
 	if on == _splat:
 		return
 	_splat = on
+	# The permutation texture is only meaningful after the first sort in the new
+	# splat draw path.  Force that sort even when a newly selected bulb is frozen.
+	_sort_valid = false
 	_mesh_instance.material_override = _splat_material if on else _material
 	var n := _count
 	_count = 0        # force the rebuild: the vertex count per particle changed
@@ -773,7 +780,10 @@ func iterate() -> void:
 
 	# A frozen cloud gets no dispatch at all. The shader would return on its first line,
 	# but launching count/256 workgroups to do that is not free either.
-	if _needs_seed or not source.is_frozen():
+	# Keep this before clearing _needs_seed: a fresh seed has changed every position,
+	# even when the source immediately returns to its frozen steady state.
+	var state_changed := _needs_seed or not source.is_frozen()
+	if state_changed:
 		var cl := _rd.compute_list_begin()
 		if _needs_seed:
 			source.encode(cl, _count, _frame, true)
@@ -781,10 +791,16 @@ func iterate() -> void:
 			_needs_seed = false
 		source.encode(cl, _count, _frame, false)
 		_rd.compute_list_end()
-	# Sort after the step so the order matches the positions being drawn. Every frame:
-	# the view moves even when the cloud does not.
+	# Sort after the step so the order matches positions that did move.  A baked bulb
+	# normally freezes its state, though, and headset micro-jitter is far smaller than
+	# a depth bucket.  Reusing the last permutation until the view-model transform
+	# moves materially avoids five otherwise identical GPU passes in that steady state.
+	# Flames and any moving bulb still sort every frame.
 	if _splat and _sort_ok:
-		_run_sort()
+		if _needs_sort(state_changed):
+			_run_sort()
+			_last_sort_view = _view_mv
+			_sort_valid = true
 		_set_sorting(true)
 	else:
 		_set_sorting(false)
@@ -903,6 +919,16 @@ var _sort_ok := false
 ## Camera-inverse times cloud transform, set by the host each frame. Identity until then.
 var _view_mv := Transform3D.IDENTITY
 var _sorting := false
+## The last view for which _perm_tex was built.  Baked bulbs freeze their particle
+## positions, so it stays valid while this has only moved by normal headset jitter.
+var _last_sort_view := Transform3D.IDENTITY
+var _sort_valid := false
+
+# These are deliberately below one 4096-bucket depth step at the cloud's normal
+# framing, but above Quest tracking noise.  A deliberate head or cloud movement
+# therefore gets a fresh order on that frame; a still, baked bulb avoids the work.
+const SORT_STILL_TRANSLATION := 0.003       # metres in view space
+const SORT_STILL_BASIS_DELTA := 0.003       # about 0.17 degrees for unit axes
 
 
 func _setup_sort() -> bool:
@@ -945,6 +971,21 @@ func _setup_sort() -> bool:
 ## frame before iterate(); the cloud's own transform is folded in here.
 func set_view(camera: Transform3D) -> void:
 	_view_mv = camera.affine_inverse() * global_transform
+
+
+func _needs_sort(state_changed: bool) -> bool:
+	if not _sort_valid or state_changed:
+		return true
+	if _view_mv.origin.distance_to(_last_sort_view.origin) > SORT_STILL_TRANSLATION:
+		return true
+	# Comparing the basis columns catches both head rotation and cloud rotation.  A
+	# scale change is included as well, which matters because it changes every depth.
+	for axis in [_view_mv.basis.x - _last_sort_view.basis.x,
+			_view_mv.basis.y - _last_sort_view.basis.y,
+			_view_mv.basis.z - _last_sort_view.basis.z]:
+		if axis.length() > SORT_STILL_BASIS_DELTA:
+			return true
+	return false
 
 
 func _run_sort() -> void:
