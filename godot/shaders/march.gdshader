@@ -37,6 +37,8 @@ uniform float palette_cycles = 1.0;
 uniform float gain = 1.0;
 uniform int max_steps = 64;
 
+// Fragment VERTEX is view-space in Godot's spatial pipeline. Keep the per-eye inverse
+// model-view matrix from the vertex stage to turn that view ray into state/local space.
 varying mat4 v_inv_mv;
 
 // Metres from the eye the box's vertices are pulled in to. ENTER scales the cloud by
@@ -187,7 +189,8 @@ vec3 palette(float u) {
 
 void fragment() {
 	// Ray in the cloud's local space, then into state (DE) space. State space is a
-	// uniform scale and offset of local, so directions carry over unchanged.
+	// uniform scale and offset of local, so directions carry over unchanged. In the
+	// fragment stage VERTEX is already the eye-to-fragment direction in VIEW space.
 	vec3 ro_l = (v_inv_mv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 	vec3 rd = normalize((v_inv_mv * vec4(normalize(VERTEX), 0.0)).xyz);
 	vec3 ro = ro_l / cloud_fit + cloud_center;
@@ -224,34 +227,38 @@ void fragment() {
 		r = de(pos, eps * 0.5);
 		steps = i;
 		if (!clear) {
-			if (r.x > 2.0 * eps + 1e-4 * bound || i >= 24) { clear = true; }
+			// The escape walk used a fixed 24 iterations, which made a 12-step quality
+			// mode never enter the real march and shade its bounding sphere instead.
+			if (r.x > 2.0 * eps + 1e-4 * bound || i >= min(max_steps / 2, 24)) { clear = true; }
 			else { t += stride; if (t > t1) { break; } continue; }
 		}
 		if (r.x < eps) { hit = true; break; }
 		t += r.x * 0.85;
 		if (t > t1) { break; }
 	}
-	// Out of steps inside the sphere: the ray is in a dense region, so shade it (the
-	// crawl term darkens it) rather than punch a hole. Only rays that left the sphere miss.
-	if (!hit && t <= t1) { hit = true; }
+	// A budget miss must stay a miss. Treating it as a hit painted the enclosing seed
+	// sphere when a low-step ray had not reached the actual DE surface yet.
 	if (!hit) { discard; }
 
 	vec3 pos = ro + rd * t;
-	// Sample the normal a few pixels wide: at the stopping distance the DE is noise.
-	// The normal comes from the same detail level the hit was found at, so shading
-	// does not reintroduce the dust the cutoff removed.
-	vec3 n = deGrad(pos, eps * 3.0, eps * 0.5);
+	// The derivative of the hit positions is the rendered surface normal. It is stable
+	// at the screen resolution the marcher can display and replaces the four extra DE
+	// samples of a tetrahedral gradient after every successful ray.
+	vec3 n = normalize(cross(dFdx(pos), dFdy(pos)));
 	vec3 v = -rd;
+	// Different DE families disagree about the sign around their interior folds. The
+	// visible side of a two-sided marched shell is always the side facing the ray; make
+	// lighting consistent rather than leaving one formula lit from behind.
+	if (dot(n, v) < 0.0) n = -n;
 	float ndv = max(dot(n, v), 0.0);
 	vec3 key = normalize(vec3(0.5, 0.85, 0.3));
 	float ndk = max(dot(n, key), 0.0);
-	// Two cheap occlusion probes along the normal: crevices darken, ridges stay lit.
-	float ao1 = clamp(de(pos + n * (0.02 * bound), eps).x / (0.02 * bound), 0.0, 1.0);
-	float ao2 = clamp(de(pos + n * (0.08 * bound), eps).x / (0.08 * bound), 0.0, 1.0);
-	float ao_raw = 0.35 * ao1 + 0.65 * ao2;
-	float ao = mix(0.35, 1.0, ao_raw);
 	// Depth complexity as a second occlusion cue: rays that crawled in took many steps.
 	float crawl = 1.0 - 0.5 * float(steps) / float(max_steps);
+	// The crawl term is a free, stable cavity cue. An additional DE probe here was a
+	// sixth expensive DE evaluation after each hit and dominated the visible detail.
+	float ao_raw = crawl;
+	float ao = mix(0.5, 1.0, ao_raw);
 
 	// Same orbit-trap coordinate the compute path stores per particle, so a palette
 	// bands the surface the way it bands the splats.
@@ -266,8 +273,8 @@ void fragment() {
 		+ pal4 * fres * 0.3 * ao;
 	ALBEDO = c * gain;
 
-	// Depth from the view-space ray: t is in state units, so scale by fit and by the
-	// node's own scale (read off the inverse basis; the cloud only ever scales uniformly).
+	// VERTEX is the view-space ray. t is in state units, so apply the state/local fit
+	// and the cloud's uniform node scale before writing its real depth.
 	float mscale = 1.0 / max(length(v_inv_mv[0].xyz), 1e-9);
 	vec3 hit_view = normalize(VERTEX) * (t * cloud_fit * mscale);
 	vec4 clip = PROJECTION_MATRIX * vec4(hit_view, 1.0);

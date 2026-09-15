@@ -45,8 +45,22 @@ const STEP_REPEAT_S := 0.24
 const FONT_PATH := "res://fonts/SpaceGrotesk-VF.ttf"
 const WGHT_TAG := 0x77676874   # 'wght' as an OpenType axis tag
 
-const LABEL := Color(0.93, 0.95, 0.99)
+const LABEL := Color("#EDF1F8")
 const DIM := Color(0.62, 0.68, 0.78, 0.8)
+## Values at rest. Every value used to be drawn in the palette accent, which meant a
+## flame menu showed twenty-odd bright orange strings shouting at the same volume and
+## none of them told you where you were. Accent now belongs to the selected mode and to
+## whatever the ray is on; everything else reads in neutral ink.
+const VALUE_INK := Color("#B8C3D4")
+## The panel and tile grounds before the palette gets a say. Near-neutral on purpose:
+## a 45% tint of the palette's second stop made the whole panel a slab of saturated
+## colour that the fractal behind it then had to compete with.
+const PANEL_INK := Color("#10151F")
+const TILE_INK := Color("#1B2330")
+## How much palette is allowed into those grounds. Enough to tell two themes apart,
+## not enough to become the subject.
+const PANEL_TINT := 0.08
+const TILE_TINT := 0.10
 
 class Item:
 	var section: String
@@ -93,7 +107,6 @@ var _line: Color       # borders, hairlines
 var _mute: Color       # section headers
 var _accent: Color     # values, hover border
 var _hot: Color        # hover fill
-var _glow: Color       # hover shadow
 
 var _vp: SubViewport
 var _root: PanelContainer
@@ -201,19 +214,20 @@ func _derive_theme() -> void:
 	var c1 := _c(_pal[1])
 	var c2 := _c(_pal[2])
 	var c3 := _c(_pal[3])
-	_ink = _sink(Color.BLACK.lerp(c1, 0.45), 0.055)
-	_ink.a = 0.93
-	_tile_bg = _sink(_ink.lerp(c2, 0.12), 0.09)
+	_ink = _sink(PANEL_INK.lerp(c1, PANEL_TINT), 0.075)
+	_ink.a = 0.97
+	_tile_bg = _sink(TILE_INK.lerp(c2, TILE_TINT), 0.11)
 	_tile_bg.a = 0.97
-	_line = _lift(c2, 0.32)
-	_line.a = 0.42
-	_mute = _lift(c2, 0.48)
-	_mute.a = 0.85
+	# Resting borders are structure, not decoration: neutral, and only just there.
+	_line = Color("#39445A")
+	_line.a = 0.55
+	_mute = Color("#8C97A8")
+	_mute.a = 0.95
 	_accent = _lift(c3, 0.66)
-	_hot = _sink(_ink.lerp(c2, 0.5), 0.22)
+	# The selected fill. Tinted enough to read as "this one", dark enough that the label
+	# on top of it keeps its contrast.
+	_hot = _sink(_tile_bg.lerp(c2, 0.34), 0.20)
 	_hot.a = 0.98
-	_glow = _lift(c2, 0.4)
-	_glow.a = 0.0
 
 
 static func _font(weight: int) -> Font:
@@ -326,18 +340,20 @@ func _build_viewport() -> void:
 	pad.add_theme_constant_override("margin_bottom", 12)
 	_root.add_child(pad)
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 9)
+	# 7, not 9: the value text went up two points and the room for it comes from the
+	# gaps. Tile rectangles are the hit targets, so they are the last thing to give.
+	col.add_theme_constant_override("separation", 7)
 	pad.add_child(col)
 
 	# Header: the flame's name, light and large; the live status on the right.
 	var head_row := HBoxContainer.new()
 	head_row.add_theme_constant_override("separation", 12)
 	col.add_child(head_row)
-	_title_label = _label("", 34, LABEL, 300)
+	_title_label = _label("", 32, LABEL, 500)
 	_title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	head_row.add_child(_title_label)
-	_side_label = _label("", 16, _accent, 500)
+	_side_label = _label("", 17, _accent, 500)
 	_side_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_side_label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
 	_side_label.size_flags_vertical = Control.SIZE_FILL
@@ -379,7 +395,7 @@ func _build_viewport() -> void:
 		var grid := GridContainer.new()
 		grid.columns = count if sec == MODE_SECTION else COLUMNS
 		grid.add_theme_constant_override("h_separation", 8)
-		grid.add_theme_constant_override("v_separation", 8)
+		grid.add_theme_constant_override("v_separation", 7)
 		col.add_child(grid)
 		_sections[sec] = [head, grid]
 		for i in items.size():
@@ -389,7 +405,7 @@ func _build_viewport() -> void:
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	col.add_child(spacer)
-	_foot_label = _label("", 13, DIM, 400)
+	_foot_label = _label("", 14, DIM, 400)
 	_foot_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	col.add_child(_foot_label)
 
@@ -398,7 +414,7 @@ func _build_viewport() -> void:
 func _section_head(sec: String) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
-	var l := _label(sec.to_upper(), 12, _mute, 600)
+	var l := _label(sec.to_upper(), 13, _mute, 600)
 	l.add_theme_constant_override("outline_size", 0)
 	row.add_child(l)
 	_heads.append(l)
@@ -431,7 +447,7 @@ func _tile(i: int, segment: bool) -> PanelContainer:
 	var l := _label(it.label, 18 if segment else 19, LABEL, 500)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	v.add_child(l)
-	var val := _label("", 16, _accent, 400)
+	var val := _label("", 18, VALUE_INK, 400)
 	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	val.visible = not segment
 	v.add_child(val)
@@ -706,19 +722,25 @@ func _style_tile(i: int) -> void:
 		return
 	var h := _hover[i]
 	var chosen := items[i].selected.is_valid() and bool(items[i].selected.call())
+	# Selection and hover live on different channels. Selection is a FILL, hover is an
+	# OUTLINE. They used to be the same picture (accent border over a lifted fill), so
+	# pointing at any tile made it look like the mode you were in, and the mode you were
+	# actually in disappeared. Now the current mode stays filled whatever the ray is on.
 	var base_bg := _hot if chosen else _tile_bg
-	var base_border := _accent if chosen else _line
-	var lit := clampf(h + (0.35 if chosen else 0.0), 0.0, 1.0)
-	sb.bg_color = base_bg.lerp(_hot, h)
-	sb.border_color = base_border.lerp(_accent, h)
-	sb.set_border_width_all(1 + int(round(h * 1.2)))
-	sb.shadow_size = int(round(lit * 14.0))
-	var g := _glow
-	g.a = 0.55 * lit
-	sb.shadow_color = g
+	# The hovered fill stops well short of the selected fill, and the selected border is
+	# a full pixel heavier than any hover can reach. Both cues have to survive the case
+	# that matters: pointing at GROUND while you are still in FLAME.
+	sb.bg_color = base_bg.lerp(_hot, h * 0.22)
+	sb.border_color = (_accent if chosen else _line).lerp(_accent, h)
+	sb.set_border_width_all(3 if chosen else 1 + int(round(h)))
+	# No halo. A 14 px glow behind every hover, and behind the selected mode as well,
+	# put a soft bloom across the panel that read as the whole thing lighting up rather
+	# than one control being pointed at.
+	sb.shadow_size = 0
 	sb.shadow_offset = Vector2.ZERO
 	if _values[i] != null:
-		_values[i].add_theme_color_override("font_color", _accent.lerp(Color.WHITE, _pulse[i]))
+		var ink := _accent if chosen else VALUE_INK.lerp(_accent, h)
+		_values[i].add_theme_color_override("font_color", ink.lerp(Color.WHITE, _pulse[i]))
 	if _labels[i] != null:
 		_labels[i].add_theme_color_override("font_color",
 			LABEL if (chosen or h > 0.0) else LABEL.darkened(0.08))

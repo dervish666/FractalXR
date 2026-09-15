@@ -24,6 +24,7 @@ var _quad: MeshInstance3D
 var _head: Node3D
 var _shown := 0.0
 var _target := 0.0
+var _mode := "flame"
 
 
 func setup(head: Node3D) -> void:
@@ -31,6 +32,15 @@ func setup(head: Node3D) -> void:
 	visible = false
 	_build_viewport()
 	_build_quad()
+
+
+## The physical buttons stay put, but their meaning changes by mode. Keeping this card
+## in step with the active mode avoids a perfectly accurate flame diagram becoming a
+## misleading tree or ground tutorial.
+func set_mode(mode: String) -> void:
+	_mode = mode
+	if _card != null:
+		(_card as ControlsCard).set_mode(mode)
 
 
 func is_open() -> bool:
@@ -87,6 +97,7 @@ func _build_viewport() -> void:
 	add_child(_vp)
 
 	_card = ControlsCard.new()
+	(_card as ControlsCard).set_mode(_mode)
 	_card.size = Vector2(ControlsCard.CARD)
 	_card.modulate.a = 0.0
 	_vp.add_child(_card)
@@ -129,13 +140,15 @@ class ControlsCard extends Control:
 
 	const CARD := Vector2(1600, 900)
 
-	const BG := Color(0.055, 0.075, 0.115, 0.96)
-	const BORDER := Color(0.30, 0.38, 0.50, 0.6)
-	const SHELL := Color(0.105, 0.135, 0.195, 1.0)   # controller body
+	# Same ink as the wrist menu, so the two surfaces read as one instrument rather than
+	# two apps. WristMenu owns the values; they are named here, not re-invented.
+	const BG := Color(0.063, 0.082, 0.122, 0.96)     # WristMenu.PANEL_INK, opened up
+	const BORDER := Color(0.224, 0.267, 0.353, 0.6)  # WristMenu._line
+	const SHELL := Color(0.106, 0.137, 0.188, 1.0)   # controller body, WristMenu.TILE_INK
 	const SHELL_EDGE := Color(0.34, 0.43, 0.58, 1.0)
 	const PART := Color(0.16, 0.21, 0.31, 1.0)       # stick, buttons, trigger
-	const LABEL := Color(0.90, 0.93, 0.98)
-	const DIM := Color(0.62, 0.70, 0.80)
+	const LABEL := Color("#EDF1F8")                  # WristMenu.LABEL
+	const DIM := Color("#B8C3D4")                    # WristMenu.VALUE_INK
 	const ACCENT := Color(0.98, 0.62, 0.80)
 	const HAIR := Color(0.45, 0.55, 0.72, 0.8)       # callout lines
 
@@ -147,37 +160,91 @@ class ControlsCard extends Control:
 	const LEFT_EDGE := 380.0     # right edge of the left-hand label column
 	const RIGHT_EDGE := 1220.0   # left edge of the right-hand label column
 	const COLUMN := 360.0
+	var _mode := "flame"
+	## Strings that ran past the space they were drawn in. draw_string clips silently, so
+	## a line that is one word too long simply loses its tail and the PNG still saves.
+	## card_shot.gd reads this after the draw and fails on anything in it.
+	var overflow: PackedStringArray = PackedStringArray()
+
+	func set_mode(mode: String) -> void:
+		_mode = mode
+		queue_redraw()
+
+	## Space Grotesk, the wrist menu's face, so the card is not a different application
+	## drawn in the system font. Falls back to the system face if the asset is missing.
+	static func _face() -> Font:
+		return WristMenu._font(500)
 
 	func _draw() -> void:
-		var font := ThemeDB.fallback_font
+		var font := _face()
+		overflow.clear()
 		_rounded(Rect2(Vector2.ZERO, CARD), 34, BG, BORDER, 3)
 
 		draw_string(font, Vector2(0, 104), "FractalXR", HORIZONTAL_ALIGNMENT_CENTER,
 			CARD.x, TITLE_SIZE, LABEL)
-		draw_string(font, Vector2(0, 152), "grab it, pull it open, fly through it",
+		var subtitle := "grab it, pull it open, fly through it"
+		if _mode == "tree":
+			subtitle = "point at the floor and grow a living forest"
+		elif _mode == "ground":
+			subtitle = "walk a Mandelbrot landscape in your room"
+		elif _mode == "bulb":
+			subtitle = "a solid you can pick up and turn over"
+		draw_string(font, Vector2(0, 152), subtitle,
 			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, SUB_SIZE, DIM)
 
 		var left := _controller(Vector2(520, 470), -1.0, "X", "Y", "Left")
 		var right := _controller(Vector2(1080, 470), 1.0, "A", "B", "Right")
 
-		_callout(left["trigger"], 320.0, true, ["Previous flame"])
-		_callout(left["stick"], 470.0, true, ["Grow and shrink"])
-		_callout(left["grip"], 650.0, true, ["Hold to grab", "and move it"])
-		_callout(right["trigger"], 320.0, false, ["Next flame"])
-		_callout(right["stick"], 470.0, false, ["Spin it,", "push it away"])
-		_callout(right["grip"], 650.0, false, ["Both grips: scale", "and fly through"])
+		# Every string below is written against the handler that actually runs. The
+		# triggers branch in main.gd `_process`; the grips are read by WorldGrab in every
+		# mode but Ground, where they drag the field instead.
+		var left_trigger := PackedStringArray(["Previous flame"])
+		var left_stick := PackedStringArray(["Grow and shrink"])
+		var right_trigger := PackedStringArray(["Next flame"])
+		var right_stick := PackedStringArray(["Spin it,", "push it away"])
+		var left_grip := PackedStringArray(["Hold to grab", "and move it"])
+		var right_grip := PackedStringArray(["Both grips: scale", "and fly through"])
+		var mode_note := "Left wrist up for the menu:  FLAME · BULB · GROUND · TREE"
+		if _mode == "tree":
+			left_trigger = PackedStringArray(["Regrow", "every tree"])
+			right_trigger = PackedStringArray(["Plant a tree", "at the point"])
+			right_stick = PackedStringArray(["Species", "left / right"])
+			# The grips move the whole grove, hero and planted alike: they are one cloud.
+			left_grip = PackedStringArray(["Hold to grab", "the whole grove"])
+			right_grip = PackedStringArray(["Both grips:", "scale the grove"])
+			mode_note = "The first tree is yours to grab. The floor grows the rest; CLEAR removes them."
+		elif _mode == "ground":
+			left_trigger = PackedStringArray(["Glide to", "the point"])
+			right_trigger = PackedStringArray(["Glide to", "the point"])
+			left_stick = PackedStringArray(["Walk", "the ground"])
+			right_stick = PackedStringArray(["Turn + zoom", "the ground"])
+			# Ground has no object to hold. The grips drag and scale the field under you.
+			left_grip = PackedStringArray(["Hold to drag", "the ground"])
+			right_grip = PackedStringArray(["Both grips:", "zoom the ground"])
+			mode_note = "PASSTHRU shows your room; INSIDE opens the filled set to it"
+		elif _mode == "bulb":
+			left_trigger = PackedStringArray(["Previous bulb"])
+			right_trigger = PackedStringArray(["Next bulb"])
+			mode_note = "It arrives hand-sized. Both grips make it a room; SURFACE changes how it is drawn."
+		_callout(left["trigger"], 320.0, true, left_trigger)
+		_callout(left["stick"], 470.0, true, left_stick)
+		_callout(left["grip"], 650.0, true, left_grip)
+		_callout(right["trigger"], 320.0, false, right_trigger)
+		_callout(right["stick"], 470.0, false, right_stick)
+		_callout(right["grip"], 650.0, false, right_grip)
 
-		# The one thing nobody discovers on their own.
-		draw_string(font, Vector2(0, CARD.y - 112),
-			"Flame mode shown. Left wrist up for the menu: FLAME · BULB · GROUND · TREE",
-			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, NOTE_SIZE, DIM)
-		draw_string(font, Vector2(0, CARD.y - 52), "Pull either trigger to begin",
+		# The two things nobody discovers on their own, in the order they need them:
+		# how to leave this card, then where the rest of the app is hiding.
+		draw_string(font, Vector2(0, CARD.y - 108), "Pull either trigger to begin",
 			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, LABEL_SIZE, ACCENT)
+		_fits(font, mode_note, NOTE_SIZE, CARD.x - 80.0)
+		draw_string(font, Vector2(0, CARD.y - 52), mode_note,
+			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, NOTE_SIZE, DIM)
 
 	## One controller schematic. `dir` is +1 for the right hand, -1 mirrors it. Returns the
 	## anchor point of each feature so the callout lines attach to the art, not to guesses.
 	func _controller(o: Vector2, dir: float, btn_a: String, btn_b: String, caption: String) -> Dictionary:
-		var font := ThemeDB.fallback_font
+		var font := _face()
 
 		# Handle first, so the face plate overlaps its top.
 		_rounded(Rect2(o + Vector2(-52, 30), Vector2(104, 210)), 52, SHELL, SHELL_EDGE, 3)
@@ -213,7 +280,7 @@ class ControlsCard extends Control:
 		}
 
 	func _button(c: Vector2, text: String) -> void:
-		var font := ThemeDB.fallback_font
+		var font := _face()
 		draw_circle(c, 25, PART)
 		draw_arc(c, 25, 0, TAU, 28, SHELL_EDGE, 3.0, true)
 		var sz := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, BTN_SIZE)
@@ -223,7 +290,7 @@ class ControlsCard extends Control:
 	## A hairline from a feature out to a block of text, so nothing is ambiguous about which
 	## button a label belongs to.
 	func _callout(from: Vector2, y: float, left_side: bool, lines: PackedStringArray) -> void:
-		var font := ThemeDB.fallback_font
+		var font := _face()
 		var edge := LEFT_EDGE if left_side else RIGHT_EDGE
 		var stub := edge + (20.0 if left_side else -20.0)
 		draw_line(from, Vector2(stub, y), HAIR, 2.0, true)
@@ -232,8 +299,24 @@ class ControlsCard extends Control:
 		for line in lines:
 			var x := edge - COLUMN if left_side else edge
 			var align := HORIZONTAL_ALIGNMENT_RIGHT if left_side else HORIZONTAL_ALIGNMENT_LEFT
+			_fits(font, line, LABEL_SIZE, COLUMN)
 			draw_string(font, Vector2(x, ty), line, align, COLUMN, LABEL_SIZE, LABEL)
 			ty += LABEL_SIZE + 8
+
+	## Measure before drawing. Everything on this card is positioned by hand against CARD,
+	## so the only thing standing between a copy edit and a truncated instruction is this.
+	func _fits(font: Font, text: String, size: int, width: float) -> void:
+		if font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > width:
+			overflow.append("%s (%dpx > %d)" % [text,
+				int(font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x), int(width)])
+
+	## For card_shot.gd's negative control: prove _fits can actually report something.
+	func _fits_probe() -> bool:
+		var before := overflow.size()
+		_fits(_face(), "a string far too long to fit in forty pixels of column", LABEL_SIZE, 40.0)
+		var fired := overflow.size() > before
+		overflow.clear()
+		return fired
 
 	func _rounded(r: Rect2, radius: int, bg: Color, edge: Color, width: int) -> void:
 		var b := StyleBoxFlat.new()

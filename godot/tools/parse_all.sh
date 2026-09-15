@@ -15,7 +15,7 @@ files=0; errors=0
 while IFS= read -r f; do
 	files=$((files+1))
 	if check "$f"; then errors=$((errors+1)); echo "PARSE FAIL $f"; fi
-done < <(find scripts tools -name '*.gd' | sort)
+done < <(cd "$PROJ" && find scripts tools -name '*.gd' | sort)
 # A fresh checkout (CI) has no .spike-out yet; without the directory the control file
 # was never written and its "parse" read as clean, which is exactly the failure this
 # control exists to catch.
@@ -24,5 +24,8 @@ printf 'extends Node\nfunc _ready() -> void:\n\tvar x = (\n' > "$PROJ/.spike-out
 if [ ! -s "$PROJ/.spike-out/broken_control.gd" ]; then echo "PARSEALL FAIL could not write the control file"; exit 1; fi
 control=PASS
 if check .spike-out/broken_control.gd; then control=FAIL; fi
-verdict=PASS; [ "$errors" -eq 0 ] && [ "$control" = FAIL ] || verdict=FAIL
+# Zero files parsed is not a clean run, it is a run that never happened. The find above
+# used to be relative to the caller's directory, so invoking this from the repo root (which
+# is how every other tool here is invoked) printed PASS files=0 and checked nothing.
+verdict=PASS; [ "$errors" -eq 0 ] && [ "$control" = FAIL ] && [ "$files" -gt 0 ] || verdict=FAIL
 echo "PARSEALL $verdict files=$files errors=$errors control=$control"

@@ -5,6 +5,67 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Fixed
+- **The trigger no longer walks the flame gallery behind your back in bulb mode.** Both
+  triggers fell through to `_morph_to_preset`, which advanced `preset_idx` and set up a
+  morph that `_tick_morph` then discarded because bulbs cannot morph. Nothing moved, so
+  it looked like a dead button; leaving bulb mode then loaded whichever flame you had
+  silently skipped to. They now step the bulb gallery, which is what the card says and
+  what the wrist menu already did.
+
+### Changed
+- **The wrist panel is a dark instrument again.** The ground was a 45% tint of the
+  palette and every value string was drawn in the accent, so a flame menu showed
+  twenty-odd bright strings at the same volume and none of them told you anything.
+  The panel and tiles are near-neutral with an 8-10% tint, values read in neutral ink,
+  and the accent is spent only on the selected mode and whatever the ray is on. The
+  palette still shows, in the ribbon under the title.
+- **Selection and hover stopped looking identical.** Both were "accent border over a
+  lifted fill", so pointing at GROUND made it look like the mode you were in and the
+  mode you were actually in vanished. Selection is now a fill with a 3 px border;
+  hover is an outline with a much smaller fill change. The 14 px glow behind every
+  hovered and selected tile is gone: it bloomed across the panel and read as the whole
+  thing lighting up rather than one control being pointed at.
+- **Values and section headers are bigger** (16 -> 18 and 12 -> 13), paid for out of
+  the gaps between rows rather than out of the tiles, because a tile's rectangle is its
+  hit target.
+- **The controls card matches the wrist panel.** Same Space Grotesk, same ink. It had
+  been drawing in the system font on its own blue-grey palette.
+- **The controls card tells the truth per mode.** Bulb had no branch at all and was
+  showing the flame card with "Flame mode shown" under it. Ground and tree were being
+  told their grips would "scale and fly through", which is the flame behaviour: ground
+  grips drag and zoom the field, tree grips move the whole grove. "Pull either trigger
+  to begin" now sits above the mode note instead of under it.
+- **Tree canopies keep their leaves.** Leaf gain 0.6 -> 0.25 and the leaf colour spans
+  the top three palette stops instead of the top two. Measured on a fixed forest and
+  camera, white-clipped pixels fall from 3.4% of lit pixels to 0.2% while lit coverage
+  falls only 6%: the clusters stop merging into flat white without the canopy going dim.
+- **Branch colour runs smoothly from trunk to tip.** It was keyed to the integer
+  recursion level, which drew the tree in hard bands of colour. It is now 70% normalised
+  height and 30% level, computed from the undeformed, ungrown position so wind and
+  growth cannot slide the palette along the trunk.
+- **Trunks are visible against the void.** The darkest palette stop is near-black in most
+  themes and the trunk sat on it under a 0.25 ambient floor, so canopies hung in mid-air.
+  The stop is lifted 20% toward the next one.
+- **Bulb splats are lit by their own normals.** The cloud already fetches a normal to
+  orient each disc; using it for one diffuse term as well turns a uniformly bright mass
+  into a solid with folds in it. World-space key, so the light stays with the scene
+  through head movement and grab, and identical in both eyes. RGB only: silhouette,
+  opacity and sort order are untouched. `splat_light = 0` restores the old look exactly.
+
+### Added
+- **A ring on the floor where the next tree will take root.** Drawn from exactly the hit
+  `_plant_tree_at` would be given, under exactly the conditions the trigger plants under.
+  At capacity the ring goes away and the wrist panel says `forest full · CLEAR to replant`.
+- **The capture tools stopped lying.** `menu_shot` drove a hand-written fixture with three
+  mode segments where the app has four and a tree-only CLEAR tile in the flame layout;
+  every judgement made from those images was a judgement about the fixture. It now drives
+  the real `main.tscn` through all four modes and three palettes, and fails when a visible
+  tile's rectangle leaves the 760x980 panel. `card_shot` captures all four modes and fails
+  when a drawn string is wider than the space it was given. Both prove their own check can
+  fail before reporting a pass. The geometry check earned its keep immediately: the type-size
+  increase above pushed PASSTHRU, HELP and EXIT 27 px off the bottom of the flame panel.
+
 ## [0.9.0] - 2026-09-12
 
 The first release that is mostly the native Quest build. Web entries are unchanged in

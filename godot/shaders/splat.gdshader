@@ -45,6 +45,9 @@ const float BLUR_PX2 = 0.3;
 // of pixels each over the whole view, 147k of them, alpha blended — measured 2fps and a
 // hard quit. Fill rate is the entire cost of this renderer.
 const float MAX_PIXEL_RADIUS = 192.0;
+// The key light, in world space. High, a little to the right and a little in front:
+// the direction a lamp would be if you were holding the thing up to look at it.
+const vec3 KEY_DIR = vec3(0.5145, 0.8231, 0.2401);   // normalize(0.5, 0.8, 0.3)
 
 uniform sampler2D state_tex : filter_nearest, source_color;
 uniform sampler2D normal_tex : filter_nearest;
@@ -95,6 +98,16 @@ uniform vec3 density_centre = vec3(0.0);
 uniform int tex_size = 2048;
 uniform float splat_radius = 0.026;
 uniform float brightness = 0.3;
+// How much of the splat's colour comes from which way its surface faces. 0 is the old
+// look exactly, for an A/B against any capture taken before this existed.
+//
+// The cloud already knows its normals: they are what orients each disc into the surface.
+// Using them for shade as well costs one dot product per splat in a shader that was
+// already fetching the normal, and it is the difference between a bulb that reads as a
+// solid with folds in it and one that reads as a uniformly bright fog in the shape of a
+// bulb. Applied to RGB only: the silhouette, the opacity and the sort order are the
+// splat rasteriser's business and none of them change.
+uniform float splat_light = 0.35;
 uniform float sharpness = 3.0;
 uniform vec3 cloud_center = vec3(0.0);
 uniform float cloud_fit = 1.0;
@@ -161,6 +174,7 @@ void vertex() {
 	// --- the splat's three axes, in VIEW space -----------------------------------
 	// Together they are the RS matrix of 3D Gaussian splatting: cov3D = RS * RS^T.
 	vec3 a1, a2, a3;
+	float shade = 1.0;
 	if (use_normals) {
 		// The tangent frame is built in LOCAL space, from the same formula
 		// bake_shape.glsl uses, which is what lets the bake send an angle instead of
@@ -197,6 +211,14 @@ void vertex() {
 		a1 = (MODELVIEW_MATRIX * vec4(t1 * l1, 0.0)).xyz;
 		a2 = (MODELVIEW_MATRIX * vec4(t2 * l2, 0.0)).xyz;
 		a3 = (MODELVIEW_MATRIX * vec4(nl * (splat_thin * l1), 0.0)).xyz;
+		// The key is in WORLD space, not view space: a light welded to the head would
+		// slide across the surface as you looked around, and would land differently in
+		// each eye. The cloud's basis is uniformly scaled, so the model matrix carries
+		// the normal without needing its inverse transpose.
+		vec3 nw = normalize((MODEL_MATRIX * vec4(nl, 0.0)).xyz);
+		// A high, slightly-to-the-right key, and a 0.45 floor so a face turned away goes
+		// dim rather than black: the recesses have to keep their colour.
+		shade = mix(1.0, 0.45 + 0.55 * max(dot(nw, KEY_DIR), 0.0), splat_light);
 	} else {
 		// No surface to lie in: an isotropic Gaussian, already in view space.
 		a1 = vec3(r, 0.0, 0.0);
@@ -247,7 +269,7 @@ void vertex() {
 	}
 
 	v_alpha = alpha;
-	v_col = palette(s.w) * brightness;
+	v_col = palette(s.w) * brightness * shade;
 
 	if (cull) {
 		POSITION = vec4(2.0, 2.0, 2.0, 1.0);   // outside the clip volume

@@ -52,6 +52,10 @@ uniform float mesh_spacing = 0.06;
 uniform float bump_strength = 1.0;
 uniform vec3 light_dir = vec3(0.5, 0.5, 0.35);   // a low sun: terrain reads by its shadows
 uniform vec3 inside_colour : source_color = vec3(0.03, 0.02, 0.05);
+// With the alpha-blend environment active, discard the filled set so the physical room
+// shows through it. Discarding keeps the exterior in the fast opaque path instead of
+// making the entire kilometre-scale ground plane blend every frame.
+uniform float inside_passthrough = 0.0;
 uniform float brightness = 1.0;
 uniform vec3 pal0;
 uniform vec3 pal1;
@@ -231,6 +235,7 @@ void fragment() {
 	vec3 col = palette(v);
 	col *= mix(1.0, 0.45 + 1.1 * s.a, texture_strength);
 	float inside = clamp(s.b, 0.0, 1.0);
+	if (inside_passthrough > 0.5 && inside > 0.5) discard;
 	col = mix(col, inside_colour * (0.4 + 1.2 * s.a), inside);
 
 	// Relief: a height from the data and its normal from the neighbouring texels of the

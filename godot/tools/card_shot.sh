@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Render the controls card to .spike-out/help_card.png. Imports first, for the same reason
-# selftest.sh does: a --script run does not rescan the filesystem.
+# Render the controls card in every mode to .spike-out/help_card_<mode>.png. Imports first,
+# for the same reason selftest.sh does: a --script run does not rescan the filesystem.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 mkdir -p "$PROJ/.spike-out"

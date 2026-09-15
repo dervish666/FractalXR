@@ -19,6 +19,11 @@ uniform vec3 tree_origin = vec3(0.0);
 uniform vec3 tree_up = vec3(0.0, 1.0, 0.0);
 uniform vec3 wind_dir = vec3(1.0, 0.0, 0.0);
 uniform float tree_scale = 1.0;
+// Additive discs stack. At 0.6 a dozen overlapping leaves reached white before the
+// Environment glow had even started, and whole regions of the canopy merged into one
+// flat blob with no cluster left in it. This is the one number that decides whether
+// the canopy reads as leaves or as fog.
+uniform float leaf_gain = 0.25;
 
 varying vec2 v_uv;
 varying float v_hue;
@@ -54,7 +59,10 @@ void fragment() {
 	float d = length(v_uv) * 2.0;
 	if (d > 1.0) { discard; }
 	float a = pow(1.0 - d, 1.6);
-	vec3 c = mix(pal3, pal4, v_hue);
-	ALBEDO = c * a * brightness * 0.6;
+	// Across the top three stops, not the top two. pal3..pal4 is a narrow bright band:
+	// every leaf came out nearly the same colour, so a cluster had no internal contrast
+	// to survive the additive stacking. pal2 gives the canopy somewhere darker to sit.
+	vec3 c = (v_hue < 0.5) ? mix(pal2, pal3, v_hue * 2.0) : mix(pal3, pal4, (v_hue - 0.5) * 2.0);
+	ALBEDO = c * a * brightness * leaf_gain;
 	ALPHA = a;
 }

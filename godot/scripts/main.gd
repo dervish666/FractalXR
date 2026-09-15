@@ -101,8 +101,26 @@ var cloud := ParticleCloud.new()
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
 ## so it shares grabs and framing; SURFACE picks splats or a step budget.
 var march := BulbMarch.new()
-const SURFACE_STEPS := [0, 48, 96, 160]
-const SURFACE_NAMES := ["splats", "march 48", "march 96", "march 160"]
+# This DE needs roughly 48 trace steps to reach a true exterior surface. Lower rungs
+# painted the bounding volume or punched holes, so the performance budget lives in
+# resolution and post-hit shading rather than a misleading step-count preview.
+const SURFACE_STEPS := [0, 48, 64, 80]
+const SURFACE_NAMES := ["splats", "march 48", "march 64", "march 80"]
+# Splat fill is cheap enough to use the chosen DETAIL. A raymarch is not: even the
+# normal 0.6x floor could sustain a full stereo DE trace for only a handful of frames.
+# Give the surface a dedicated quarter-ish eye buffer; the composition-layer wrist menu
+# remains native-resolution and the saved user setting comes straight back on splats.
+const MARCH_RENDER_IDX := 0
+const MARCH_RENDER_SCALE := 0.35
+# A real failure still returns to splats, but do not reject a newly selected surface on
+# a transient timing sample. At the dedicated scale normal exterior marching stays
+# below this line; sustained 60ms frames are the genuine safety concern.
+const MARCH_BAIL_MS := 60.0
+const MARCH_BAIL_FRAMES := 60
+var _march_render_saved := -1
+var _march_slow := 0
+var _march_bailed_ms := 0.0
+var _march_bailed_until := 0.0
 ## ENTER scales the shape so the roomiest hollow has this much clearance around the
 ## head. A scale-2 Mandelbox is a solid cube whose pores are 2% of its bound, so it
 ## comes out at ~27x; a negative-scale box has rooms and stays near the floor of the
@@ -135,18 +153,30 @@ var ground := FractalGround.new()
 var ground_mode := false
 ## The orbit of the point under the pointing hand, drawn above the ground.
 var orbit := OrbitTrace.new()
+## A ring where the next planted tree will take root. World-locked, like the orbit.
+var plant_marker := PlantMarker.new()
 var orbit_on := true
 ## The fourth: a fractal tree as real geometry, grown in front of you. Child of the cloud
 ## so grab, scale and spin apply; the cloud's own draw is hidden underneath it.
 var tree := FractalTree.new()
 var tree_mode := false
 const TREE_DISTANCE := 2.2        # metres in front of the head, on the floor; it towers
+## The hero tree stays full-detail. Point-planted neighbours are deliberately smaller in
+## recursion depth, so a forest adds depth without multiplying a pine's branch cap.
+const FOREST_EXTRA_MAX := 12
+const FOREST_SECONDARY_DEPTH_MAX := 6
+var _forest_trees: Array[FractalTree] = []
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
 const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
+const TREE_SPECIES_DEAD := 0.65
+const TREE_SPECIES_FIRST_S := 0.42
+const TREE_SPECIES_REPEAT_S := 0.24
 var tree_shape_idx := 0
 var tree_wind_idx := 0
 var tree_depth_idx := 0
+var _tree_species_dir := 0
+var _tree_species_timer := 0.0
 const GROUND_ITER := [256, 512, 1024, 2048, 4096, 128]
 var ground_iter_idx := 0
 const GROUND_RELIEF := ["terrain", "terraces", "ridges", "flat"]
@@ -165,6 +195,9 @@ const GROUND_BUMP := [1.0, 2.0, 0.0, 0.5]
 var ground_bump_idx := 0
 const GROUND_SKY := [0.0, 3.0, 8.0, 30.0]   # mirrored ceiling height, metres; 0 = off
 var ground_sky_idx := 0
+## With room passthrough enabled, the set's filled interior can be a real window rather
+## than a near-black patch in the relief.
+var ground_inside_room := false
 ## Ground mode draws in ~6ms, so it runs the full eye buffer; the flame's DETAIL is put
 ## back on the way out.
 const GROUND_RENDER_IDX := 2       # RENDER_STEPS[2] = 1.0
@@ -365,6 +398,7 @@ func _ready() -> void:
 	cloud.add_child(tree)
 	add_child(ground)
 	add_child(orbit)
+	add_child(plant_marker)
 
 	if not library.load_all():
 		_fail("presets: %s" % library.load_error)
@@ -451,19 +485,19 @@ func _build_menu() -> void:
 
 		WristMenu.Item.new("make", "SHAPE",
 			func(): return FractalTree.SHAPE_NAMES[tree_shape_idx],
-			func():
-				tree_shape_idx = (tree_shape_idx + 1) % FractalTree.SHAPE_NAMES.size()
-				tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx]),
-			false, _vis_tree).stepping(func(d: int):
-				tree_shape_idx = wrapi(tree_shape_idx + d, 0, FractalTree.SHAPE_NAMES.size())
-				tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])),
+			func(): _cycle_tree_shape(1),
+			false, _vis_tree).stepping(func(d: int): _cycle_tree_shape(d)),
 		WristMenu.Item.new("make", "SEED",
 			func(): return "#%d" % tree.seed_value,
 			func(): tree.reseed(),
 			false, _vis_tree),
 		WristMenu.Item.new("make", "REGROW",
-			func(): return "from seed",
-			func(): tree.regrow(),
+			func(): return "all trees",
+			func(): _regrow_forest(),
+			false, _vis_tree),
+		WristMenu.Item.new("make", "CLEAR",
+			func(): return "%d planted" % _forest_trees.size(),
+			func(): _clear_forest(),
 			false, _vis_tree),
 
 		WristMenu.Item.new("make", "RANDOM",
@@ -496,9 +530,6 @@ func _build_menu() -> void:
 			func(): return "on" if _drift else "off",
 			func(): _drift = not _drift; _drift_hold = 0.0,
 			false, _vis_cloud),
-		WristMenu.Item.new("scene", "PASSTHRU",
-			func(): return passthru_label,
-			func(): _set_passthrough(not passthrough)),
 		WristMenu.Item.new("scene", "SPIN",
 			func(): return "on" if spin else "off", func(): spin = not spin,
 			false, _vis_grab),
@@ -510,9 +541,6 @@ func _build_menu() -> void:
 		WristMenu.Item.new("scene", "CENTRE",
 			func(): return "reset", func(): _recenter(); cloud.request_measure(),
 			false, _vis_grab),
-		WristMenu.Item.new("scene", "HELP",
-			func(): return "controls", func(): help.open()),
-
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
@@ -656,7 +684,7 @@ func _build_menu() -> void:
 		# state that the GPU then faulted on. _enter_inside() stays for the desktop shot
 		# harness and for the day the interior gets a quarter-res pass with reprojection.
 		WristMenu.Item.new("look", "DETAIL",
-			func(): return "%.2fx" % RENDER_STEPS[render_idx],
+			func(): return "%.2fx" % (MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx]),
 			func(): _step_detail(1)).stepping(func(d: int): _step_detail(d)),
 		WristMenu.Item.new("look", "SET",
 			func(): return "julia" if ground.julia else "mandelbrot",
@@ -732,6 +760,12 @@ func _build_menu() -> void:
 			false, func(): return ground_mode).stepping(func(d: int):
 				ground_sky_idx = wrapi(ground_sky_idx + d, 0, GROUND_SKY.size())
 				_apply_ground_look()),
+		WristMenu.Item.new("look", "INSIDE",
+			func(): return "room" if ground_inside_room and passthrough else ("needs room" if ground_inside_room else "solid"),
+			func():
+				ground_inside_room = not ground_inside_room
+				_apply_ground_look(),
+			false, func(): return ground_mode),
 		WristMenu.Item.new("look", "HOME",
 			func(): return "reset view",
 			func(): ground.home(),
@@ -744,7 +778,7 @@ func _build_menu() -> void:
 				orbit.visible = false,
 			false, func(): return ground_mode),
 		WristMenu.Item.new("look", "DEPTH",
-			func(): return "%d · %s" % [tree.effective_depth(), _fmt_count(tree.branch_count)],
+			func(): return "%d · %s" % [tree.effective_depth(), _fmt_count(_forest_branch_count())],
 			func():
 				tree_depth_idx = (tree_depth_idx + 1) % TREE_DEPTH_DELTA.size()
 				tree.depth_delta = TREE_DEPTH_DELTA[tree_depth_idx]
@@ -757,13 +791,13 @@ func _build_menu() -> void:
 			func(): return TREE_WIND_NAMES[tree_wind_idx],
 			func():
 				tree_wind_idx = (tree_wind_idx + 1) % TREE_WIND.size()
-				tree.set_wind(TREE_WIND[tree_wind_idx]),
+				_set_forest_wind(TREE_WIND[tree_wind_idx]),
 			false, _vis_tree).stepping(func(d: int):
 				tree_wind_idx = wrapi(tree_wind_idx + d, 0, TREE_WIND.size())
-				tree.set_wind(TREE_WIND[tree_wind_idx])),
+				_set_forest_wind(TREE_WIND[tree_wind_idx])),
 		WristMenu.Item.new("look", "LEAVES",
 			func(): return "on" if tree.leaves_on else "off",
-			func(): tree.set_leaves(not tree.leaves_on),
+			func(): _set_forest_leaves(not tree.leaves_on),
 			false, _vis_tree),
 		# Double the level size and max the iterations: four times the fill for a still
 		# that is sharp out to the middle distance. The status line counts it in.
@@ -789,6 +823,12 @@ func _build_menu() -> void:
 		WristMenu.Item.new("look", "GLOW",
 			func(): return "on" if _env().glow_enabled else "off",
 			func(): _env().glow_enabled = not _env().glow_enabled),
+		# Application actions live together instead of being mixed into scene controls.
+		WristMenu.Item.new("app", "PASSTHRU",
+			func(): return passthru_label,
+			func(): _set_passthrough(not passthrough)),
+		WristMenu.Item.new("app", "HELP",
+			func(): return "controls", func(): help.open()),
 		# Two presses. The menu is driven by a ray and a trigger, and a single stray pull
 		# should not end the session; the first press arms it and says so on the tile.
 		WristMenu.Item.new("app", "EXIT",
@@ -801,7 +841,7 @@ func _build_menu() -> void:
 	]
 	menu.title = func():
 		if tree_mode:
-			return "%s  ·  %s branches" % [tree.shape.capitalize(), _fmt_count(tree.branch_count)]
+			return "%s forest  ·  %d trees" % [FractalTree.SHAPE_NAMES[tree_shape_idx].capitalize(), _forest_tree_count()]
 		if ground_mode:
 			var z := ground.zoom_factor()
 			return "%s  ·  zoom %s" % ["Julia" if ground.julia else "Mandelbrot",
@@ -809,6 +849,10 @@ func _build_menu() -> void:
 		return str(library.bulbs[bulb_idx].get("name", "?")) if bulb_mode else library.name_at(preset_idx)
 	menu.status_side = func():
 		if tree_mode:
+			# At capacity the trigger stops doing anything and the marker goes away, so
+			# say why here rather than leaving the floor silently dead.
+			if _forest_trees.size() >= FOREST_EXTRA_MAX:
+				return "forest full · CLEAR to replant"
 			var gp := tree.grow_progress()
 			return ("growing %d%%" % int(gp * 100.0)) if gp < 1.0 else "grown"
 		if ground_mode:
@@ -823,6 +867,8 @@ func _build_menu() -> void:
 			return "inside · %.1fx eye" % RENDER_STEPS[render_idx]
 		if _inside_bailed_until > _uptime:
 			return "inside bailed: %.0f ms" % _inside_bailed_ms
+		if _march_bailed_until > _uptime:
+			return "march bailed: %.0f ms" % _march_bailed_ms
 		if bulb_mode and _bulb_settle > 0:
 			return "settling"
 		if _morph_t < 1.0:
@@ -874,8 +920,12 @@ func _morph_to_preset(i: int) -> void:
 ## flame -> bulb -> ground -> flame.
 func _step_detail(d: int) -> void:
 	render_idx = wrapi(render_idx + d, 0, RENDER_STEPS.size())
+	# March mode owns its reduced eye buffer. Letting DETAIL silently lift it here is
+	# an easy path back to the GPU fault this cap was added to prevent.
+	if march.is_on():
+		render_idx = MARCH_RENDER_IDX
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		xr.render_target_size_multiplier = MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx]
 
 
 
@@ -900,24 +950,132 @@ func _set_mode(kind: String) -> void:
 		_set_ground_mode(true)
 	if want_tree and not tree_mode:
 		_set_tree_mode(true)
+	help.set_mode(kind)
 
 
 ## The tree stands on the floor in front of you and grows. The cloud underneath keeps
 ## its source but is hidden and not iterated, so the tree has the frame to itself.
 func _set_tree_mode(on: bool) -> void:
 	tree_mode = on
+	if not on:
+		plant_marker.hide_marker()
+		plant_marker.update(1.0)
 	tree.visible = on
+	for planted in _forest_trees:
+		planted.visible = on
 	cloud.set_visible_cloud(not on)
 	if on:
 		if tree.branch_count == 0:
 			tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
-		tree.set_wind(TREE_WIND[tree_wind_idx])
-		tree.regrow()
+		_set_forest_wind(TREE_WIND[tree_wind_idx])
+		_regrow_forest()
 		_recenter()
 		_apply_palette()
 	else:
+		_tree_species_dir = 0
+		_tree_species_timer = 0.0
 		_recenter()
 		cloud.request_measure()
+
+
+## The selected species controls the hero tree and the next sapling planted with the
+## trigger. Existing trees keep their species, so a forest can genuinely be mixed.
+func _cycle_tree_shape(d: int) -> void:
+	tree_shape_idx = wrapi(tree_shape_idx + d, 0, FractalTree.SHAPE_NAMES.size())
+	tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
+
+
+func _set_forest_wind(amount: float) -> void:
+	tree.set_wind(amount)
+	for planted in _forest_trees:
+		planted.set_wind(amount)
+
+
+func _set_forest_leaves(on: bool) -> void:
+	tree.set_leaves(on)
+	for planted in _forest_trees:
+		planted.set_leaves(on)
+
+
+func _set_forest_palette(pal: Array) -> void:
+	tree.set_palette(pal)
+	for planted in _forest_trees:
+		planted.set_palette(pal)
+
+
+func _regrow_forest() -> void:
+	tree.regrow()
+	for planted in _forest_trees:
+		planted.regrow()
+
+
+func _clear_forest() -> void:
+	for planted in _forest_trees:
+		planted.queue_free()
+	_forest_trees.clear()
+
+
+func _forest_tree_count() -> int:
+	return 1 + _forest_trees.size()
+
+
+func _forest_branch_count() -> int:
+	var total := tree.branch_count
+	for planted in _forest_trees:
+		total += planted.branch_count
+	return total
+
+
+## Add a new sapling exactly where the pointing ray reaches the floor. The primary tree
+## is full-detail; the added trees are capped at a forest-safe recursion depth.
+func _plant_tree_from_hand(hand: XRController3D) -> bool:
+	var hit: Variant = _hand_floor_hit(hand)
+	if hit == null:
+		return false
+	return _plant_tree_at(hit)
+
+
+func _plant_tree_at(hit: Vector2) -> bool:
+	if _forest_trees.size() >= FOREST_EXTRA_MAX:
+		print("[tree] forest full (%d planted)" % FOREST_EXTRA_MAX)
+		return false
+	var planted := FractalTree.new()
+	var species: String = FractalTree.SHAPE_NAMES[tree_shape_idx]
+	planted.shape = species
+	planted.seed_value = randi() % 100000 + 1
+	var base_depth: int = int(FractalTree.SHAPES[species]["depth"])
+	planted.depth_delta = mini(tree.effective_depth(), FOREST_SECONDARY_DEPTH_MAX) - base_depth
+	planted.build()
+	planted.set_wind(TREE_WIND[tree_wind_idx])
+	planted.set_leaves(tree.leaves_on)
+	planted.set_palette(_theme_palette())
+	cloud.add_child(planted)
+	var yaw := TAU * float(planted.seed_value % 10000) / 10000.0
+	planted.global_transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(hit.x, 0.0, hit.y))
+	planted.visible = tree_mode
+	_forest_trees.append(planted)
+	print("[tree] planted %s at %.2f, %.2f (%d/%d)" % [species, hit.x, hit.y,
+		_forest_trees.size(), FOREST_EXTRA_MAX])
+	return true
+
+
+func _step_tree_species_stick(x: float, delta: float) -> void:
+	if absf(x) < TREE_SPECIES_DEAD:
+		_tree_species_dir = 0
+		_tree_species_timer = 0.0
+		return
+	var d := 1 if x > 0.0 else -1
+	_tree_species_timer -= delta
+	if d != _tree_species_dir:
+		_tree_species_dir = d
+		_tree_species_timer = TREE_SPECIES_FIRST_S
+		_cycle_tree_shape(d)
+		return
+	elif _tree_species_timer > 0.0:
+		return
+	else:
+		_tree_species_timer = TREE_SPECIES_REPEAT_S
+		_cycle_tree_shape(d)
 
 
 func _set_ground_mode(on: bool) -> void:
@@ -964,6 +1122,27 @@ func _hand_floor_hit(hand: XRController3D) -> Variant:
 
 ## The orbit trace follows the right hand's spot on the floor, except while the wrist
 ## menu is showing (its ray is the menu's then, and the chain read as stray lines).
+## The planting ring follows the right hand's spot on the floor, under exactly the
+## conditions that let the trigger plant: tree mode, a valid floor hit, the menu and
+## help not eating the trigger, and room left in the forest.
+func _tick_plant_marker(delta: float) -> void:
+	# Exactly the conditions _handle_input plants under, and no stricter. A visible menu
+	# is not one of them: the trigger only goes to the menu when the ray is actually ON
+	# it (_menu_active), so a ring that vanished whenever the wrist panel was up would
+	# hide from you at the very moment the trigger still plants.
+	var want := tree_mode and not _menu_active and not help.is_open() \
+		and _forest_trees.size() < FOREST_EXTRA_MAX
+	if want:
+		var hit = _hand_floor_hit(right_hand)
+		if hit == null:
+			plant_marker.hide_marker()
+		else:
+			plant_marker.show_at(hit)
+	else:
+		plant_marker.hide_marker()
+	plant_marker.update(delta)
+
+
 func _tick_orbit() -> void:
 	if not orbit_on or _menu_active or menu.visible:
 		orbit.visible = false
@@ -1036,6 +1215,7 @@ func _apply_ground_look() -> void:
 	ground.set_look(&"colour_freq", GROUND_FREQ[ground_freq_idx])
 	ground.set_look(&"colour_offset", ground_hue)
 	ground.set_look(&"bump_strength", GROUND_BUMP[ground_bump_idx])
+	ground.set_look(&"inside_passthrough", 1.0 if ground_inside_room and passthrough else 0.0)
 	ground.set_sky(GROUND_SKY[ground_sky_idx])
 	# The texture channel feeds both the colour modulation and the bump, so it is only
 	# skipped in compute when neither wants it.
@@ -1453,6 +1633,10 @@ func _set_passthrough(on: bool) -> void:
 			env.background_color = Color(0, 0, 0, 1)
 		passthrough = false
 		passthru_label = "void"
+	# A selected Mandelbrot interior becomes transparent only while the room itself is
+	# being composited; leaving passthrough must restore the solid set immediately.
+	if ground_mode:
+		_apply_ground_look()
 
 
 func _recenter() -> void:
@@ -1504,6 +1688,8 @@ func _process(delta: float) -> void:
 			march.tick(_bulb, cloud.center, cloud.fit)
 		if _inside:
 			_guard_inside()
+		elif march.is_on():
+			_guard_march()
 	if not ground_mode and not tree_mode:
 		_tick_morph(delta)   # the flame and its drift wait while you are on the ground
 	if _converge > 0:
@@ -1543,6 +1729,9 @@ func _process(delta: float) -> void:
 		return
 	if tree_mode:
 		tree.tick(delta)
+		_tick_plant_marker(delta)
+		for planted in _forest_trees:
+			planted.tick(delta)
 		return
 	# The depth sort is for the head; both eyes share one order, as Spark does.
 	cloud.set_view(xr_camera.global_transform)
@@ -1553,11 +1742,10 @@ func _process(delta: float) -> void:
 #
 # Grip (either or both)  grab the cloud: one hand moves and rotates it, two hands
 #                        also scale it, so you can pull it open and fly through
-# Right stick X / Y      yaw the cloud / push it away and pull it back
+# Right stick X / Y      yaw or select tree species / push the scene away and pull it back
 # Left stick Y           scale
-# Right trigger          next preset          Left trigger   previous preset
-# A (right)              particle count       B (right)      point size
-# X (left)               reset position       Y (left)       reseed
+# Right trigger          next preset / plant tree / glide to ground point
+# Left trigger           previous preset / regrow forest / glide to ground point
 
 func _handle_input(delta: float) -> void:
 	# While the card is up the triggers only dismiss it. Both are read every frame rather
@@ -1600,7 +1788,15 @@ func _handle_input(delta: float) -> void:
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping.
 	elif grab == null or not grab.is_grabbing():
-		if absf(rs.x) > 0.15 and not menu.wants_stick():
+		if tree_mode:
+			# A tree scene does not need continuous yaw. Right-stick X previews the next
+			# planted species while its Y axis keeps the existing distance control.
+			if menu.visible:
+				_tree_species_dir = 0
+				_tree_species_timer = 0.0
+			else:
+				_step_tree_species_stick(rs.x, delta)
+		elif absf(rs.x) > 0.15 and not menu.wants_stick():
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
 			var fwd := -xr_camera.global_transform.basis.z
@@ -1609,52 +1805,115 @@ func _handle_input(delta: float) -> void:
 			var s := clampf(cloud.scale.x * (1.0 + ls.y * delta), 0.05, 40.0)
 			cloud.scale = Vector3.ONE * s
 
-	if _pressed(right_hand, "trigger_click") or _key(KEY_RIGHT):
+	# Read every button every frame, even when this mode maps it differently. Otherwise a
+	# held button becomes a phantom new press after a hand regains tracking or a mode flips.
+	var r_trigger := _pressed(right_hand, "trigger_click")
+	var l_trigger := _pressed(left_hand, "trigger_click")
+	var r_a := _pressed(right_hand, "ax_button")
+	var r_b := _pressed(right_hand, "by_button")
+	var r_stick := _pressed(right_hand, "primary_click")
+	var l_stick := _pressed(left_hand, "primary_click")
+	var l_x := _pressed(left_hand, "ax_button")
+	var l_y := _pressed(left_hand, "by_button")
+	var l_menu := _pressed(left_hand, "menu_button")
+	var r_menu := _pressed(right_hand, "menu_button")
+
+	if r_trigger or _key(KEY_RIGHT):
 		if _menu_active:
 			menu.activate()
 		elif ground_mode:
 			_ground_teleport(right_hand)
 		elif tree_mode:
-			tree.reseed()
+			_plant_tree_from_hand(right_hand)
+		elif bulb_mode:
+			# Bulb mode used to fall through to the flame morph. Nothing moved, because
+			# _tick_morph returns early for bulbs, but preset_idx advanced anyway: the
+			# trigger silently walked the flame gallery behind your back, and the flame
+			# you came back to on leaving bulb mode was not the one you left.
+			_load_bulb(bulb_idx + 1)
 		else:
 			_morph_to_preset(preset_idx + 1)
-	if _pressed(left_hand, "trigger_click") or _key(KEY_LEFT):
+	if l_trigger or _key(KEY_LEFT):
 		if ground_mode:
 			_ground_teleport(left_hand)
 		elif tree_mode:
-			tree.regrow()
+			_regrow_forest()
+		elif bulb_mode:
+			_load_bulb(bulb_idx - 1)
 		else:
 			_morph_to_preset(preset_idx - 1)
-	if _pressed(left_hand, "menu_button") or _key(KEY_D):
+	if (l_menu or _key(KEY_D)) and not ground_mode and not tree_mode:
 		_drift = not _drift
 		_drift_hold = 0.0
-	if _pressed(right_hand, "ax_button") or _key(KEY_1):
-		particle_idx = (particle_idx + 1) % PARTICLE_STEPS.size()
-		cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
-		cloud.request_measure()
-	if _pressed(right_hand, "by_button") or _key(KEY_2):
-		point_idx = (point_idx + 1) % POINT_STEPS.size()
-		_apply_point_look()
-	if _pressed(right_hand, "primary_click") or _key(KEY_3):
-		bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size()
-		_apply_point_look()
-	if _pressed(left_hand, "primary_click") or _key(KEY_4):
-		stability_idx = (stability_idx + 1) % STABILITY.size()
+
+	# Face controls never modify an invisible cloud. Each mode maps them to a visible
+	# result, which makes the controller useful without opening the wrist menu.
+	if tree_mode:
+		if r_a or _key(KEY_1):
+			_set_forest_leaves(not tree.leaves_on)
+		if r_b or _key(KEY_2):
+			tree_wind_idx = (tree_wind_idx + 1) % TREE_WIND.size()
+			_set_forest_wind(TREE_WIND[tree_wind_idx])
+		if r_stick or _key(KEY_3):
+			tree.reseed()
+		if l_stick or _key(KEY_4):
+			_cycle_tree_shape(1)
+		if l_x or _key(KEY_R):
+			_recenter()
+		if l_y or _key(KEY_5):
+			_regrow_forest()
+	elif ground_mode:
+		if r_a or _key(KEY_1):
+			orbit_on = not orbit_on
+			orbit.visible = false
+		if r_b or _key(KEY_2):
+			ground_relief_idx = (ground_relief_idx + 1) % GROUND_RELIEF.size()
+			_apply_ground_look()
+		if l_x or _key(KEY_R):
+			ground.home()
+		if l_y or _key(KEY_5):
+			ground.julia_here()
+	else:
+		if r_a or _key(KEY_1):
+			if bulb_mode:
+				coverage_idx = (coverage_idx + 1) % BULB_COVERAGE.size()
+			else:
+				particle_idx = (particle_idx + 1) % PARTICLE_STEPS.size()
+				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
+				cloud.request_measure()
+			_apply_point_look()
+		if r_b or _key(KEY_2):
+			if bulb_mode:
+				bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size()
+			else:
+				point_idx = (point_idx + 1) % POINT_STEPS.size()
+			_apply_point_look()
+		if r_stick or _key(KEY_3):
+			if bulb_mode:
+				breath_idx = (breath_idx + 1) % BREATH_STEPS.size()
+			else:
+				bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size()
+				_apply_point_look()
+		if l_stick or _key(KEY_4):
+			if bulb_mode:
+				bulb_stability_idx = (bulb_stability_idx + 1) % BULB_STABILITY.size()
+				if BULB_STABILITY[bulb_stability_idx] == 0:
+					_bake_wait = BAKE_DELAY_FRAMES
+			else:
+				stability_idx = (stability_idx + 1) % STABILITY.size()
+		if l_x or _key(KEY_R):
+			_recenter()
+			cloud.request_measure()
+		if l_y or _key(KEY_5):
+			exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size()
+			_apply_exposure()
 	if _key(KEY_W):
 		spin = not spin
-	if _pressed(left_hand, "ax_button") or _key(KEY_R):
-		_recenter()
-		cloud.request_measure()
-	if _pressed(left_hand, "by_button") or _key(KEY_5):
-		exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size()
-		_apply_exposure()
-	if _key(KEY_S):
+	if _key(KEY_S) and not ground_mode and not tree_mode:
 		cloud.request_seed()
 		_converge = CONVERGE_FRAMES
-	if _pressed(right_hand, "menu_button") or _key(KEY_6):
-		render_idx = (render_idx + 1) % RENDER_STEPS.size()
-		if xr != null:
-			xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+	if r_menu or _key(KEY_6):
+		_step_detail(1)
 
 
 ## Point size, falloff tightness and brightness move together: they are three ways of
@@ -1685,15 +1944,17 @@ func _apply_palette() -> void:
 		ground.set_palette(mixed)
 		menu.set_palette(mixed)
 		march.set_palette(mixed)
-		tree.set_palette(mixed)
+		_set_forest_palette(mixed)
 		orbit.set_palette(mixed)
+		plant_marker.set_palette(mixed)
 	else:
 		cloud.override_palette(target)
 		ground.set_palette(target)
 		menu.set_palette(target)
 		march.set_palette(target)
-		tree.set_palette(target)
+		_set_forest_palette(target)
 		orbit.set_palette(target)
+		plant_marker.set_palette(target)
 
 
 var _theme_cache: Dictionary = {}   # theme index -> Array[Vector3], parsed once
@@ -1737,9 +1998,51 @@ func _apply_surface() -> void:
 	var marching: bool = bulb_mode and SURFACE_STEPS[surface_idx] > 0
 	if not marching:
 		_leave_inside()
+		_restore_march_budget()
+	else:
+		_apply_march_budget()
 	march.set_steps(SURFACE_STEPS[surface_idx] if bulb_mode else 0)
 	if not ground_mode:
 		cloud.set_visible_cloud(not marching)
+
+
+## Marching runs for every shaded pixel in both eyes. Keep the normal render setting for
+## splats, but temporarily force the safe eye scale while a surface is selected.
+func _apply_march_budget() -> void:
+	if _march_render_saved < 0:
+		_march_render_saved = render_idx
+	render_idx = MARCH_RENDER_IDX
+	if xr != null:
+		xr.render_target_size_multiplier = MARCH_RENDER_SCALE
+
+
+func _restore_march_budget() -> void:
+	_march_slow = 0
+	if _march_render_saved < 0:
+		return
+	render_idx = _march_render_saved
+	_march_render_saved = -1
+	if xr != null:
+		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+
+
+## Outside the explicit ENTER path the user can still fill both eye buffers by bringing a
+## bulb close. Fall back to splats quickly rather than letting an experimental 24/48-step
+## surface poison the whole session.
+func _guard_march() -> void:
+	if not _xr_focused:
+		return
+	var gpu_ms := RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
+	if gpu_ms > MARCH_BAIL_MS:
+		_march_slow += 1
+	else:
+		_march_slow = 0
+	if _march_slow >= MARCH_BAIL_FRAMES:
+		_march_bailed_ms = gpu_ms
+		_march_bailed_until = _uptime + 8.0
+		print("[bulb] march bailed: %.0f ms at %s" % [gpu_ms, SURFACE_NAMES[surface_idx]])
+		surface_idx = 0
+		_apply_surface()
 
 
 ## On Forward Mobile the flam3 pass cannot run (fixed-point colour buffer, no storage
