@@ -45,6 +45,11 @@ var centre := Vector2(-0.6, 0.0)
 var wpu := WPU_BASE
 var julia := false
 var julia_c := Vector2(-0.8, 0.156)
+## Which escape-time family the tiles are filled with. ORDER IS LOAD-BEARING: it indexes
+## the switch in ground.glsl's iterate(). Append only, and keep the shader in step.
+const FORMULA_NAMES := ["mandelbrot", "burning ship", "tricorn", "celtic",
+	"perpendicular", "buffalo", "cubic", "quartic"]
+var formula := 0
 var max_iter := 256
 var texture_on := true
 var stalk := 0.0
@@ -325,6 +330,19 @@ func set_julia(on: bool) -> void:
 	invalidate()
 
 
+## Every tile in every level is wrong the moment this changes, so it is a full rebuild.
+func set_formula(i: int) -> void:
+	var n := wrapi(i, 0, FORMULA_NAMES.size())
+	if n == formula:
+		return
+	formula = n
+	invalidate()
+
+
+func formula_name() -> String:
+	return FORMULA_NAMES[formula]
+
+
 ## Julia set seeded from the point you are standing on: the classic pairing.
 func julia_here() -> void:
 	julia_c = viewer_fractal()
@@ -499,7 +517,7 @@ func _push_constant(level: int, r: Rect2i) -> PackedByteArray:
 	pc.encode_float(44, 1.0 if texture_on else 0.0)
 	pc.encode_float(48, stalk)
 	pc.encode_float(52, stalk_width)
-	pc.encode_float(56, 0.0)
+	pc.encode_s32(56, formula)
 	pc.encode_float(60, 0.0)
 	return pc
 
@@ -575,6 +593,17 @@ func set_sky(height: float) -> void:
 func set_palette(pal: Array) -> void:
 	for i in mini(5, pal.size()):
 		_material.set_shader_parameter(_PAL_NAMES[i], pal[i])
+	# The filled interior takes its colour from the theme's darkest stop, lifted toward
+	# the next one and floored. The old fixed (0.03, 0.02, 0.05) was so close to black
+	# that in passthrough the set read as a hole punched in the room rather than as the
+	# solid it is, and in the void it merged with the background entirely. It still has
+	# to be the darkest thing on the ground, so this only lifts it clear of nothing.
+	if pal.size() >= 2:
+		var a: Vector3 = pal[0]
+		var b: Vector3 = pal[1]
+		var c: Vector3 = a.lerp(b, 0.35)
+		c = Vector3(maxf(c.x, 0.055), maxf(c.y, 0.06), maxf(c.z, 0.085))
+		_material.set_shader_parameter("inside_colour", Color(c.x, c.y, c.z))
 
 
 func set_palette_cycles(n: float) -> void:

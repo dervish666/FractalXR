@@ -5,6 +5,54 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Added
+- **Eight escape-time families on the ground, not one.** SET now cycles Mandelbrot,
+  Burning Ship, Tricorn, Celtic, Perpendicular, Buffalo, Cubic and Quartic, and JULIA
+  toggles the z0/c swap on whichever of them is showing, so all sixteen are reachable.
+  Everything past Mandelbrot folds the plane with an abs or a conjugate before squaring,
+  so there is no true derivative: the folded value goes through the quadratic derivative
+  anyway, which is what every published Burning Ship distance estimate does. It is right
+  away from the fold lines and only feeds the `ridges` relief mode. The smooth iteration
+  count that drives the colour is exact for all eight, including the base change for the
+  higher powers (a cubic triples |z| per step, and subtracting a base-2 log from it puts
+  a visible stair in every colour band).
+- **`ground_shot.sh` sweeps all eight families and measures each one.** It is the only
+  thing in the repo that compiles and runs `ground.glsl` at all: `shader_check.sh` handles
+  spatial `.gdshader` files only, so until now a broken ground compute shader would have
+  reached the headset unchecked.
+
+### Fixed
+- **A and B are previous and next, in every mode.** They had been four unrelated tuning
+  dials (particle count in flame, coverage in bulb, orbit toggle in ground, leaves in
+  tree), so there was nothing to learn once. They now step the gallery the mode is of:
+  the flame, the bulb, the terrain style, the tree species. Everything they used to do is
+  still on the wrist menu, and the stick clicks took the toggles worth a thumb.
+- **Tree species was on right-stick X with a 0.65 dead zone** when every other stick in
+  the app uses 0.15, and it was gated off entirely whenever the wrist panel was showing.
+  It read as a dead control. Species is on A/B now and right-stick X turns the grove, the
+  same as it turns the cloud in every other mode.
+- **The ground's filled interior is no longer invisible.** `inside_colour` was a fixed
+  (0.03, 0.02, 0.05), near enough to black that in passthrough the set read as a hole
+  punched in the room rather than as the solid it is. It now comes from the theme's
+  darkest stop lifted toward the next one and floored, so it stays the darkest thing on
+  the ground without being nothing.
+
+### Changed
+- **The distance stops shimmering.** The orbit texture and the specular are damped where
+  the iteration bands crowd tighter than a pixel, measured as `fwidth` of the count,
+  which is what the contour fade has always used. The first attempt derived it from
+  `dFdx` of the level-0 texel offset instead; at grazing angles near the horizon that
+  derivative runs away, the damping saturated everywhere at once, and the entire ground
+  rendered as one flat plane. The comment in `ground.gdshader` says so, because the
+  broken version looks more principled than the one that works.
+- **Specular on the ground 0.25 -> 0.12.** Broad glossy patches read as wet rock.
+- **The clipmap interpolates with smooth weights instead of linearly.** Close to your
+  feet the pixel is finer than the finest texel that exists, and linearly mixing two
+  escape counts draws the diamond facets that read as blockiness. The smooth weights
+  carry no more information; they are just C1 at the texel boundaries, so the facet edges
+  go. Both `sample_level` and `relief_heights` use them, or the normal and the colour
+  disagree about where the surface is.
+
 ### Fixed
 - **The trigger no longer walks the flame gallery behind your back in bulb mode.** Both
   triggers fell through to `_morph_to_preset`, which advanced `preset_idx` and set up a

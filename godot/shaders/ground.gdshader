@@ -51,7 +51,9 @@ uniform float mesh_spacing = 0.06;
 // reads as surface grain up close and smooths out with distance on its own.
 uniform float bump_strength = 1.0;
 uniform vec3 light_dir = vec3(0.5, 0.5, 0.35);   // a low sun: terrain reads by its shadows
-uniform vec3 inside_colour : source_color = vec3(0.03, 0.02, 0.05);
+// Overwritten from the theme by FractalGround.set_palette(); this default is only what
+// a palette-less first frame draws.
+uniform vec3 inside_colour : source_color = vec3(0.06, 0.07, 0.11);
 // With the alpha-blend environment active, discard the filled set so the physical room
 // shows through it. Discarding keeps the exterior in the fast opaque path instead of
 // making the entire kilometre-scale ground plane blend every frame.
@@ -99,7 +101,15 @@ vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 	float sc = float(1 << level);
 	vec2 f = (vec2(rem) + view_frac0 + e0) / sc - 0.5;   // -0.5: texel centres
 	vec2 fl = floor(f);
-	vec2 w = f - fl;
+	// Smoothstep the weights rather than interpolate linearly. Close to your feet the
+	// pixel is finer than the finest texel that exists, so four corners get magnified
+	// over many pixels; an escape count is a step function and mixing two of them
+	// linearly draws the diamond facets that read as blockiness. The smooth weights
+	// carry no more information, but they are C1 at the texel boundaries, so the
+	// facet EDGES go. sample_level and relief_heights must use the same weights or
+	// the normal and the colour disagree about where the surface is.
+	vec2 wl = f - fl;
+	vec2 w = wl * wl * (3.0 - 2.0 * wl);
 	ivec2 base = vt + ivec2(fl);
 	// The window is N texels centred within `slack` of the viewer's texel.
 	vec2 rel = f + 0.5;
@@ -144,7 +154,15 @@ void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float 
 	float sc = float(1 << level);
 	vec2 f = (vec2(rem) + view_frac0 + e0) / sc - 0.5;
 	vec2 fl = floor(f);
-	vec2 w = f - fl;
+	// Smoothstep the weights rather than interpolate linearly. Close to your feet the
+	// pixel is finer than the finest texel that exists, so four corners get magnified
+	// over many pixels; an escape count is a step function and mixing two of them
+	// linearly draws the diamond facets that read as blockiness. The smooth weights
+	// carry no more information, but they are C1 at the texel boundaries, so the
+	// facet EDGES go. sample_level and relief_heights must use the same weights or
+	// the normal and the colour disagree about where the surface is.
+	vec2 wl = f - fl;
+	vec2 w = wl * wl * (3.0 - 2.0 * wl);
 	ivec2 base = vt + ivec2(fl);
 	vec4 t[16];
 	for (int j = 0; j < 4; j++) {
@@ -229,11 +247,25 @@ void fragment() {
 	vec4 s = mix(sa, sb, k);
 	bool valid = in0 || in1;
 
+	// How much per-texel detail this pixel can still resolve. Measured as iteration counts
+	// per pixel, which is what the contour fade below has always used: past about one
+	// count per pixel the bands are crowded tighter than the screen can show, and the
+	// orbit texture and the specular on top of it stop being detail and start being
+	// noise that lands somewhere different every frame. That is the shimmer in the
+	// distance.
+	//
+	// Do NOT derive this from dFdx of the texel offset. That was the first attempt: at
+	// grazing angles near the horizon the derivative of a level-0 texel coordinate runs
+	// away, the damping saturated everywhere at once, and the whole ground rendered as
+	// one flat plane. fwidth of the count is bounded by the data.
+	float wcount = fwidth(s.r);
+	float sharp = 1.0 - 0.7 * smoothstep(0.2, 1.6, wcount);
+
 	// Colour: log of the count through the palette (Frax's ramp), texture as a brightness
 	// modulation, the interior from its own orbit-trap channel.
 	float v = log2(1.0 + s.r) * colour_freq + colour_offset;
 	vec3 col = palette(v);
-	col *= mix(1.0, 0.45 + 1.1 * s.a, texture_strength);
+	col *= mix(1.0, 0.45 + 1.1 * s.a, texture_strength * sharp);
 	float inside = clamp(s.b, 0.0, 1.0);
 	if (inside_passthrough > 0.5 && inside > 0.5) discard;
 	col = mix(col, inside_colour * (0.4 + 1.2 * s.a), inside);
@@ -255,7 +287,11 @@ void fragment() {
 		vec3 L = normalize(light_dir);
 		float diff = max(dot(n, L), 0.0);
 		vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
-		float spec = pow(max(dot(normalize(L + V), n), 0.0), 24.0) * 0.25;
+		// 0.12, not 0.25: broad glossy patches were reading as wet rock. And no specular
+		// at all once the normal is noise, or the distance sparkles.
+		// 0.12, not 0.25: broad glossy patches read as wet rock. And no specular at
+		// all once the normal is built from texels finer than the pixel.
+		float spec = pow(max(dot(normalize(L + V), n), 0.0), 24.0) * 0.12 * sharp;
 		// Cavity: a positive Laplacian is a hollow, and hollows sit in shade. This is
 		// what stops a terrain read like a bas-relief with a torch on it.
 		float lap = (hx1 + hx0 + hz1 + hz0 - 4.0 * hc) / tm;

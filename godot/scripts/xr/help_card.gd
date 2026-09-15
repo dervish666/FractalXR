@@ -204,11 +204,14 @@ class ControlsCard extends Control:
 		var right_stick := PackedStringArray(["Spin it,", "push it away"])
 		var left_grip := PackedStringArray(["Hold to grab", "and move it"])
 		var right_grip := PackedStringArray(["Both grips: scale", "and fly through"])
+		# A and B are previous and next in every mode. Only the noun changes.
+		var face := PackedStringArray(["A · B: previous,", "next flame"])
 		var mode_note := "Left wrist up for the menu:  FLAME · BULB · GROUND · TREE"
 		if _mode == "tree":
 			left_trigger = PackedStringArray(["Regrow", "every tree"])
 			right_trigger = PackedStringArray(["Plant a tree", "at the point"])
-			right_stick = PackedStringArray(["Species", "left / right"])
+			face = PackedStringArray(["A · B: previous,", "next species"])
+			right_stick = PackedStringArray(["Turn the grove"])
 			# The grips move the whole grove, hero and planted alike: they are one cloud.
 			left_grip = PackedStringArray(["Hold to grab", "the whole grove"])
 			right_grip = PackedStringArray(["Both grips:", "scale the grove"])
@@ -218,6 +221,7 @@ class ControlsCard extends Control:
 			right_trigger = PackedStringArray(["Glide to", "the point"])
 			left_stick = PackedStringArray(["Walk", "the ground"])
 			right_stick = PackedStringArray(["Turn + zoom", "the ground"])
+			face = PackedStringArray(["A · B: previous,", "next terrain style"])
 			# Ground has no object to hold. The grips drag and scale the field under you.
 			left_grip = PackedStringArray(["Hold to drag", "the ground"])
 			right_grip = PackedStringArray(["Both grips:", "zoom the ground"])
@@ -225,13 +229,15 @@ class ControlsCard extends Control:
 		elif _mode == "bulb":
 			left_trigger = PackedStringArray(["Previous bulb"])
 			right_trigger = PackedStringArray(["Next bulb"])
+			face = PackedStringArray(["A · B: previous,", "next bulb"])
 			mode_note = "It arrives hand-sized. Both grips make it a room; SURFACE changes how it is drawn."
-		_callout(left["trigger"], 320.0, true, left_trigger)
-		_callout(left["stick"], 470.0, true, left_stick)
-		_callout(left["grip"], 650.0, true, left_grip)
-		_callout(right["trigger"], 320.0, false, right_trigger)
-		_callout(right["stick"], 470.0, false, right_stick)
-		_callout(right["grip"], 650.0, false, right_grip)
+		_callout(left["trigger"], 310.0, true, left_trigger)
+		_callout(left["stick"], 450.0, true, left_stick)
+		_callout(left["grip"], 660.0, true, left_grip)
+		_callout(right["trigger"], 310.0, false, right_trigger)
+		_callout(right["stick"], 442.0, false, right_stick)
+		_callout(right["face"], 566.0, false, face)
+		_callout(right["grip"], 690.0, false, right_grip)
 
 		# The two things nobody discovers on their own, in the order they need them:
 		# how to leave this card, then where the rest of the app is hiding.
@@ -277,6 +283,7 @@ class ControlsCard extends Control:
 			"trigger": trig.get_center() + Vector2(0, -8),
 			"grip": grip.get_center(),
 			"stick": stick,
+			"face": o + Vector2(33 * dir, 39),   # between A and B
 		}
 
 	func _button(c: Vector2, text: String) -> void:

@@ -169,14 +169,9 @@ var _forest_trees: Array[FractalTree] = []
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
 const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
-const TREE_SPECIES_DEAD := 0.65
-const TREE_SPECIES_FIRST_S := 0.42
-const TREE_SPECIES_REPEAT_S := 0.24
 var tree_shape_idx := 0
 var tree_wind_idx := 0
 var tree_depth_idx := 0
-var _tree_species_dir := 0
-var _tree_species_timer := 0.0
 const GROUND_ITER := [256, 512, 1024, 2048, 4096, 128]
 var ground_iter_idx := 0
 const GROUND_RELIEF := ["terrain", "terraces", "ridges", "flat"]
@@ -687,12 +682,17 @@ func _build_menu() -> void:
 			func(): return "%.2fx" % (MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx]),
 			func(): _step_detail(1)).stepping(func(d: int): _step_detail(d)),
 		WristMenu.Item.new("look", "SET",
-			func(): return "julia" if ground.julia else "mandelbrot",
-			func(): ground.set_julia(not ground.julia),
-			false, func(): return ground_mode),
+			func(): return ground.formula_name(),
+			func(): ground.set_formula(ground.formula + 1),
+			false, func(): return ground_mode).stepping(
+			func(d: int): ground.set_formula(ground.formula + d)),
 		WristMenu.Item.new("look", "JULIA",
-			func(): return "from here",
-			func(): ground.julia_here(),
+			func(): return "from here" if ground.julia else "off",
+			func():
+				if ground.julia:
+					ground.set_julia(false)
+				else:
+					ground.julia_here(),
 			false, func(): return ground_mode),
 		WristMenu.Item.new("look", "ITER",
 			func(): return str(GROUND_ITER[ground_iter_idx]),
@@ -844,8 +844,9 @@ func _build_menu() -> void:
 			return "%s forest  ·  %d trees" % [FractalTree.SHAPE_NAMES[tree_shape_idx].capitalize(), _forest_tree_count()]
 		if ground_mode:
 			var z := ground.zoom_factor()
-			return "%s  ·  zoom %s" % ["Julia" if ground.julia else "Mandelbrot",
-				("%.0fx" % z) if z < 1000.0 else ("%.1ex" % z)]
+			var fam: String = ground.formula_name().capitalize()
+			return "%s  ·  zoom %s" % [(fam + " julia") if ground.julia else fam,
+				_zoom_text(z)]
 		return str(library.bulbs[bulb_idx].get("name", "?")) if bulb_mode else library.name_at(preset_idx)
 	menu.status_side = func():
 		if tree_mode:
@@ -972,14 +973,78 @@ func _set_tree_mode(on: bool) -> void:
 		_recenter()
 		_apply_palette()
 	else:
-		_tree_species_dir = 0
-		_tree_species_timer = 0.0
 		_recenter()
 		cloud.request_measure()
 
 
 ## The selected species controls the hero tree and the next sapling planted with the
 ## trigger. Existing trees keep their species, so a forest can genuinely be mixed.
+## Previous (-1) or next (+1) specimen for whatever mode is showing. One place, so A and
+## B mean the same thing everywhere and a new mode has one obvious thing to implement.
+## GDScript's format strings have no %e, so "%.1ex" printed nothing and logged
+## "String formatting error: unsupported format character" once per menu refresh for as
+## long as you stayed zoomed in. The title went blank at exactly the zoom where knowing
+## the zoom starts to matter. Build the mantissa and exponent by hand.
+## The second half of the [perf] line. Appended, never inserted: see the note above the
+## print. Each field here exists because a question could not be answered from a log.
+##
+##   cpu_ms  draw_ms is the GPU alone. A session that held 12.8 ms of GPU against a
+##           13.89 ms budget and still dropped to 48 fps could have been CPU-bound or
+##           compositor-bound and the log could not say which.
+##   hz      the budget itself. 13.89 ms at 72 Hz, 11.11 ms at 90; without the refresh
+##           rate "is 12.8 ms over budget" has no answer.
+##   guard   _perf_scale. The frame-rate governor only ever surfaced as "guard NN%" on
+##           the wrist panel, so after the fact there was no way to tell whether it had
+##           intervened or the frames were simply free. A governor you cannot observe is
+##           a governor you cannot tune.
+##   mr      passthrough changes both the compositing cost and what correct looks like.
+##   mode    preset= alone is a flame name even in ground and tree, where it means
+##           nothing. This says which mode actually drew the frame, and the tail after it
+##           carries that mode's own state.
+func _perf_tail() -> String:
+	var hz := 0.0
+	if xr != null:
+		hz = xr.get_display_refresh_rate()
+	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	var head := " cpu_ms=%.3f hz=%.0f guard=%.2f mr=%s" % [
+		cpu_ms, hz, _perf_scale, "on" if passthrough else "off"]
+	if tree_mode:
+		return head + " mode=tree species=%s trees=%d branches=%d wind=%s leaves=%s" % [
+			FractalTree.SHAPE_NAMES[tree_shape_idx], _forest_tree_count(),
+			_forest_branch_count(), TREE_WIND_NAMES[tree_wind_idx],
+			"on" if tree.leaves_on else "off"]
+	if ground_mode:
+		return head + " mode=ground set=%s julia=%s zoom=%s fill=%.2f iter=%d relief=%s" % [
+			ground.formula_name().replace(" ", "_"), str(ground.julia),
+			_zoom_text(ground.zoom_factor()), ground.progress(),
+			GROUND_ITER[ground_iter_idx], GROUND_RELIEF[ground_relief_idx]]
+	if bulb_mode:
+		return head + " mode=bulb surface=%s marching=%s cover=%.2f" % [
+			SURFACE_NAMES[surface_idx].replace(" ", "_"), str(march.is_on()),
+			BULB_COVERAGE[coverage_idx]]
+	return head + " mode=flame morph=%.2f drift=%s" % [_morph_t, str(_drift)]
+
+
+func _zoom_text(z: float) -> String:
+	if z < 1000.0:
+		return "%.0fx" % z
+	var e := int(floor(log(z) / log(10.0)))
+	var m := z / pow(10.0, float(e))
+	return "%.1fe%dx" % [m, e]
+
+
+func _step_specimen(d: int) -> void:
+	if tree_mode:
+		_cycle_tree_shape(d)
+	elif ground_mode:
+		ground_relief_idx = wrapi(ground_relief_idx + d, 0, GROUND_RELIEF.size())
+		_apply_ground_look()
+	elif bulb_mode:
+		_load_bulb(bulb_idx + d)
+	else:
+		_morph_to_preset(preset_idx + d)
+
+
 func _cycle_tree_shape(d: int) -> void:
 	tree_shape_idx = wrapi(tree_shape_idx + d, 0, FractalTree.SHAPE_NAMES.size())
 	tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
@@ -1057,25 +1122,6 @@ func _plant_tree_at(hit: Vector2) -> bool:
 	print("[tree] planted %s at %.2f, %.2f (%d/%d)" % [species, hit.x, hit.y,
 		_forest_trees.size(), FOREST_EXTRA_MAX])
 	return true
-
-
-func _step_tree_species_stick(x: float, delta: float) -> void:
-	if absf(x) < TREE_SPECIES_DEAD:
-		_tree_species_dir = 0
-		_tree_species_timer = 0.0
-		return
-	var d := 1 if x > 0.0 else -1
-	_tree_species_timer -= delta
-	if d != _tree_species_dir:
-		_tree_species_dir = d
-		_tree_species_timer = TREE_SPECIES_FIRST_S
-		_cycle_tree_shape(d)
-		return
-	elif _tree_species_timer > 0.0:
-		return
-	else:
-		_tree_species_timer = TREE_SPECIES_REPEAT_S
-		_cycle_tree_shape(d)
 
 
 func _set_ground_mode(on: bool) -> void:
@@ -1788,15 +1834,7 @@ func _handle_input(delta: float) -> void:
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping.
 	elif grab == null or not grab.is_grabbing():
-		if tree_mode:
-			# A tree scene does not need continuous yaw. Right-stick X previews the next
-			# planted species while its Y axis keeps the existing distance control.
-			if menu.visible:
-				_tree_species_dir = 0
-				_tree_species_timer = 0.0
-			else:
-				_step_tree_species_stick(rs.x, delta)
-		elif absf(rs.x) > 0.15 and not menu.wants_stick():
+		if absf(rs.x) > 0.15 and not menu.wants_stick():
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
 			var fwd := -xr_camera.global_transform.basis.z
@@ -1846,48 +1884,39 @@ func _handle_input(delta: float) -> void:
 		_drift = not _drift
 		_drift_hold = 0.0
 
-	# Face controls never modify an invisible cloud. Each mode maps them to a visible
-	# result, which makes the controller useful without opening the wrist menu.
+	# A and B are previous and next, in every mode, on whatever that mode is a gallery of:
+	# the flame, the bulb, the terrain style, the tree species. They used to be four
+	# unrelated tuning dials (particle count here, leaves there), so there was nothing to
+	# learn once and no way to browse a mode without the wrist menu. Everything they used
+	# to do is still on the menu, and the stick clicks below took the toggles worth having
+	# under a thumb. Face buttons are deliberately not gated on the menu: unlike the
+	# sticks, they keep working while the wrist panel is up.
+	if r_a or _key(KEY_1):
+		_step_specimen(-1)
+	if r_b or _key(KEY_2):
+		_step_specimen(1)
+	# The rest stay mode-specific: these are the toggles worth a thumb rather than a trip
+	# to the menu, and there is no cross-mode meaning to give them.
 	if tree_mode:
-		if r_a or _key(KEY_1):
-			_set_forest_leaves(not tree.leaves_on)
-		if r_b or _key(KEY_2):
-			tree_wind_idx = (tree_wind_idx + 1) % TREE_WIND.size()
-			_set_forest_wind(TREE_WIND[tree_wind_idx])
 		if r_stick or _key(KEY_3):
 			tree.reseed()
 		if l_stick or _key(KEY_4):
-			_cycle_tree_shape(1)
+			_set_forest_leaves(not tree.leaves_on)
 		if l_x or _key(KEY_R):
 			_recenter()
 		if l_y or _key(KEY_5):
 			_regrow_forest()
 	elif ground_mode:
-		if r_a or _key(KEY_1):
+		if r_stick or _key(KEY_3):
 			orbit_on = not orbit_on
 			orbit.visible = false
-		if r_b or _key(KEY_2):
-			ground_relief_idx = (ground_relief_idx + 1) % GROUND_RELIEF.size()
-			_apply_ground_look()
+		if l_stick or _key(KEY_4):
+			ground.set_julia(not ground.julia)
 		if l_x or _key(KEY_R):
 			ground.home()
 		if l_y or _key(KEY_5):
 			ground.julia_here()
 	else:
-		if r_a or _key(KEY_1):
-			if bulb_mode:
-				coverage_idx = (coverage_idx + 1) % BULB_COVERAGE.size()
-			else:
-				particle_idx = (particle_idx + 1) % PARTICLE_STEPS.size()
-				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
-				cloud.request_measure()
-			_apply_point_look()
-		if r_b or _key(KEY_2):
-			if bulb_mode:
-				bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size()
-			else:
-				point_idx = (point_idx + 1) % POINT_STEPS.size()
-			_apply_point_look()
 		if r_stick or _key(KEY_3):
 			if bulb_mode:
 				breath_idx = (breath_idx + 1) % BREATH_STEPS.size()
@@ -2122,7 +2151,10 @@ func _update_hud(delta: float) -> void:
 	if not OS.is_debug_build():
 		return
 	var vp_size := get_viewport().get_visible_rect().size
-	print("[perf] t=%.1f fps=%.1f draw_ms=%.3f sim_ms=%.3f fov=%d dyn=%s rt=%s vp=%dx%d scale3d=%.2f preset=%s count=%d point=%.1f iters=%d eye=%dx%d" % [
+	# Everything through eye= is FROZEN in this order: tools/soak.sh pins it with a sed
+	# regex, and sed only knows \1 to \9. New fields go on the END, where soak's trailing
+	# .* absorbs them. Reordering silently empties the thermal CSV.
+	print("[perf] t=%.1f fps=%.1f draw_ms=%.3f sim_ms=%.3f fov=%d dyn=%s rt=%s vp=%dx%d scale3d=%.2f preset=%s count=%d point=%.1f iters=%d eye=%dx%d%s" % [
 		_uptime, fps, gpu, sim,
 		(xr.foveation_level if xr != null else -1),
 		str(xr.foveation_dynamic) if xr != null else "n/a",
@@ -2131,7 +2163,7 @@ func _update_hud(delta: float) -> void:
 		(str(library.bulbs[bulb_idx].get("name", "?")) + "/bulb") if bulb_mode
 			else library.name_at(preset_idx),
 		cloud.get_count(), POINT_STEPS[point_idx], ITER_STEPS[iter_idx],
-		_eye_res.x, _eye_res.y])
+		_eye_res.x, _eye_res.y, _perf_tail()])
 
 
 func _fmt_count(n: int) -> String:

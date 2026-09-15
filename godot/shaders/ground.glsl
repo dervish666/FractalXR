@@ -32,7 +32,7 @@ layout(push_constant, std430) uniform PC {
 	float tex_on;
 	float stalk;          // 0 = triangle-inequality texture, 1 = Pickover stalks
 	float stalk_width;
-	float _pad0;
+	int formula;          // index into FORMULA_NAMES (fractal_ground.gd). Append only.
 	float _pad1;
 } p;
 
@@ -40,6 +40,68 @@ const float ESC2 = 65536.0;        // escape radius squared (256^2): big radius,
 const float LOG_ESC = 5.5451774;   // log(256)
 
 vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+
+// The escape-time families, all of them one step of z -> f(z) + c.
+//
+// Everything past MANDELBROT folds the plane with an abs or a conjugate before squaring.
+// Those are not holomorphic, so there is no true derivative and no exact distance
+// estimate; the folded value is fed through the quadratic derivative anyway, which is
+// what every published Burning Ship DE does. It is right away from the fold lines and
+// wrong along them, and it only feeds the `ridges` relief mode. The smooth iteration
+// count that drives the colour is exact for every one of them.
+//
+// ORDER IS LOAD-BEARING: FORMULA_NAMES in fractal_ground.gd indexes this switch.
+// Append only.
+const int F_MANDELBROT   = 0;
+const int F_BURNING_SHIP = 1;
+const int F_TRICORN      = 2;
+const int F_CELTIC       = 3;
+const int F_PERPENDICULAR= 4;
+const int F_BUFFALO      = 5;
+const int F_CUBIC        = 6;
+const int F_QUARTIC      = 7;
+
+// How fast |z| grows per iteration. The smooth count subtracts a log in this base, so
+// getting it wrong on the higher powers puts visible steps in the colour bands.
+float degree_of(int f) {
+	if (f == F_CUBIC) return 3.0;
+	if (f == F_QUARTIC) return 4.0;
+	return 2.0;
+}
+
+// One iteration. `z` and `dz` are updated in place; `addC` is 1 for Mandelbrot-style
+// (c varies with the pixel) and 0 for Julia-style (c is fixed, so dc/dpixel is zero).
+void iterate(int f, inout vec2 z, inout vec2 dz, vec2 c, vec2 addC) {
+	vec2 zf = z;
+	if (f == F_BURNING_SHIP) {
+		zf = abs(z);
+	} else if (f == F_TRICORN) {
+		zf = vec2(z.x, -z.y);
+	} else if (f == F_PERPENDICULAR) {
+		zf = vec2(abs(z.x), z.y);
+	}
+	if (f == F_CUBIC) {
+		dz = 3.0 * cmul(cmul(z, z), dz) + addC;
+		z = cmul(cmul(z, z), z) + c;
+		return;
+	}
+	if (f == F_QUARTIC) {
+		vec2 z2 = cmul(z, z);
+		dz = 4.0 * cmul(cmul(z2, z), dz) + addC;
+		z = cmul(z2, z2) + c;
+		return;
+	}
+	dz = 2.0 * cmul(zf, dz) + addC;
+	vec2 sq = cmul(zf, zf);
+	if (f == F_CELTIC) {
+		sq.x = abs(sq.x);
+	} else if (f == F_PERPENDICULAR) {
+		sq.y = -sq.y;
+	} else if (f == F_BUFFALO) {
+		sq = vec2(abs(sq.x), -abs(sq.y));
+	}
+	z = sq + c;
+}
 
 vec4 escape(vec2 c, vec2 z0) {
 	vec2 z = z0;
@@ -53,8 +115,7 @@ vec4 escape(vec2 c, vec2 z0) {
 	int n = 0;
 	for (int i = 0; i < p.max_iter; i++) {
 		vec2 zp = z;
-		dz = 2.0 * cmul(z, dz) + addC;
-		z = cmul(z, z) + c;
+		iterate(p.formula, z, dz, c, addC);
 		m2 = dot(z, z);
 		minR2 = min(minR2, m2);
 		n = i + 1;
@@ -74,7 +135,9 @@ vec4 escape(vec2 c, vec2 z0) {
 	float avg0 = count > 1.0 ? sumPrev / (count - 1.0) : avg1;
 	if (m2 <= ESC2) return vec4(float(p.max_iter), -40.0, 1.0, clamp(sqrt(minR2), 0.0, 1.0));
 	float lm = log(m2) * 0.5;
-	float s = float(n) - log2(lm / LOG_ESC);
+	// log base d, not base 2: a cubic triples |z| each step, so the same subtraction in
+	// base 2 leaves a visible stair in every colour band.
+	float s = float(n) - log2(lm / LOG_ESC) / log2(degree_of(p.formula));
 	float de = sqrt(m2) * lm / max(1e-20, length(dz));
 	float tia = mix(avg0, avg1, clamp(s - floor(s), 0.0, 1.0));
 	float st = 1.0 - clamp(minAxis / max(1e-4, p.stalk_width), 0.0, 1.0);
