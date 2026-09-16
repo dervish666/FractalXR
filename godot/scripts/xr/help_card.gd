@@ -240,10 +240,10 @@ class ControlsCard extends Control:
 			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt"])
 			left_stick = PackedStringArray(["Grow and shrink"])
 			right_stick = PackedStringArray(["Turn it,", "push it away"])
-			face = PackedStringArray(["A · B: less,", "more detail"])
+			face = PackedStringArray(["A · B: previous,", "next sculpture"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
-			mode_note = "EDIT shows the mirrors and depth handles; UNDO takes back the last edit"
+			mode_note = "SHAPE picks the sculpture; EDIT shows the mirrors; UNDO takes back an edit"
 		_callout(left["trigger"], 310.0, true, left_trigger)
 		_callout(left["stick"], 450.0, true, left_stick)
 		_callout(left["grip"], 660.0, true, left_grip)

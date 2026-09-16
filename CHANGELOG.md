@@ -6,6 +6,20 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **Five sculptures in IFS instead of one.** SHAPE steps FRAMES, TETRA, STAR, CROSS and
+  TWIST, and so do A and B. FRAMES is the rule that was already there, unchanged to the
+  bit. TETRA and CROSS are built from tetrahedron frames, STAR from octahedron frames,
+  TWIST from cube frames with a 34 degree turn folded into each child so the corner chains
+  spiral. Every preset carries its own opening rung, so each one arrives between 585 and
+  1,885 frames whatever its branching factor. Changing shape resets the mirrors, the depth
+  and the undo the way RESET does, and deliberately leaves the tabletop pose alone: where
+  you put the sculpture is yours, not the preset's. The two mirror planes still apply on
+  top of every preset, so all five are sculptable by the same two handles.
+- **Back-face culling is on for the IFS.** IFS-1 measured no visible difference from it,
+  and the measurement holds: the frames are closed beams shaded by axis rather than by
+  facing, so a mirrored frame drawing its far faces looks like the same frame. Culling now
+  saves that fill. `ifs_check.sh` grew a winding check with a reversed-triangle control,
+  because a wrong winding is invisible until culling is on and then deletes half the shape.
 - **Sculpting the IFS by hand.** EDIT puts up two outlined mirror-plane guides, PLANE A with
   a continuous border and PLANE B with a dashed one, plus a labelled ring on the front and
   back of the sculpture. Point or reach at a grab target, hold the trigger, and the plane

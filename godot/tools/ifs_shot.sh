@@ -29,5 +29,5 @@ grep -a "IFSSHOT\|SCRIPT ERROR\|SHADER ERROR\|Parse Error" "$LOG" || { tail -20 
 # into the same directory, and a floor that another tool can top up is not a floor.
 PNGS=$(find "$OUT" -maxdepth 1 -name '*.png' ! -name 'mode-*.png' ! -name 'sculpt-*.png' | wc -l | tr -d ' ')
 echo "IFSSHOT pngs=$PNGS in $OUT"
-[ "$PNGS" -ge 19 ] || { echo "IFSSHOT FAIL expected 19 PNGs, found $PNGS"; exit 1; }
+[ "$PNGS" -ge 29 ] || { echo "IFSSHOT FAIL expected 29 PNGs, found $PNGS"; exit 1; }
 exit $RC

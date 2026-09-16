@@ -13,6 +13,33 @@ extends SceneTree
 const EPS := 1e-5
 const EXPECTED_COUNTS := [1, 9, 73, 585, 4681]
 
+## Per preset, written out rather than computed, so the check keeps its own opinion of the
+## branching factor instead of agreeing with whatever the table has come to say. counts are
+## levels 0..3; cap is what MAX_DETAIL must hand back; tris is the seed frame's own count.
+const PRESET_COUNTS := {
+	"FRAMES": [1, 9, 73, 585],
+	"TETRA": [1, 9, 73, 585],
+	"STAR": [1, 13, 157, 1885],
+	"CROSS": [1, 9, 73, 585],
+	"TWIST": [1, 9, 73, 585],
+}
+const PRESET_CAP := {"FRAMES": 4681, "TETRA": 4681, "STAR": 1885, "CROSS": 4681, "TWIST": 4681}
+const PRESET_TRIS := {"FRAMES": 144, "TETRA": 72, "STAR": 144, "CROSS": 72, "TWIST": 144}
+## FRAMES' eight children, written from the rule in the plan and not read back from the table:
+## contract by 0.35 into a corner, then mirror. The second vector is the sign of each basis
+## column, which is what says which of {I, R1, R2, R2*R1} produced that child. This is the
+## regression guard on preset 0 staying exactly what it was before there were presets.
+const FRAMES_CHILDREN := [
+	[Vector3(0.6, 0.6, 0.6), Vector3(1, 1, 1)],
+	[Vector3(-0.6, 0.6, 0.6), Vector3(-1, 1, 1)],
+	[Vector3(0.6, -0.6, 0.6), Vector3(1, -1, 1)],
+	[Vector3(-0.6, -0.6, 0.6), Vector3(-1, -1, 1)],
+	[Vector3(0.6, 0.6, -0.6), Vector3(1, 1, 1)],
+	[Vector3(-0.6, 0.6, -0.6), Vector3(-1, 1, 1)],
+	[Vector3(0.6, -0.6, -0.6), Vector3(1, -1, 1)],
+	[Vector3(-0.6, -0.6, -0.6), Vector3(-1, -1, 1)],
+]
+
 var _fails := 0
 
 
@@ -20,12 +47,17 @@ func _init() -> void:
 	var ifs := FractalIFS.new()
 	root.add_child(ifs)
 	_seed(ifs)
+	_winding(ifs)
 	_reflection()
 	_children(ifs)
 	_determinism(ifs)
 	_depth(ifs)
 	_detail(ifs)
 	_extremes(ifs)
+	_presets(ifs)
+	_preset_bounds(ifs)
+	_preset_caps(ifs)
+	_round_trip(ifs)
 	_clearance(ifs)
 	_rejection(ifs)
 	await _grab_suspend()
@@ -47,14 +79,75 @@ func _ok(name: String, pass_: bool, detail: String) -> void:
 	print("  %-22s %s  %s" % [name, "PASS" if pass_ else "FAIL", detail])
 
 
+## All three seed frames, not just the cube: each must have the triangle count its edge list
+## implies, must reach about a beam half-width past 1.0 so a preset can swap seeds without
+## re-tuning its offsets, and must publish a seed_box that actually contains its own vertices.
 func _seed(ifs: FractalIFS) -> void:
-	var verts: PackedVector3Array = ifs.seed_mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
-	var far := 0.0
-	for v in verts:
-		far = maxf(far, maxf(absf(v.x), maxf(absf(v.y), absf(v.z))))
-	_ok("seed", ifs.seed_tris == 144 and is_equal_approx(far, FractalIFS.SEED_HALF),
-		"triangles=%d vertices=%d reach=%.4f (beam half-width %.3f past 1.0)" % [
-			ifs.seed_tris, verts.size(), far, FractalIFS.BEAM_HW])
+	var lines := PackedStringArray()
+	var all_ok := true
+	for kind in ["cube", "tetra", "octa"]:
+		var want_tris: int = int(FractalIFS.FRAME_EDGES[kind].size()) * 12
+		var idx := _preset_of_seed(kind)
+		ifs.set_preset(idx)
+		var verts: PackedVector3Array = ifs.seed_mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+		var far := 0.0
+		var outside := 0.0
+		var box: AABB = ifs.seed_box.grow(1e-6)
+		for v in verts:
+			far = maxf(far, maxf(absf(v.x), maxf(absf(v.y), absf(v.z))))
+			if not box.has_point(v):
+				outside = maxf(outside, 1.0)
+		var ok: bool = ifs.seed_tris == want_tris and verts.size() == want_tris * 3 \
+			and absf(far - FractalIFS.SEED_HALF) < 0.02 and outside == 0.0
+		all_ok = all_ok and ok
+		lines.append("%s %d tri reach %.4f" % [kind, ifs.seed_tris, far])
+	# The cube is the one with a derived reach to hold to exactly, because SEED_HALF is its.
+	ifs.set_preset(0)
+	var cube_verts: PackedVector3Array = ifs.seed_mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	var cube_far := 0.0
+	for v in cube_verts:
+		cube_far = maxf(cube_far, maxf(absf(v.x), maxf(absf(v.y), absf(v.z))))
+	var exact: bool = ifs.seed_tris == 144 and is_equal_approx(cube_far, FractalIFS.SEED_HALF)
+	_defaults(ifs)
+	_ok("seed", all_ok and exact, "%s (cube exact at %.4f, beam half-width %.3f past 1.0)" % [
+		String(", ").join(lines), cube_far, FractalIFS.BEAM_HW])
+
+
+## Winding, which only started mattering when the material stopped disabling back-face culling.
+## Every triangle's geometric normal must agree with the normal its vertices carry, or half the
+## faces of a frame would be culled away and the sculpture would read as full of holes. The
+## control reverses one triangle and must be caught, or the test is measuring nothing.
+func _winding(ifs: FractalIFS) -> void:
+	var worst := 1.0
+	var checked := 0
+	var ctl := 1.0
+	for kind in ["cube", "tetra", "octa"]:
+		ifs.set_preset(_preset_of_seed(kind))
+		var arr := ifs.seed_mesh.surface_get_arrays(0)
+		var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		var n: PackedVector3Array = arr[Mesh.ARRAY_NORMAL]
+		for t in range(0, v.size(), 3):
+			var face := (v[t + 1] - v[t]).cross(v[t + 2] - v[t])
+			if face.length() < 1e-9:
+				continue
+			var dot := face.normalized().dot(n[t])
+			worst = minf(worst, dot)
+			# Control: the same triangle wound the other way.
+			ctl = minf(ctl, (v[t + 2] - v[t]).cross(v[t + 1] - v[t]).normalized().dot(n[t]))
+			checked += 1
+	ifs.set_preset(0)
+	_defaults(ifs)
+	_ok("winding", worst > 0.999 and ctl < -0.999,
+		"%d triangles, worst normal agreement %.6f, reversed control %.6f" % [checked, worst, ctl])
+
+
+## The first preset that uses a given seed frame, so a seed test can reach a frame through the
+## same set_preset the app uses rather than through a private door.
+static func _preset_of_seed(kind: String) -> int:
+	for i in FractalIFS.PRESETS.size():
+		if String(FractalIFS.PRESETS[i]["seed"]) == kind:
+			return i
+	return 0
 
 
 func _reflection() -> void:
@@ -87,32 +180,33 @@ func _reflection() -> void:
 		fixed, involution, ctl])
 
 
+## FRAMES' child maps, in order, against the values written above rather than against the
+## table they came from. Order is load-bearing downstream: the walk composes maps in this order
+## and the published buffer inherits it, so a reordered list is a changed sculpture.
 func _children(ifs: FractalIFS) -> void:
-	var maps := FractalIFS.child_maps(Vector3(1, 0, 0), 0.0, Vector3(0, 1, 0), 0.0, 0.35,
-		Vector3(0.6, 0.6, 0.6))
-	var want: Array[Vector3] = []
-	for sz in [0.6, -0.6]:
-		for sy in [0.6, -0.6]:
-			for sx in [0.6, -0.6]:
-				want.append(Vector3(sx, sy, sz))
-	var seen: Array[Vector3] = []
+	var maps := FractalIFS.child_maps(Vector3(1, 0, 0), 0.0, Vector3(0, 1, 0), 0.0,
+		FractalIFS.PRESETS[0]["maps"])
+	var off_err := 0.0
+	var basis_err := 0.0
 	var det_err := 0.0
 	var mirrored := 0
-	for m in maps:
-		seen.append(m.origin)
+	for i in mini(maps.size(), FRAMES_CHILDREN.size()):
+		var m: Transform3D = maps[i]
+		var want: Array = FRAMES_CHILDREN[i]
+		off_err = maxf(off_err, (m.origin - (want[0] as Vector3)).length())
+		var signs: Vector3 = want[1]
+		for k in 3:
+			basis_err = maxf(basis_err,
+				(FractalIFS._col(m.basis, k) - FractalIFS.AXIS[k] * (0.35 * signs[k])).length())
 		det_err = maxf(det_err, absf(absf(m.basis.determinant()) - pow(0.35, 3)))
 		if m.basis.determinant() < 0.0:
 			mirrored += 1
-	var covered := 0
-	for w in want:
-		for s in seen:
-			if (s - w).length() < EPS:
-				covered += 1
-				break
-	# Four of the eight children mirror, which is exactly why the material disables culling.
-	var pass_ := maps.size() == 8 and covered == 8 and det_err < EPS and mirrored == 4
-	_ok("child maps", pass_, "n=%d octants covered=%d/8 |det| err=%.9f mirrored=%d" % [
-		maps.size(), covered, det_err, mirrored])
+	# Four of the eight children mirror, which is why the seed's shade is keyed by axis rather
+	# than by facing: a mirrored frame has to read like its original under back-face culling.
+	var pass_ := maps.size() == 8 and off_err < EPS and basis_err < EPS and det_err < EPS \
+		and mirrored == 4
+	_ok("child maps", pass_, "n=%d offset err=%.9f basis err=%.9f |det| err=%.9f mirrored=%d" % [
+		maps.size(), off_err, basis_err, det_err, mirrored])
 
 
 func _determinism(ifs: FractalIFS) -> void:
@@ -173,7 +267,8 @@ func _detail(ifs: FractalIFS) -> void:
 	ifs.detail = 5
 	var capped := ifs.build()
 	var cap_ok: bool = capped == 4681 and ifs.levels_built == 4 and ifs.cap_note != ""
-	var params_held: bool = ifs.depth == 1.0 and ifs.plane1_offset == 0.0 and ifs.contraction == 0.35
+	var params_held: bool = ifs.depth == 1.0 and ifs.plane1_offset == 0.0 \
+		and ifs.preset == 0 and float(ifs.base[0][0]) == 0.35
 	_defaults(ifs)
 	_ok("detail counts", match_ and params_held, "0..4 = %s (want %s) params unchanged=%s" % [
 		str(counts), str(EXPECTED_COUNTS), str(params_held)])
@@ -235,15 +330,127 @@ func _extremes(ifs: FractalIFS) -> void:
 			max_tri, FractalIFS.MAX_TRIANGLES])
 
 
+## Every preset at rungs 0..3, against the counts written at the top of this file. A preset
+## whose branching factor drifted, or whose seed frame changed triangle count, shows up here as
+## a number and not as a picture nobody looked at.
+func _presets(ifs: FractalIFS) -> void:
+	var lines := PackedStringArray()
+	var all_ok := true
+	for i in FractalIFS.PRESETS.size():
+		var name_ := FractalIFS.preset_name(i)
+		var want: Array = PRESET_COUNTS[name_]
+		var got: Array[int] = []
+		for d in 4:
+			ifs.set_preset(i)
+			_planes(ifs)
+			ifs.detail = d
+			got.append(ifs.build())
+		var counts_ok := true
+		for d in 4:
+			counts_ok = counts_ok and got[d] == int(want[d])
+		var tris_ok: bool = ifs.seed_tris == int(PRESET_TRIS[name_])
+		# The rung the preset opens at has to be one the DETAIL tile can show, and has to land
+		# somewhere a headset can rebuild. Both are the point of the field existing.
+		var open: int = int(FractalIFS.PRESETS[i]["detail"])
+		var open_ok: bool = open >= 1 and open <= 4 and int(want[open]) >= 500 \
+			and int(want[open]) <= 3000
+		var drag: int = int(FractalIFS.PRESETS[i]["drag"])
+		var drag_ok: bool = drag >= 1 and drag <= open and int(want[drag]) <= 600
+		all_ok = all_ok and counts_ok and tris_ok and open_ok and drag_ok
+		lines.append("%s %s seed=%d tri opens at %d (%d frames) drags at %d (%d)" % [
+			name_, str(got), ifs.seed_tris, open, int(want[open]), drag, int(want[drag])])
+	_defaults(ifs)
+	_ok("preset counts", all_ok, String(" | ").join(lines))
+
+
+## Bounds containment for every preset at its own opening rung, plus the shrunk-box control, so
+## a frame whose beams are not axis-aligned cannot hide outside a bound that was derived from a
+## cube's half-extent.
+func _preset_bounds(ifs: FractalIFS) -> void:
+	var worst := 0.0
+	var worst_name := "none"
+	var all_ok := true
+	var ctl := INF
+	for i in FractalIFS.PRESETS.size():
+		ifs.set_preset(i)
+		_planes(ifs)
+		ifs.build()
+		var out := _worst_escape(ifs, ifs.bounds)
+		if out > worst:
+			worst = out
+			worst_name = FractalIFS.preset_name(i)
+		all_ok = all_ok and out < 1e-4
+		var shrunk := AABB(ifs.bounds.position + ifs.bounds.size * 0.05, ifs.bounds.size * 0.9)
+		ctl = minf(ctl, _worst_escape(ifs, shrunk))
+	_defaults(ifs)
+	_ok("preset bounds", all_ok and ctl > 1e-2,
+		"%d presets at their own rung, worst escape %.9f (%s), weakest shrunk-box control %.4f" % [
+			FractalIFS.PRESETS.size(), worst, worst_name, ctl])
+
+
+## Every preset driven past MAX_DETAIL at every plane extreme the editor allows. A cap has to
+## hand back a whole level whatever the branching factor is; STAR gives up a whole rung earlier
+## than the rest because twelve children per level reach the instance ceiling sooner.
+func _preset_caps(ifs: FractalIFS) -> void:
+	var lines := PackedStringArray()
+	var all_ok := true
+	for i in FractalIFS.PRESETS.size():
+		var name_ := FractalIFS.preset_name(i)
+		var want_cap: int = int(PRESET_CAP[name_])
+		var worst_n := 0
+		var worst_tri := 0
+		var ok := true
+		for case in _cases():
+			ifs.set_preset(i)
+			_planes(ifs)
+			_apply(ifs, case[1])
+			ifs.detail = FractalIFS.MAX_DETAIL
+			ifs.build()
+			worst_n = maxi(worst_n, ifs.instance_count)
+			worst_tri = maxi(worst_tri, ifs.triangle_count)
+			ok = ok and ifs.instance_count == want_cap and ifs.cap_note != "" \
+				and ifs.instance_count <= FractalIFS.MAX_INSTANCES \
+				and ifs.triangle_count <= FractalIFS.MAX_TRIANGLES
+		all_ok = all_ok and ok
+		lines.append("%s %d/%d inst %d tri" % [name_, worst_n, want_cap, worst_tri])
+	_defaults(ifs)
+	_ok("preset caps", all_ok, "at detail %d over %d cases each: %s" % [
+		FractalIFS.MAX_DETAIL, _cases().size(), String(", ").join(lines)])
+
+
+## Preset 0 after a full trip round the gallery. Nothing a preset loads may outlive it, so the
+## buffer FRAMES publishes on the way back has to be the one it published on the way out. The
+## control is a different preset's buffer, which must not match.
+func _round_trip(ifs: FractalIFS) -> void:
+	_defaults(ifs)
+	ifs.build()
+	var first: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	var first_tris := ifs.seed_tris
+	var other := PackedFloat32Array()
+	for i in range(1, FractalIFS.PRESETS.size()):
+		ifs.set_preset(i)
+		_planes(ifs)
+		ifs.build()
+		if i == 1:
+			other = ifs.get_node("Frames").multimesh.buffer
+	_defaults(ifs)
+	ifs.build()
+	var back: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	_ok("preset round trip", first == back and first != other and ifs.seed_tris == first_tris,
+		"%d presets visited, FRAMES identical on return=%s, seed %d tri, control differs=%s" % [
+			FractalIFS.PRESETS.size(), str(first == back), ifs.seed_tris, str(first != other)])
+
+
 func _clearance(ifs: FractalIFS) -> void:
 	_defaults(ifs)
 	ifs.build()
-	var c: float = ifs.contraction
-	# The nearest beam to the centre is a generation-1 beam lying along one axis at
+	var c: float = float(ifs.base[0][0])
+	# FRAMES only: the nearest beam to the centre is a generation-1 beam lying along one axis at
 	# (offset - c) on the other two, ending at (offset - c * SEED_HALF). Its capsule radius
 	# is both short half-extents of the beam.
-	var end_: float = ifs.offset.x - c * FractalIFS.SEED_HALF
-	var lat: float = ifs.offset.x - c
+	var off: Vector3 = ifs.base[0][1]
+	var end_: float = off.x - c * FractalIFS.SEED_HALF
+	var lat: float = off.x - c
 	var r := 2.0 * c * FractalIFS.BEAM_HW
 	var want := sqrt(end_ * end_ + 2.0 * lat * lat) - r
 	var got := ifs.clear_radius_at(Vector3.ZERO)
@@ -637,10 +844,13 @@ func _worst_escape(ifs: FractalIFS, box: AABB) -> float:
 	for beam in ifs.beams:
 		var c: Vector3 = beam[0]
 		var h: Vector3 = beam[1]
+		# Through the beam's own frame, not as an axis-aligned box: a tetrahedron edge runs
+		# diagonally, and walking it as if it were axis-aligned would test a shape nothing draws.
+		var b: Basis = beam[2]
 		for sx in [-1.0, 1.0]:
 			for sy in [-1.0, 1.0]:
 				for sz in [-1.0, 1.0]:
-					corners.append(c + Vector3(h.x * sx, h.y * sy, h.z * sz))
+					corners.append(c + b.x * (h.x * sx) + b.y * (h.y * sy) + b.z * (h.z * sz))
 	var lo := grown.position
 	var hi := grown.position + grown.size
 	var worst := 0.0
@@ -680,11 +890,16 @@ func _apply(ifs: FractalIFS, params: Dictionary) -> void:
 
 
 func _defaults(ifs: FractalIFS) -> void:
+	ifs.set_preset(0)
+	_planes(ifs)
+	ifs.detail = 3
+
+
+## The parameters the two handles own, back where they start. Separate from _defaults, because
+## a preset sweep needs the planes reset without also being dragged back to preset 0.
+func _planes(ifs: FractalIFS) -> void:
 	ifs.plane1_normal = FractalIFS.DEFAULT_N1
 	ifs.plane2_normal = FractalIFS.DEFAULT_N2
 	ifs.plane1_offset = 0.0
 	ifs.plane2_offset = 0.0
 	ifs.depth = 1.0
-	ifs.detail = 3
-	ifs.contraction = 0.35
-	ifs.offset = Vector3(0.6, 0.6, 0.6)

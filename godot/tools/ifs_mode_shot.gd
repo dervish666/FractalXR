@@ -22,6 +22,9 @@ extends SceneTree
 ##     under the names main.tscn already references, so a pose is a pose and a trigger is a
 ##     trigger. Capture, drag, the second controller being ignored, release, UNDO, and a mode
 ##     change mid-edit leaving no ownership behind and the snapshot restored.
+##   - The SHAPE gallery: the tile and the face buttons step it, a preset change puts the
+##     mirrors, the depth and the undo back where a new sculpture starts, and leaves the
+##     tabletop pose alone. One capture per preset through the real scene.
 ##
 ##   tools/ifs_mode_shot.sh
 
@@ -29,8 +32,17 @@ const OUT := "res://.spike-out/ifs-2026-09-16"
 ## Frames to sample the cloud's dispatch counter over. Long enough that a slow first frame
 ## cannot be mistaken for a stopped simulation.
 const SAMPLE_FRAMES := 20
+## What each preset must draw in the real scene, written here rather than asked of the table,
+## so the numbers the standalone harness reports have something to disagree with.
+const PRESET_INSTANCES := {
+	"FRAMES": 585, "TETRA": 585, "STAR": 1885, "CROSS": 585, "TWIST": 585,
+}
 
 var _fails := 0
+## The fake controllers. Made in _sculpt and kept alive for _shapes, which banks an edit of its
+## own before checking that a preset change throws it away.
+var _lt: XRControllerTracker
+var _rt: XRControllerTracker
 
 
 func _init() -> void:
@@ -59,6 +71,11 @@ func _init() -> void:
 	await _ground_pair(main)
 	await _tiles(main)
 	await _sculpt(main)
+	await _shapes(main)
+	if _lt != null:
+		XRServer.remove_tracker(_lt)
+	if _rt != null:
+		XRServer.remove_tracker(_rt)
 
 	print("IFSMODE %s failures=%d dir=%s" % ["PASS" if _fails == 0 else "FAIL", _fails, OUT])
 	quit(0 if _fails == 0 else 1)
@@ -297,6 +314,8 @@ func _tiles(main) -> void:
 func _sculpt(main) -> void:
 	var lt := _tracker(&"left_hand")
 	var rt := _tracker(&"right_hand")
+	_lt = lt
+	_rt = rt
 	# Parked out of the way to start with, and pointing nowhere near the sculpture, so the
 	# wrist panel cannot take the ray. That is asserted below rather than assumed.
 	_pose(lt, Transform3D(Basis(), Vector3(0.35, 1.05, 0.30)))
@@ -424,8 +443,106 @@ func _sculpt(main) -> void:
 			str(was_editing), str(main.ifs_edit.is_editing()), str(main.grab.suspended),
 			main.ifs.plane1_offset, mid, str(main.ifs_edit.has_undo())])
 
-	XRServer.remove_tracker(lt)
-	XRServer.remove_tracker(rt)
+
+## The gallery. A preset is a new sculpture, so the check is not only that the shape changed:
+## it is that everything the old sculpture accumulated went with it, and that the one thing the
+## user owns, where the sculpture is sitting, did not.
+func _shapes(main) -> void:
+	main._set_mode("ifs")
+	main._reset_ifs()
+	for i in 10:
+		await process_frame
+	var shape_tile = _visible_tile(main, "SHAPE")
+	if shape_tile == null:
+		_ok("shape tile", false, "no SHAPE tile visible in the make section while in IFS")
+		return
+	var first_name: String = str(shape_tile.read.call())
+	_ok("shape tile", first_name == FractalIFS.preset_name(main.ifs_preset_idx),
+		"tile reads '%s' at preset %d" % [first_name, main.ifs_preset_idx])
+
+	# Give the preset change something real to throw away: a completed edit, a moved mirror, a
+	# stretched depth and a sculpture that has been pushed somewhere. A reset that clears
+	# nothing proves nothing.
+	main.ifs_edit.set_guides(true)
+	for i in 4:
+		await process_frame
+	var knob: Vector3 = main.ifs.global_transform * Vector3(0.0, IfsEditor.KNOB_OUT, 0.0)
+	_pose(_rt, Transform3D(Basis(), knob))
+	for i in 4:
+		await process_frame
+	_rt.set_input(&"trigger_click", true)
+	for i in 4:
+		await process_frame
+	_pose(_rt, Transform3D(Basis(), main.ifs.global_transform * Vector3(0.25, IfsEditor.KNOB_OUT, 0.0)))
+	for i in 6:
+		await process_frame
+	_rt.set_input(&"trigger_click", false)
+	for i in 6:
+		await process_frame
+	main._step_ifs_depth(1)
+	main.cloud.global_transform = main.cloud.global_transform.translated(Vector3(0.13, 0.0, 0.0))
+	for i in 4:
+		await process_frame
+	var dirty: bool = main.ifs_edit.has_undo() and absf(main.ifs.plane1_offset) > 0.05 \
+		and not is_equal_approx(main.ifs.depth, main.IFS_DEPTH[0])
+	var pose_before: Transform3D = main.cloud.global_transform
+	var idx_before: int = main.ifs_preset_idx
+
+	shape_tile.advance.call()
+	for i in 6:
+		await process_frame
+	var name_now := FractalIFS.preset_name(main.ifs_preset_idx)
+	var cleared: bool = main.ifs_preset_idx == idx_before + 1 \
+		and str(shape_tile.read.call()) == name_now and name_now != first_name \
+		and main.ifs.preset == main.ifs_preset_idx \
+		and main.ifs.plane1_offset == 0.0 and main.ifs.plane2_offset == 0.0 \
+		and main.ifs.plane1_normal == FractalIFS.DEFAULT_N1 \
+		and is_equal_approx(main.ifs.depth, main.IFS_DEPTH[0]) \
+		and not main.ifs_edit.has_undo() and not main.ifs_edit.is_editing() \
+		and main.ifs.detail == main.ifs.preset_detail() \
+		and main.ifs.detail == main.IFS_DETAIL[main.ifs_detail_idx]
+	# The pose is the one thing a preset change must leave alone: a sculpture you moved must
+	# stay where you put it when you swap what it is.
+	var kept_pose: bool = main.cloud.global_transform.is_equal_approx(pose_before)
+	_ok("shape step", dirty and cleared and kept_pose,
+		"%s -> %s, had an edit to lose=%s planes/depth/undo cleared=%s detail=%d pose kept=%s" % [
+			first_name, name_now, str(dirty), str(cleared), main.ifs.detail, str(kept_pose)])
+
+	# A and B, the same ladder from the face buttons. Forward then back must land where it
+	# started, or the two directions disagree about what "next" means.
+	var before_ab: int = main.ifs_preset_idx
+	await _tap(main, KEY_2)
+	var stepped: int = main.ifs_preset_idx
+	await _tap(main, KEY_1)
+	_ok("shape a/b", stepped == wrapi(before_ab + 1, 0, FractalIFS.PRESETS.size())
+			and main.ifs_preset_idx == before_ab,
+		"B: %d -> %d, A: -> %d (of %d)" % [before_ab, stepped, main.ifs_preset_idx,
+			FractalIFS.PRESETS.size()])
+
+	# One capture of each, walked with the tile so the pictures come from the path a user
+	# takes rather than from a private setter.
+	main.ifs_edit.set_guides(false)
+	while main.ifs_preset_idx != 0:
+		shape_tile.advance.call()
+		for i in 3:
+			await process_frame
+	for p in FractalIFS.PRESETS.size():
+		for i in 6:
+			await process_frame
+		var name_ := FractalIFS.preset_name(main.ifs_preset_idx)
+		var want: int = int(PRESET_INSTANCES[name_])
+		var img := root.get_viewport().get_texture().get_image()
+		var file := "shape-%s.png" % name_.to_lower()
+		var err := img.save_png("%s/%s" % [OUT, file])
+		var lit := _lit(img)
+		_ok("shape %s" % name_.to_lower(),
+			err == OK and lit > 500 and main.ifs.instance_count == want,
+			"%s lit=%d instances=%d/%d triangles=%d build=%.2fms" % [
+				file, lit, main.ifs.instance_count, want, main.ifs.triangle_count,
+				main.ifs.build_ms])
+		shape_tile.advance.call()
+	for i in 4:
+		await process_frame
 
 
 func _tracker(n: StringName) -> XRControllerTracker:
@@ -446,6 +563,16 @@ func _pose(t: XRControllerTracker, xf: Transform3D) -> void:
 func _tile(main, label: String):
 	for it in main.menu.items:
 		if it.section == "make" and it.label == label:
+			return it
+	return null
+
+
+## The tile with this label that the CURRENT mode actually shows. IFS and TREE both have a
+## SHAPE, and taking whichever was declared first would quietly test the tree's.
+func _visible_tile(main, label: String):
+	for it in main.menu.items:
+		if it.section == "make" and it.label == label \
+				and (not it.visible_when.is_valid() or bool(it.visible_when.call())):
 			return it
 	return null
 

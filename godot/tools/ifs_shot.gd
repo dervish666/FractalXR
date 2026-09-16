@@ -3,7 +3,11 @@ extends SceneTree
 ## Standalone captures of FractalIFS: no main scene, no XR, one fixed camera and one fixed
 ## construction scale, so the frames differ only by the parameter under test. Enough of the
 ## parameter space to answer the IFS-1 question, which is whether the default rule reads as a
-## sculpture or as boxes stuffed into corners.
+## sculpture or as boxes stuffed into corners, plus an outside and an inside view of every
+## preset in the gallery at the rung that preset opens at.
+##
+## The camera is the same for every preset on purpose. A per-preset framing would flatter each
+## one in turn and make the set impossible to compare.
 ##
 ##   tools/ifs_shot.sh
 
@@ -92,6 +96,10 @@ func _diff(a: String, b: String) -> float:
 func _shoot(case: Dictionary) -> void:
 	var name: String = case["name"]
 	_defaults()
+	if case.has("preset"):
+		# The preset brings its own rung with it, the way a preset change does in the app.
+		_ifs.set_preset(int(case["preset"]))
+		_ifs.detail = _ifs.preset_detail()
 	for k in case.get("params", {}):
 		_ifs.set(k, case["params"][k])
 	_ifs.set_cull_disabled(case.get("cull", true))
@@ -114,9 +122,9 @@ func _shoot(case: Dictionary) -> void:
 	var ok: bool = err == OK and lit > 500
 	if not ok:
 		_fails += 1
-	print("IFSSHOT %-16s %s instances=%-5d triangles=%-7d build=%.2f..%.2fms lit=%d %s" % [
-		name, "PASS" if ok else "FAIL", _ifs.instance_count, _ifs.triangle_count,
-		ms.min(), ms.max(), lit, _ifs.cap_note])
+	print("IFSSHOT %-22s %s shape=%-6s detail=%d instances=%-5d triangles=%-7d build=%.2f..%.2fms lit=%d %s" % [
+		name, "PASS" if ok else "FAIL", FractalIFS.preset_name(_ifs.preset), _ifs.detail,
+		_ifs.instance_count, _ifs.triangle_count, ms.min(), ms.max(), lit, _ifs.cap_note])
 
 
 func _place(view: String) -> void:
@@ -145,7 +153,7 @@ func _lit(img: Image) -> int:
 
 func _cases() -> Array:
 	var rot30 := Vector3(1, 0, 0).rotated(Vector3(0, 0, 1), deg_to_rad(30.0))
-	return [
+	var out: Array = [
 		{"name": "default"},
 		{"name": "default-centre", "view": "centre"},
 		{"name": "depth-min", "params": {"depth": FractalIFS.DEPTH_MIN}},
@@ -157,15 +165,14 @@ func _cases() -> Array:
 		{"name": "detail-2", "params": {"detail": 2}},
 		{"name": "detail-3", "params": {"detail": 3}},
 		{"name": "detail-4", "params": {"detail": 4}},
-		# Alternatives for the readability call. Wider contraction with a smaller offset
-		# grows the children toward each other; the reverse pushes them into the corners.
-		{"name": "alt-c045-o050", "params": {"contraction": 0.45, "offset": Vector3(0.5, 0.5, 0.5)}},
-		{"name": "alt-c045-o050-centre", "params": {"contraction": 0.45,
-			"offset": Vector3(0.5, 0.5, 0.5)}, "view": "centre"},
-		{"name": "alt-c033-o066", "params": {"contraction": 0.33, "offset": Vector3(0.66, 0.66, 0.66)}},
-		{"name": "alt-c033-o066-centre", "params": {"contraction": 0.33,
-			"offset": Vector3(0.66, 0.66, 0.66)}, "view": "centre"},
-		{"name": "alt-c050-o045", "params": {"contraction": 0.5, "offset": Vector3(0.45, 0.45, 0.45)}},
+		# Alternatives for the readability call, kept from IFS-1: these are the rules FRAMES was
+		# chosen over. Written as `base` overrides now that the rule lives in the preset table,
+		# so a harness can still try a rule that never made it into the gallery.
+		{"name": "alt-c045-o050", "params": {"base": _corners(0.45, 0.5)}},
+		{"name": "alt-c045-o050-centre", "params": {"base": _corners(0.45, 0.5)}, "view": "centre"},
+		{"name": "alt-c033-o066", "params": {"base": _corners(0.33, 0.66)}},
+		{"name": "alt-c033-o066-centre", "params": {"base": _corners(0.33, 0.66)}, "view": "centre"},
+		{"name": "alt-c050-o045", "params": {"base": _corners(0.5, 0.45)}},
 		# Culling pair at the rung where a missing frame is still countable by eye, plus a
 		# recolour through the same material to prove the comparison can see a change at all.
 		{"name": "cull-disabled-d2", "params": {"detail": 2}, "keep": true},
@@ -173,14 +180,27 @@ func _cases() -> Array:
 		{"name": "palette-probe-d2", "params": {"detail": 2}, "keep": true,
 			"palette": [Color(0.06, 0.06, 0.09)]},
 	]
+	# The gallery, outside and from the middle, each at the rung its own entry opens at. FRAMES
+	# is in here as well as being "default" above: the same rule captured through the preset
+	# path is what proves the preset path produces it.
+	for i in FractalIFS.PRESETS.size():
+		var slug := FractalIFS.preset_name(i).to_lower()
+		out.append({"name": "preset-%s" % slug, "preset": i})
+		out.append({"name": "preset-%s-centre" % slug, "preset": i, "view": "centre"})
+	return out
+
+
+## A corner-pair base map list, the shape every alternative from IFS-1 had: contract by c and
+## push into the eight corners at +-o.
+static func _corners(c: float, o: float) -> Array:
+	return [[c, Vector3(o, o, o)], [c, Vector3(o, o, -o)]]
 
 
 func _defaults() -> void:
+	_ifs.set_preset(0)
 	_ifs.plane1_normal = FractalIFS.DEFAULT_N1
 	_ifs.plane2_normal = FractalIFS.DEFAULT_N2
 	_ifs.plane1_offset = 0.0
 	_ifs.plane2_offset = 0.0
 	_ifs.depth = 1.0
 	_ifs.detail = 3
-	_ifs.contraction = 0.35
-	_ifs.offset = Vector3(0.6, 0.6, 0.6)

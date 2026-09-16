@@ -301,7 +301,12 @@ dragging, depth, detail, Undo and Reset. Validate near/far picking, rotated/scal
 sculptures, menu interception, two-controller conflicts, lost tracking, release and
 reacquisition. Confirm handles track smoothly while generated geometry catches up.
 
-### IFS-4 — Enter and Return
+### IFS-4 — Enter and Return (parked 2026-09-16)
+
+Sam's call after the on-device session: Sculpt feels good and grip-scale already
+lets you lean into the shape, so Enter/Return is parked, not scheduled. Presets
+came first instead. Reopen only if a preset produces an interior worth standing in.
+
 
 Implement actual beam-clearance testing, deterministic placement, fade, snapshot
 restore and frozen Inside controls. Test blocked entry and rapid Enter/Return/mode

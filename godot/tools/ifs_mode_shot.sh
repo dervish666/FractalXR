@@ -25,7 +25,8 @@ wait "$PID"
 RC=$?
 kill "$WATCHDOG" 2>/dev/null; wait "$WATCHDOG" 2>/dev/null || true
 grep -a "IFSMODE\|SCRIPT ERROR\|SHADER ERROR\|Parse Error" "$LOG" || { tail -30 "$LOG"; exit 1; }
-for png in mode-ifs.png mode-ifs-reset.png sculpt-guides.png sculpt-drag.png sculpt-undo.png; do
+for png in mode-ifs.png mode-ifs-reset.png sculpt-guides.png sculpt-drag.png sculpt-undo.png \
+	shape-frames.png shape-tetra.png shape-star.png shape-cross.png shape-twist.png; do
 	[ -s "$OUT/$png" ] || { echo "IFSMODE FAIL missing $OUT/$png"; exit 1; }
 done
 exit $RC

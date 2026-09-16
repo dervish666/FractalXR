@@ -32,8 +32,9 @@ const DEPTH_MARGIN := 0.22
 const MAX_OFFSET := 0.3
 const MAX_TILT_DEG := 30.0
 ## Detail 4 measured about 4 ms to rebuild on desktop (IFS-1), too long to spend on every
-## frame of a drag, so a drag previews one rung down and the release rebuilds at the real one.
-const DRAG_DETAIL_MAX := 3
+## frame of a drag, so a drag previews down to the ceiling the preset publishes and the release
+## rebuilds at the real rung. The ceiling lives in FractalIFS.PRESETS because it depends on the
+## preset's branching factor, not on the editor.
 const DASHES := 3
 
 const COL_A := Color(0.55, 0.85, 1.0)
@@ -317,7 +318,7 @@ func _drag(hand: XRController3D) -> void:
 
 
 func _drag_detail() -> int:
-	return mini(_full_detail, DRAG_DETAIL_MAX)
+	return mini(_full_detail, _ifs.drag_detail())
 
 
 # --- guides -----------------------------------------------------------------

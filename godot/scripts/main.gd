@@ -192,8 +192,13 @@ const IFS_DROP := 0.28            # below the eye line, like something set down 
 ## Recursion rungs. 3 is the default: 585 frames and ~84k triangles, the rung IFS-1
 ## captured. 4 is 4,681 frames and is the rung worth measuring on the headset.
 const IFS_DETAIL := [1, 2, 3, 4]
+## Only the fallback now. Each preset carries the rung it opens at, because the branching
+## factor differs between them and the same rung is not the same number of frames.
 const IFS_DETAIL_DEFAULT := 2
 var ifs_detail_idx := IFS_DETAIL_DEFAULT
+## Which sculpture of the five. SHAPE steps it, and so do A and B, the way they step the flame
+## gallery and the tree species.
+var ifs_preset_idx := 0
 ## Front-to-back stretch, independent of DETAIL and of the grab's uniform scale. Default
 ## first, then deeper, then wrapping to the flat end, as the other ladders here do.
 const IFS_DEPTH := [1.0, 1.5, 2.0, 0.25, 0.5]
@@ -521,8 +526,14 @@ func _build_menu() -> void:
 		WristMenu.Item.new("mode", "IFS", func(): return "",
 			func(): _set_mode("ifs")).chosen_when(func(): return ifs_mode),
 
-		# IFS controls. DEPTH and DETAIL are deliberately separate: one stretches the shape
-		# front to back, the other adds a generation. Both rebuild; the palette does not.
+		# IFS controls. SHAPE is the gallery: a different rule and a different seed frame, so it
+		# lands like a new sculpture rather than like a changed setting. DEPTH and DETAIL are
+		# deliberately separate: one stretches the shape front to back, the other adds a
+		# generation. All three rebuild; the palette does not.
+		WristMenu.Item.new("make", "SHAPE",
+			func(): return FractalIFS.preset_name(ifs_preset_idx),
+			func(): _cycle_ifs_preset(1),
+			false, _vis_ifs).stepping(func(d: int): _cycle_ifs_preset(d)),
 		WristMenu.Item.new("make", "DETAIL",
 			func(): return "%d · %d" % [IFS_DETAIL[ifs_detail_idx], ifs.instance_count],
 			func(): _step_ifs_detail(1),
@@ -914,7 +925,8 @@ func _build_menu() -> void:
 	]
 	menu.title = func():
 		if ifs_mode:
-			return "Mirror frames  ·  detail %d" % IFS_DETAIL[ifs_detail_idx]
+			return "%s  ·  detail %d" % [FractalIFS.preset_name(ifs_preset_idx).capitalize(),
+				IFS_DETAIL[ifs_detail_idx]]
 		if tree_mode:
 			return "%s forest  ·  %d trees" % [FractalTree.SHAPE_NAMES[tree_shape_idx].capitalize(), _forest_tree_count()]
 		if ground_mode:
@@ -1082,6 +1094,8 @@ func _set_ifs_mode(on: bool) -> void:
 	cloud.set_visible_cloud(not on)
 	if on:
 		if ifs.instance_count == 0:
+			ifs.set_preset(ifs_preset_idx)
+			ifs_detail_idx = _ifs_detail_idx(ifs.preset_detail())
 			ifs.detail = IFS_DETAIL[ifs_detail_idx]
 			ifs.depth = IFS_DEPTH[ifs_depth_idx]
 			ifs.build()
@@ -1122,6 +1136,14 @@ func _step_ifs_depth(d: int) -> void:
 ## Back to the shape and the pose the mode opens with. Geometry and placement only: the
 ## palette, the eye buffer and passthrough are the user's choices, not this mode's.
 func _reset_ifs() -> void:
+	_reset_ifs_shape()
+	_recenter()
+
+
+## The shape half of RESET, shared with a preset change. Everything the rule owns goes back to
+## how the sculpture arrives; the pose deliberately does not, because a preset change should
+## swap what is in your hands and not also snatch it back to the middle of the room.
+func _reset_ifs_shape() -> void:
 	# End any edit first, or the frame after this one would drag the reset shape straight back
 	# out. The undo goes with it: one step back must never land before a reset.
 	ifs_edit.cancel()
@@ -1130,13 +1152,29 @@ func _reset_ifs() -> void:
 	ifs.plane2_normal = FractalIFS.DEFAULT_N2
 	ifs.plane1_offset = 0.0
 	ifs.plane2_offset = 0.0
-	ifs_detail_idx = IFS_DETAIL_DEFAULT
+	ifs_detail_idx = _ifs_detail_idx(ifs.preset_detail())
 	ifs_depth_idx = 0
 	ifs.detail = IFS_DETAIL[ifs_detail_idx]
 	ifs.depth = IFS_DEPTH[ifs_depth_idx]
 	ifs.build()
+	ifs_edit.set_detail(ifs.detail)
 	ifs_edit.refresh()
-	_recenter()
+
+
+## The five sculptures. A preset is a new rule and often a new seed frame, so it arrives with
+## the mirrors back at the origin, the depth back at 1x and nothing left to undo, at whatever
+## rung that preset says lands in the comfortable range for its branching factor.
+func _cycle_ifs_preset(d: int) -> void:
+	ifs_preset_idx = wrapi(ifs_preset_idx + d, 0, FractalIFS.PRESETS.size())
+	ifs.set_preset(ifs_preset_idx)
+	_reset_ifs_shape()
+
+
+## The rung index that shows a given recursion depth, so a preset's own default lands on the
+## rung the DETAIL tile is about to print rather than one the tile disagrees with.
+func _ifs_detail_idx(d: int) -> int:
+	var i := IFS_DETAIL.find(d)
+	return i if i >= 0 else IFS_DETAIL_DEFAULT
 
 
 ## Construction units to metres, so the sculpture arrives about IFS_WIDTH_M across whatever
@@ -1184,8 +1222,9 @@ func _perf_tail() -> String:
 		# edit= is what makes a drag measurable after the fact: build_ms during a drag is the
 		# number that decides whether every frame can rebuild, and without this field there is
 		# no way to tell a drag frame from an idle one in the log.
-		return head + (" mode=ifs detail=%d depth=%.2f instances=%d triangles=%d build_ms=%.3f"
-			+ " edit=%s") % [
+		return head + (" mode=ifs shape=%s detail=%d depth=%.2f instances=%d triangles=%d"
+			+ " build_ms=%.3f edit=%s") % [
+			FractalIFS.preset_name(ifs_preset_idx),
 			IFS_DETAIL[ifs_detail_idx], ifs.depth, ifs.instance_count,
 			ifs.triangle_count, ifs.build_ms,
 			ifs_edit.handle_label().replace(" ", "_") if ifs_edit.is_editing() else "none"]
@@ -1215,10 +1254,10 @@ func _zoom_text(z: float) -> String:
 
 
 func _step_specimen(d: int) -> void:
-	# IFS has one shape rather than a gallery, so A and B step the only ladder it has. Left
-	# out, they fell through to _morph_to_preset and walked the flame gallery invisibly.
+	# IFS has a gallery of its own now, so A and B step it like every other mode's. DETAIL is
+	# a rung and not a specimen; it stays on the tile and the stick.
 	if ifs_mode:
-		_step_ifs_detail(d)
+		_cycle_ifs_preset(d)
 	elif tree_mode:
 		_cycle_tree_shape(d)
 	elif ground_mode:
