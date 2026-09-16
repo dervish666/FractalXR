@@ -58,6 +58,10 @@ func _init() -> void:
 	_preset_bounds(ifs)
 	_preset_caps(ifs)
 	_round_trip(ifs)
+	_ramp(ifs)
+	_instance_data(ifs)
+	_ambient(ifs)
+	_morph(ifs)
 	_clearance(ifs)
 	_rejection(ifs)
 	await _grab_suspend()
@@ -439,6 +443,217 @@ func _round_trip(ifs: FractalIFS) -> void:
 	_ok("preset round trip", first == back and first != other and ifs.seed_tris == first_tris,
 		"%d presets visited, FRAMES identical on return=%s, seed %d tri, control differs=%s" % [
 			FractalIFS.PRESETS.size(), str(first == back), ifs.seed_tris, str(first != other)])
+
+
+## The palette ramp the shader samples. N palette entries have to land on the N sample points
+## i/N, and the two ends have to match, because the colour coordinate scrolls and an open ramp
+## would drift through a seam once a cycle. The control is a second palette, which must move
+## every stop it touches.
+##
+## Sampled from the Gradient the texture is generated from, not from its texels: the headless
+## driver hands back no image for a generated texture. That the ramp reaches the GPU at all is
+## ifs_shot's colour drift capture, which is a picture of this texture being sampled.
+func _ramp(ifs: FractalIFS) -> void:
+	_defaults(ifs)
+	var pal := [Color(0.9, 0.2, 0.1), Color(0.2, 0.8, 0.3), Color(0.1, 0.3, 0.9),
+		Color(0.9, 0.9, 0.2), Color(0.5, 0.1, 0.6)]
+	ifs.set_palette(pal)
+	var tex := ifs.ramp_texture()
+	var g: Gradient = tex.gradient
+	var worst := 0.0
+	var firsts: PackedColorArray = PackedColorArray()
+	for i in pal.size():
+		var c := g.sample(float(i) / float(pal.size()))
+		firsts.append(c)
+		var want: Color = pal[i]
+		worst = maxf(worst, absf(c.r - want.r) + absf(c.g - want.g) + absf(c.b - want.b))
+	var a := g.sample(0.0)
+	var b := g.sample(1.0)
+	var ends := absf(a.r - b.r) + absf(a.g - b.g) + absf(a.b - b.b)
+	# Control: a different palette through the same call has to move every stop.
+	ifs.set_palette([Color(0.05, 0.05, 0.05), Color(0.1, 0.1, 0.1)])
+	var moved := 10.0
+	for i in pal.size():
+		var c := g.sample(float(i) / float(pal.size()))
+		var p0: Color = firsts[i]
+		moved = minf(moved, absf(c.r - p0.r) + absf(c.g - p0.g) + absf(c.b - p0.b))
+	ifs.set_palette([])
+	var shaped: bool = tex.width == FractalIFS.RAMP_W and tex.use_hdr
+	_ok("palette ramp", worst < 1e-4 and ends < 1e-6 and moved > 0.1 and shaped,
+		"%d entries, worst stop err=%.7f, ends differ by %.7f, control moved every stop by >=%.4f, %d texels hdr=%s" % [
+			pal.size(), worst, ends, moved, tex.width, str(tex.use_hdr)])
+
+
+## What the shader reads per instance. The three custom-data channels must all land inside
+## [0, 1] at every preset and every rung, or the colour coordinate and the grow-in clock walk
+## off the ends of the palette and of the animation. The packed parent origin must decode back
+## to the origin of the instance's actual parent: growing out of the wrong point would still
+## animate, so a control that grows out of the instance's own centre has to fail the same test.
+func _instance_data(ifs: FractalIFS) -> void:
+	var lo := 2.0
+	var hi := -1.0
+	var worst := 1.0
+	var ctl := 1.0
+	var checked := 0
+	var span_ok := true
+	for pi in FractalIFS.PRESETS.size():
+		ifs.set_preset(pi)
+		_planes(ifs)
+		for d in range(0, 4):
+			ifs.detail = d
+			ifs.build(false)
+			var buf: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+			var mat: ShaderMaterial = ifs.get_node("Frames").material_override
+			var span := float(mat.get_shader_parameter("origin_span"))
+			span_ok = span_ok and span > 0.0
+			# Origins by level, so a parent can be looked for among the level above.
+			# Plain Arrays, not packed ones: a packed array read back out of a Dictionary is
+			# a copy, so appending to it would quietly leave every level empty.
+			var by_level: Dictionary = {}
+			for i in ifs.instance_count:
+				var k: int = ifs.levels[i]
+				if not by_level.has(k):
+					by_level[k] = []
+				(by_level[k] as Array).append(ifs.xforms[i].origin)
+			for i in ifs.instance_count:
+				var j := i * 20
+				for c in range(16, 19):
+					lo = minf(lo, buf[j + c])
+					hi = maxf(hi, buf[j + c])
+				for c in range(12, 15):
+					lo = minf(lo, buf[j + c])
+					hi = maxf(hi, buf[j + c])
+				var k: int = ifs.levels[i]
+				if k == 0:
+					continue
+				var packed := Vector3(buf[j + 12], buf[j + 13], buf[j + 14])
+				var local := (packed - Vector3(0.5, 0.5, 0.5)) * (2.0 * span)
+				worst = minf(worst, _nearest_in(ifs.xforms[i] * local, by_level[k - 1]))
+				# Control: grow out of the instance's own centre instead.
+				ctl = minf(ctl, _nearest_in(ifs.xforms[i].origin, by_level[k - 1]))
+				checked += 1
+	_defaults(ifs)
+	var ranged: bool = lo >= -1e-6 and hi <= 1.0 + 1e-6
+	_ok("instance data", ranged and span_ok and worst > -1e-4 and ctl < -1e-3,
+		"%d instances, channels in [%.6f, %.6f], parent origin err=%.7f, own-centre control=%.4f" % [
+			checked, lo, hi, -worst, -ctl])
+
+
+## Negative distance from p to the nearest point in the list, so a perfect hit reads 0 and the
+## comparisons above can take a minimum over every instance.
+static func _nearest_in(p: Vector3, pts: Array) -> float:
+	var best := INF
+	for q in pts:
+		best = minf(best, p.distance_to(q))
+	return -best
+
+
+## Breathing is an offset applied at build time. It has to change what is drawn, stop dead when
+## a handle is captured, leave `base` untouched, and hand back the banked buffer byte for byte
+## the moment it is switched off.
+func _ambient(ifs: FractalIFS) -> void:
+	_defaults(ifs)
+	ifs.build(false)
+	var banked: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	var base_before: Array = ifs.base.duplicate(true)
+	ifs.ambient = true
+	ifs.breathe_t = 0.0
+	ifs.tick(7.0)
+	var breathing: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	var t_held := ifs.breathe_t
+	# A captured handle stops the clock without changing the state, so nothing moves and
+	# nothing jumps when it is released.
+	ifs.ambient_hold = true
+	ifs.tick(5.0)
+	var held: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	ifs.ambient_hold = false
+	var maps_differ: bool = not _maps_same(ifs.live_base(), ifs.base, 1e-9)
+	ifs.ambient = false
+	ifs.build(false)
+	var back: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	var untouched: bool = _maps_same(ifs.base, base_before, 0.0)
+	_defaults(ifs)
+	_ok("breathing", breathing != banked and held == breathing and back == banked
+			and untouched and maps_differ and is_equal_approx(ifs.breathe_t, 0.0),
+		("moved=%s held still at t=%.1f=%s off restores exactly=%s stored maps untouched=%s "
+			+ "live maps offset=%s") % [str(breathing != banked), t_held,
+			str(held == breathing), str(back == banked), str(untouched), str(maps_differ)])
+
+
+## The morph's two ends and its middle. t=0 has to be the source rule padded to the common
+## length, t=1 has to be the target's own table entry down to the byte, the seed frame has to
+## change at the midpoint and not before, and a second step part way through has to carry on
+## from where the shape is rather than snapping back to the rule it started from.
+func _morph(ifs: FractalIFS) -> void:
+	_defaults(ifs)
+	ifs.build(false)
+	var src: Array = ifs.base.duplicate(true)
+	var tris_before := ifs.seed_tris
+	ifs.begin_morph(1)
+	var at_zero: bool = _maps_same(ifs.live_maps(), src, 1e-9)
+	# Just short of halfway: the seed frame is still the one it started with.
+	ifs.tick(FractalIFS.MORPH_S * 0.49)
+	var early_seed := ifs.seed_tris
+	ifs.tick(FractalIFS.MORPH_S * 0.02)
+	var mid_seed := ifs.seed_tris
+	var guard := 0
+	while ifs.is_morphing() and guard < 200:
+		ifs.tick(0.1)
+		guard += 1
+	var landed: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	var landed_preset := ifs.preset
+	var landed_detail := ifs.detail
+	# Independent reference: a second node told to be TETRA outright, never morphed into it.
+	var ref := FractalIFS.new()
+	root.add_child(ref)
+	ref.set_preset(1)
+	_planes(ref)
+	ref.build(false)
+	var want: PackedFloat32Array = ref.get_node("Frames").multimesh.buffer
+	var ref_detail := ref.detail
+	ref.queue_free()
+
+	# Retarget. Half way from FRAMES to STAR, step again to CROSS: the new morph must start
+	# from the interpolated maps, which are neither FRAMES' nor STAR's.
+	_defaults(ifs)
+	ifs.build(false)
+	ifs.begin_morph(2)
+	ifs.tick(FractalIFS.MORPH_S * 0.5)
+	var mid_maps: Array = ifs.live_maps().duplicate(true)
+	ifs.begin_morph(3)
+	var after: Array = ifs.live_maps()
+	var padded_src: Array = FractalIFS._pad(src, mid_maps.size())
+	var continuous: bool = _maps_same(after, mid_maps, 1e-9) 		and not _maps_same(mid_maps, padded_src, 1e-4)
+	_defaults(ifs)
+	ifs.build(false)
+	_ok("morph ends", at_zero and landed == want and landed_preset == 1
+			and landed_detail == ref_detail and tris_before == 144 and early_seed == 144
+			and mid_seed == 72,
+		("t=0 is the source=%s, t=1 identical to a plain TETRA build=%s (preset %d, rung %d), "
+			+ "seed %d -> %d at 0.49, %d at 0.51") % [str(at_zero), str(landed == want),
+			landed_preset, landed_detail, tris_before, early_seed, mid_seed])
+	_ok("morph retarget", continuous,
+		"%d maps, second step continues from the interpolated state=%s, differs from the source=%s" % [
+			mid_maps.size(), str(_maps_same(after, mid_maps, 1e-9)),
+			str(not _maps_same(mid_maps, padded_src, 1e-4))])
+
+
+## Two base-map lists the same, to a tolerance. A shorter list is padded the way a morph pads
+## it, so a 2-map rule and its 3-map padding compare equal.
+static func _maps_same(a: Array, b: Array, eps: float) -> bool:
+	var n := maxi(a.size(), b.size())
+	if n == 0:
+		return a.size() == b.size()
+	var pa: Array = FractalIFS._pad(a, n)
+	var pb: Array = FractalIFS._pad(b, n)
+	for i in n:
+		if absf(float(pa[i][0]) - float(pb[i][0])) > eps:
+			return false
+		if (pa[i][1] as Vector3).distance_to(pb[i][1] as Vector3) > eps:
+			return false
+		if (pa[i][2] as Vector3).distance_to(pb[i][2] as Vector3) > eps:
+			return false
+	return true
 
 
 func _clearance(ifs: FractalIFS) -> void:
@@ -893,6 +1108,12 @@ func _defaults(ifs: FractalIFS) -> void:
 	ifs.set_preset(0)
 	_planes(ifs)
 	ifs.detail = 3
+	# The ambient state too, or a section that leaves the sculpture breathing hands the next
+	# one a shape that is not the one it thinks it is asking about.
+	ifs.ambient = false
+	ifs.ambient_hold = false
+	ifs.anim_t = 0.0
+	ifs.breathe_t = 0.0
 
 
 ## The parameters the two handles own, back where they start. Separate from _defaults, because

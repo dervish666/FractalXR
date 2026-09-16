@@ -357,6 +357,12 @@ ignore import failures: inspect full logs and expected assertions, not just exit
 codes. A PNG saved successfully proves neither active mode nor correct geometry.
 Make new helpers exit nonzero on failure, timeout, parse error or missing evidence.
 
+Known flake (2026-09-16, arrived with the motion shader): `ifs_mode_shot.sh` sometimes
+captures the IFS as a tiny bracket at the centre and stays that way for the rest of the
+run. Script state is identical to a passing run (scale, camera, AABB, uniforms, buffer,
+material), so the cause is render-side and unresolved. The capture prints all of that
+plus a dark-frame probe; on-device the sculpture never showed the symptom.
+
 Save captures/logs under ignored `godot/.spike-out/ifs-YYYY-MM-DD/`. Include build
 revision, dirty state, parameters, pose, material, eye scale, refresh, foveation and
 actual instance/triangle counts. No npm build is needed for native-only changes;

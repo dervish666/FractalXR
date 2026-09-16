@@ -72,6 +72,7 @@ func _init() -> void:
 	await _tiles(main)
 	await _sculpt(main)
 	await _shapes(main)
+	await _motion(main)
 	if _lt != null:
 		XRServer.remove_tracker(_lt)
 	if _rt != null:
@@ -278,6 +279,14 @@ func _ground_pair(main) -> void:
 
 ## The three tiles, through the same functions the wrist menu calls.
 func _tiles(main) -> void:
+	# MOTION is on when the mode opens, which is the point of it, and it rebuilds at the drag
+	# rung. Every section from here to _motion is about static geometry and its instance
+	# counts, so the ambient goes off for them and _motion turns it back on through the tile.
+	_ok("motion default", main.ifs.ambient, "breathing when IFS opens=%s" % str(main.ifs.ambient))
+	main.ifs.ambient = false
+	main.ifs.build(false)
+	for i in 3:
+		await process_frame
 	var base: int = main.ifs.instance_count
 	var base_z: float = main.ifs.bounds.size.z
 	main._step_ifs_detail(1)
@@ -302,6 +311,7 @@ func _tiles(main) -> void:
 	_ok("reset tile", reset_ok, "instances %d z span %.4f detail=%d depth=%.2f" % [
 		main.ifs.instance_count, main.ifs.bounds.size.z, main.ifs.detail, main.ifs.depth])
 
+	await _grown(main)
 	var img := root.get_viewport().get_texture().get_image()
 	var err := img.save_png("%s/mode-ifs-reset.png" % OUT)
 	_ok("reset capture", err == OK and _lit(img) > 500, "%s/mode-ifs-reset.png err=%d" % [OUT, err])
@@ -487,10 +497,35 @@ func _shapes(main) -> void:
 		and not is_equal_approx(main.ifs.depth, main.IFS_DEPTH[0])
 	var pose_before: Transform3D = main.cloud.global_transform
 	var idx_before: int = main.ifs_preset_idx
+	var buf_before: PackedFloat32Array = main.ifs.get_node("Frames").multimesh.buffer
 
 	shape_tile.advance.call()
-	for i in 6:
+	# Sample while it travels. A step that jumped straight to the new rule would give one
+	# buffer, the destination's, and nothing in between it and where it started.
+	var mids: Array = []
+	for i in 14:
 		await process_frame
+		var b: PackedFloat32Array = main.ifs.get_node("Frames").multimesh.buffer
+		if b != buf_before and (mids.is_empty() or b != mids[mids.size() - 1]):
+			mids.append(b)
+	var travelling: bool = main.ifs.is_morphing()
+	var settled: bool = await _settled(main)
+	for i in 4:
+		await process_frame
+	# Independent reference: a second node told to be this preset outright, never morphed into
+	# it. Landing near the target is not landing on it.
+	var ref := FractalIFS.new()
+	main.add_child(ref)
+	ref.set_preset(main.ifs_preset_idx)
+	ref.build(false)
+	var ref_buf: PackedFloat32Array = ref.get_node("Frames").multimesh.buffer
+	var ref_detail: int = ref.detail
+	ref.queue_free()
+	var landed: bool = main.ifs.get_node("Frames").multimesh.buffer == ref_buf \
+		and main.ifs.detail == ref_detail
+	_ok("shape morph", mids.size() >= 2 and travelling and settled and landed,
+		"%d distinct buffers on the way, still morphing after 14 frames=%s, settled=%s, lands byte-identical=%s" % [
+			mids.size(), str(travelling), str(settled), str(landed)])
 	var name_now := FractalIFS.preset_name(main.ifs_preset_idx)
 	var cleared: bool = main.ifs_preset_idx == idx_before + 1 \
 		and str(shape_tile.read.call()) == name_now and name_now != first_name \
@@ -527,7 +562,11 @@ func _shapes(main) -> void:
 		for i in 3:
 			await process_frame
 	for p in FractalIFS.PRESETS.size():
-		for i in 6:
+		# The morph has to land before the picture is taken, or every capture below is of a
+		# sculpture halfway between two rules and none of them is of a preset.
+		await _settled(main)
+		await _grown(main)
+		for i in 4:
 			await process_frame
 		var name_ := FractalIFS.preset_name(main.ifs_preset_idx)
 		var want: int = int(PRESET_INSTANCES[name_])
@@ -543,6 +582,83 @@ func _shapes(main) -> void:
 		shape_tile.advance.call()
 	for i in 4:
 		await process_frame
+
+
+## MOTION: the sculpture breathing, through the tile a user would reach for. A capture cannot
+## show whether anything is being rebuilt, so the assertions are all on the published buffer.
+## It has to move while MOTION is on, hold still the moment a handle is captured, and come
+## back to the banked shape byte for byte when MOTION goes off, with the stored maps never
+## having been written at all.
+func _motion(main) -> void:
+	main._set_mode("ifs")
+	# Both hands out of the way, so the wrist panel cannot take the trigger from the editor.
+	_pose(_lt, Transform3D(Basis(), Vector3(0.35, 1.05, 0.30)))
+	_pose(_rt, Transform3D(Basis(), Vector3(-0.35, 1.05, 0.30)))
+	main._reset_ifs()
+	await _settled(main)
+	await _grown(main)
+	for i in 8:
+		await process_frame
+	var tile = _visible_tile(main, "MOTION", "look")
+	if tile == null:
+		_ok("motion tile", false, "no MOTION tile visible in the look section while in IFS")
+		return
+	var off_reads := str(tile.read.call())
+	var banked: PackedFloat32Array = main.ifs.get_node("Frames").multimesh.buffer
+	var maps_before := str(main.ifs.base)
+	# The control, and it comes first: if the sculpture is already moving with MOTION off then
+	# "it moves with MOTION on" is not a statement about MOTION.
+	var quiet: bool = await _same_over(main, 20)
+
+	tile.advance.call()
+	for i in 6:
+		await process_frame
+	var on_reads := str(tile.read.call())
+	var running: bool = not await _same_over(main, 20)
+	var rung_ok: bool = main.ifs.instance_count <= PRESET_INSTANCES[
+		FractalIFS.preset_name(main.ifs_preset_idx)]
+	_ok("motion tile", main.ifs.ambient and off_reads == "off" and on_reads == "breathing"
+			and quiet and running and rung_ok,
+		"reads '%s' -> '%s', still with it off=%s moving with it on=%s, %d instances at rung %d, build %.2f ms" % [
+			off_reads, on_reads, str(quiet), str(running), main.ifs.instance_count,
+			main.ifs.detail, main.ifs.build_ms])
+
+	# A captured handle owns the shape. Breathing under a held plane would fight the hand.
+	main.ifs_edit.set_guides(true)
+	for i in 4:
+		await process_frame
+	var knob: Vector3 = main.ifs.global_transform * Vector3(0.0, IfsEditor.KNOB_OUT, 0.0)
+	_pose(_rt, Transform3D(Basis(), knob))
+	for i in 4:
+		await process_frame
+	_rt.set_input(&"trigger_click", true)
+	for i in 4:
+		await process_frame
+	var captured: bool = main.ifs_edit.is_editing()
+	var held: bool = await _same_over(main, 20)
+	_rt.set_input(&"trigger_click", false)
+	for i in 6:
+		await process_frame
+	main.ifs_edit.set_guides(false)
+	_pose(_rt, Transform3D(Basis(), Vector3(-0.35, 1.05, 0.30)))
+	for i in 4:
+		await process_frame
+	_ok("motion holds", captured and held,
+		"handle captured=%s buffer unchanged while held=%s" % [str(captured), str(held)])
+
+	tile.advance.call()
+	for i in 6:
+		await process_frame
+	var back: PackedFloat32Array = main.ifs.get_node("Frames").multimesh.buffer
+	var stopped: bool = await _same_over(main, 20)
+	_ok("motion off", not main.ifs.ambient and back == banked and stopped
+			and str(main.ifs.base) == maps_before
+			and main.ifs.instance_count == PRESET_INSTANCES[
+				FractalIFS.preset_name(main.ifs_preset_idx)],
+		"banked shape back byte for byte=%s, stopped=%s, stored maps untouched=%s, %d instances" % [
+			str(back == banked), str(stopped), str(str(main.ifs.base) == maps_before),
+			main.ifs.instance_count])
+	await _shot(main, "mode-ifs-motion.png")
 
 
 func _tracker(n: StringName) -> XRControllerTracker:
@@ -568,23 +684,97 @@ func _tile(main, label: String):
 
 
 ## The tile with this label that the CURRENT mode actually shows. IFS and TREE both have a
-## SHAPE, and taking whichever was declared first would quietly test the tree's.
-func _visible_tile(main, label: String):
+## SHAPE and IFS and FLAME both have a MOTION, so taking whichever was declared first would
+## quietly test the other mode's.
+func _visible_tile(main, label: String, section := "make"):
 	for it in main.menu.items:
-		if it.section == "make" and it.label == label \
+		if it.section == section and it.label == label \
 				and (not it.visible_when.is_valid() or bool(it.visible_when.call())):
 			return it
 	return null
 
 
+## Is the published instance buffer the same after n frames as it was before them? The whole
+## breathing question in one measurement, in both directions.
+func _same_over(main, n: int) -> bool:
+	var before: PackedFloat32Array = main.ifs.get_node("Frames").multimesh.buffer
+	for i in n:
+		await process_frame
+	return main.ifs.get_node("Frames").multimesh.buffer == before
+
+
 func _shot(main, file: String) -> void:
+	await _grown(main)
 	for i in 3:
 		await process_frame
 	var img := root.get_viewport().get_texture().get_image()
 	var err := img.save_png("%s/%s" % [OUT, file])
 	var lit := _lit(img)
+	if lit <= 500:
+		# Probe a dark frame: does it stay dark, and does winding the clock back fix it?
+		for i in 10:
+			await process_frame
+		var lit2 := _lit(root.get_viewport().get_texture().get_image())
+		var saved: float = main.ifs._mat.get_shader_parameter("anim_t")
+		main.ifs._mat.set_shader_parameter("anim_t", 13.0)
+		for i in 3:
+			await process_frame
+		var lit3 := _lit(root.get_viewport().get_texture().get_image())
+		main.ifs._mat.set_shader_parameter("anim_t", saved)
+		var b0: float = main.ifs._mat.get_shader_parameter("brightness")
+		main.ifs._mat.set_shader_parameter("brightness", b0 * 20.0)
+		for i in 3:
+			await process_frame
+		var lit4 := _lit(root.get_viewport().get_texture().get_image())
+		main.ifs._mat.set_shader_parameter("brightness", b0)
+		var mesh: ArrayMesh = main.ifs.get_node("Frames").multimesh.mesh
+		var arr: Array = mesh.surface_get_arrays(0)
+		var uvs: PackedVector2Array = arr[Mesh.ARRAY_TEX_UV] if arr[Mesh.ARRAY_TEX_UV] != null else PackedVector2Array()
+		var umin := 9.0
+		var umax := -9.0
+		for v in uvs:
+			umin = minf(umin, v.x)
+			umax = maxf(umax, v.x)
+		var buf: PackedFloat32Array = main.ifs.get_node("Frames").multimesh.buffer
+		print("IFSMODE dark-probe %s: later=%d clock13=%d bright20=%d seed=%s preset=%s verts=%d uv.x=[%.3f,%.3f] row0=%s row1=%s brightness=%.2f ramp=%s" % [
+			file, lit2, lit3, lit4, str(main.ifs._seed_kind), FractalIFS.preset_name(main.ifs_preset_idx),
+			mesh.surface_get_array_len(0), umin, umax, str(buf.slice(0, 20)), str(buf.slice(20, 40)), b0,
+			str(main.ifs._mat.get_shader_parameter("ramp"))])
+	# The scale and clocks ride along so a dark frame says whether the sculpture shrank, grew in
+	# late, or never rendered, instead of just "lit=39".
 	_ok("shot %s" % file.get_basename(), err == OK and lit > 500,
-		"%s/%s lit=%d err=%d" % [OUT, file, lit, err])
+		"%s/%s lit=%d err=%d cloud_scale=%.4f ifs_pos=%s anim=%.2f born=%.1f grip=%d editing=%s" % [
+			OUT, file, lit, err, main.cloud.global_transform.basis.get_scale().x,
+			str(main.ifs.global_position), main.ifs.anim_t, main.ifs._born_at,
+			main.grab.grip_count() if main.grab != null else -1, str(main.ifs_edit.is_editing())]
+		+ " params: born=%s anim=%s grow_span=%s grow_s=%s origin_span=%s same_mat=%s" % [
+			str(main.ifs._mat.get_shader_parameter("born_at")), str(main.ifs._mat.get_shader_parameter("anim_t")),
+			str(main.ifs._mat.get_shader_parameter("grow_span")), str(main.ifs._mat.get_shader_parameter("grow_s")),
+			str(main.ifs._mat.get_shader_parameter("origin_span")),
+			str(main.ifs.get_node("Frames").material_override == main.ifs._mat)]
+		+ " cam=%s cam_dist=%.3f aabb=%s vis=%s" % [
+			str(root.get_viewport().get_camera_3d().global_position),
+			root.get_viewport().get_camera_3d().global_position.distance_to(main.ifs.global_position),
+			str(main.ifs.get_node("Frames").custom_aabb), str(main.ifs.get_node("Frames").is_visible_in_tree())])
+
+
+## Skip to the end of the grow-in and let the frame settle. Every capture here follows a
+## rebuild, and a handful of rendered frames is not the 0.6 s the animation takes, so without
+## this every picture in this directory would be of a half-built sculpture.
+func _grown(main) -> void:
+	main.ifs.finish_grow()
+	for i in 3:
+		await process_frame
+
+
+## Wait out a SHAPE morph. Real frames and the real clock, capped so a morph that never lands
+## fails the run rather than hanging it.
+func _settled(main) -> bool:
+	var guard := 0
+	while main.ifs.is_morphing() and guard < 600:
+		await process_frame
+		guard += 1
+	return not main.ifs.is_morphing()
 
 
 ## Compute dispatches the particle cloud made over a fixed run of frames. ParticleCloud

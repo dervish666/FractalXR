@@ -6,6 +6,36 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **The IFS sculpture is alive.** It had five shapes and none of them did anything, which
+  next to the tree's growth and the flame's drift made it read as a still life. Three things
+  move now. The palette drifts through the whole sculpture, one full traverse every 50
+  seconds, from a ramp texture the shader samples at a mix of recursion level and radial
+  distance, so a frame's colour says both how deep it is and how far out it sits. Every full
+  rebuild grows in: each generation scales up out of its parent's origin over 0.6 s,
+  staggered 0.18 s per level and a little further for the outermost frames, so the structure
+  unfolds from the middle rather than appearing. MOTION breathes it, the contraction over a
+  30 second cycle and the twist turning a full circle every 60, both of which compound with
+  every generation so the visible movement is in the outer frames. Breathing is an offset
+  applied when the geometry is built and never written to the rule, so MOTION off is the
+  shape you banked, to the byte; a captured handle stops the clock dead rather than fighting
+  your hand. The colour and the grow-in are shader uniforms over a still buffer and cost
+  nothing per frame. Breathing rebuilds, but at the rung a drag already rebuilds at, which
+  measured 0.48 ms for 585 frames and 0.13 ms for 157 on the desktop.
+- **SHAPE morphs between sculptures instead of cutting.** Stepping SHAPE, or A and B,
+  interpolates the contraction, the offset and the twist of every child map from the rule you
+  are on to the rule you are going to, over two seconds, and lands on the new preset's own
+  table entry byte for byte. Where the two rules have different numbers of children the
+  shorter one repeats its last map, so the branching factor is the destination's from the
+  first frame. Where the seed frame differs, cube to tetrahedron, it changes at the midpoint
+  and the grow-in on landing covers the swap. Stepping again part way through retargets from
+  the shape as it is rather than snapping back to where it set off. The mirrors, the depth
+  and the undo still reset the instant you step, because those are yours and fading them for
+  two seconds would read as lag.
+- **`shaders/ifs.gdshader`.** The frames were drawn by an unshaded StandardMaterial3D tinted
+  per instance; they now have their own spatial shader, which is what makes the colour and
+  the grow-in free. The axis shade moved out of vertex colour into the UV, because a
+  MultiMesh multiplies the instance colour into the vertex one and the instance colour is
+  carrying the parent origin the grow-in grows out of.
 - **Five sculptures in IFS instead of one.** SHAPE steps FRAMES, TETRA, STAR, CROSS and
   TWIST, and so do A and B. FRAMES is the rule that was already there, unchanged to the
   bit. TETRA and CROSS are built from tetrahedron frames, STAR from octahedron frames,

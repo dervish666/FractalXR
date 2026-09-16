@@ -722,6 +722,12 @@ func _build_menu() -> void:
 						_bake_wait = BAKE_DELAY_FRAMES
 				else:
 					stability_idx = wrapi(stability_idx + d, 0, STABILITY.size())),
+		# The sculpture's own MOTION. The flame's above acts on a cloud that is not being
+		# drawn here, so the two never show at once.
+		WristMenu.Item.new("look", "MOTION",
+			func(): return "breathing" if ifs.ambient else "off",
+			func(): _toggle_ifs_motion(),
+			false, _vis_ifs),
 		WristMenu.Item.new("look", "BAKE",
 			func():
 				if cloud.is_baking():
@@ -941,10 +947,17 @@ func _build_menu() -> void:
 			# as much mid-drag as knowing what your hand is holding.
 			if ifs_edit.is_editing():
 				return ifs_edit.status()
+			if ifs.is_morphing():
+				return "morphing %d%%" % int(ifs.morph_t * 100.0)
 			# A capped build is the one thing here worth interrupting for: it means the rung
 			# on the tile is not the rung on the screen.
 			if ifs.cap_note != "":
 				return "capped at level %d" % ifs.levels_built
+			# Breathing and a morph rebuild on every frame, so they run at the rung a drag runs
+			# at. Naming it keeps the frame count below from reading as the wrong number for
+			# the rung on the DETAIL tile.
+			if ifs.levels_built < IFS_DETAIL[ifs_detail_idx]:
+				return "moving at level %d · %d frames" % [ifs.levels_built, ifs.instance_count]
 			return "%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]
 		if tree_mode:
 			# At capacity the trigger stops doing anything and the marker goes away, so
@@ -1104,9 +1117,12 @@ func _set_ifs_mode(on: bool) -> void:
 		_apply_palette()
 	else:
 		# Nothing this mode changed outlives it: an unfinished edit is cancelled and its
-		# snapshot restored, the grab is reset with the destination's own framing, and the
-		# particle cloud is re-measured for whatever is about to draw it.
+		# snapshot restored, a morph lands on its target, the ambient offset goes, the grab is
+		# reset with the destination's own framing, and the particle cloud is re-measured for
+		# whatever is about to draw it.
 		ifs_edit.cancel()
+		ifs.settle()
+		ifs_detail_idx = _ifs_detail_idx(ifs.detail)
 		grab.suspended = false
 		_recenter()
 		cloud.request_measure()
@@ -1136,6 +1152,9 @@ func _step_ifs_depth(d: int) -> void:
 ## Back to the shape and the pose the mode opens with. Geometry and placement only: the
 ## palette, the eye buffer and passthrough are the user's choices, not this mode's.
 func _reset_ifs() -> void:
+	# A morph in flight lands first, on the preset the SHAPE tile is already naming. Resetting
+	# to a shape that is still travelling somewhere else would undo itself a frame later.
+	ifs.settle()
 	_reset_ifs_shape()
 	_recenter()
 
@@ -1166,8 +1185,22 @@ func _reset_ifs_shape() -> void:
 ## rung that preset says lands in the comfortable range for its branching factor.
 func _cycle_ifs_preset(d: int) -> void:
 	ifs_preset_idx = wrapi(ifs_preset_idx + d, 0, FractalIFS.PRESETS.size())
-	ifs.set_preset(ifs_preset_idx)
+	# The maps travel to the new rule over MORPH_S and the seed frame changes halfway. The
+	# mirrors, the depth and the undo go back to where a new sculpture starts straight away,
+	# as they always did: those are the user's, and a two second fade of them would read as lag.
+	ifs.begin_morph(ifs_preset_idx)
 	_reset_ifs_shape()
+
+
+## Ambient life for the sculpture: the contraction breathes a few percent and the twist turns,
+## rebuilt at the preset's drag rung so the per-frame cost is the one a drag already pays.
+## The offset is applied at build time and never stored, which is why turning it off can put
+## the banked shape back exactly, and has to do so now rather than at the next rebuild.
+func _toggle_ifs_motion() -> void:
+	ifs.ambient = not ifs.ambient
+	if not ifs.ambient:
+		ifs.build(false)
+		ifs_edit.refresh()
 
 
 ## The rung index that shows a given recursion depth, so a preset's own default lands on the
@@ -1223,11 +1256,12 @@ func _perf_tail() -> String:
 		# number that decides whether every frame can rebuild, and without this field there is
 		# no way to tell a drag frame from an idle one in the log.
 		return head + (" mode=ifs shape=%s detail=%d depth=%.2f instances=%d triangles=%d"
-			+ " build_ms=%.3f edit=%s") % [
+			+ " build_ms=%.3f edit=%s motion=%s morph=%.2f") % [
 			FractalIFS.preset_name(ifs_preset_idx),
 			IFS_DETAIL[ifs_detail_idx], ifs.depth, ifs.instance_count,
 			ifs.triangle_count, ifs.build_ms,
-			ifs_edit.handle_label().replace(" ", "_") if ifs_edit.is_editing() else "none"]
+			ifs_edit.handle_label().replace(" ", "_") if ifs_edit.is_editing() else "none",
+			"on" if ifs.ambient else "off", ifs.morph_t]
 	if tree_mode:
 		return head + " mode=tree species=%s trees=%d branches=%d wind=%s leaves=%s" % [
 			FractalTree.SHAPE_NAMES[tree_shape_idx], _forest_tree_count(),
@@ -2030,9 +2064,17 @@ func _process(delta: float) -> void:
 		for planted in _forest_trees:
 			planted.tick(delta)
 		return
-	# Static geometry: nothing to tick, and nothing to dispatch. Returning here is what keeps
-	# the chaos game off the GPU while the sculpture is up.
+	# The sculpture's only per-frame work: the ambient clocks, and whatever rebuild breathing
+	# or a SHAPE morph is asking for. Nothing is dispatched, which is what keeps the chaos
+	# game off the GPU while the sculpture is up.
 	if ifs_mode:
+		# A captured handle owns the shape, so the ambient clock stops while it is held.
+		ifs.ambient_hold = ifs_edit.is_editing() or not _xr_focused
+		if ifs.tick(delta):
+			# A morph landed, bringing its preset's own opening rung with it.
+			ifs_detail_idx = _ifs_detail_idx(ifs.detail)
+			ifs_edit.set_detail(ifs.detail)
+			ifs_edit.refresh()
 		return
 	# The depth sort is for the head; both eyes share one order, as Spark does.
 	cloud.set_view(xr_camera.global_transform)

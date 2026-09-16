@@ -10,7 +10,13 @@ class_name FractalIFS
 ## DEPTH is a separate final Z stretch held outside it, so an outer scale cannot swallow it.
 ##
 ## Sits as a child of the ParticleCloud, following FractalTree, so grab and scale apply
-## unchanged. Geometry is rebuilt synchronously by build(); nothing here runs per frame.
+## unchanged. Geometry is rebuilt synchronously by build().
+##
+## Three things make it move, in rising order of what they cost. The palette drift and the
+## grow-in are shader uniforms over a static buffer. Breathing and morphing rebuild, but only
+## at the preset's drag rung, which is the rung a drag already pays for every frame. Neither
+## of them writes `base`: an ambient offset is applied at build time, so MOTION off is the
+## shape you banked, exactly.
 
 const BEAM_W := 0.06
 const BEAM_HW := BEAM_W * 0.5
@@ -30,10 +36,39 @@ const DEPTH_MAX := 2.0
 const DEFAULT_N1 := Vector3(1.0, 0.0, 0.0)
 const DEFAULT_N2 := Vector3(0.0, 1.0, 0.0)
 
-## Face shade baked into the seed's vertex colours, by axis. There is no light in the main
+## Face shade baked into the seed mesh, by axis. There is no light in the main
 ## scene and the material is unshaded, so without this the whole frame is one flat blob.
 ## Keyed by the axis and not the facing, so a mirrored copy shades like its original.
 const AXIS_SHADE := [0.66, 1.0, 0.82]
+
+## Colour when nothing has handed over a palette yet, so the first frame after _init draws
+## the frames rather than sampling an unset ramp and coming out black.
+const DEFAULT_PALETTE := [Color(0.20, 0.24, 0.40), Color(0.82, 0.86, 0.95)]
+
+## Ambient rates. All of them are slower than they first read on paper: at arm's length a
+## hand-sized sculpture magnifies every one of them, and the house rule for ambient motion is
+## to land about four times slower than instinct.
+const GROW_S := 0.6          # seconds for one generation to reach full size
+const GROW_STAGGER := 0.18   # seconds between one generation starting and the next
+## Part of a generation's stagger comes from how far out the frame sits, so a level arrives
+## from the middle outward instead of the whole shell popping at once.
+const BIRTH_RADIUS := 0.35
+const SCROLL := 0.02         # palette turns per second: 50 s to drift one palette through
+const RADIUS_MIX := 0.45     # colour coordinate: level at 0, radial distance at 1
+const BREATHE_S := 30.0      # seconds for one contraction cycle
+## Fraction of the contraction, either side of the banked value. Four percent on the
+## contraction is about twelve on where the third generation ends up, because the offsets
+## compound: the readable movement is in the outer frames, not in the number.
+const BREATHE_AMP := 0.04
+## Seconds for the added twist to turn one full circle. 3 degrees a second at the first
+## generation and nine at the third, because the turn compounds with every level. At half this
+## the outer frames churned; the cube and octahedron seeds are symmetric under a quarter turn,
+## so a cube preset comes back to itself every 30 s rather than every 120.
+const TWIST_S := 120.0
+const MORPH_S := 2.0         # seconds from one preset's maps to the next
+## The ramp texture the shader samples. 256 is more than a five-stop palette needs and still
+## a rounding-free number of texels per stop for the sizes a palette actually comes in.
+const RAMP_W := 256
 
 ## The three seed frames, as vertices in construction units and the edge pairs between them.
 ## All three sit in the same [-1, 1] box. The cube's edges are listed in long-axis order
@@ -124,6 +159,20 @@ var detail := 3
 ## harness can try a rule that is not in the table without editing the table to do it.
 var preset := 0
 var base: Array = []
+## Ambient breathing, on when the mode opens the way the tree's wind is. The sculpture read
+## as a still life beside the other modes, and a MOTION tile nobody finds does not fix that.
+## `ambient_hold` freezes the clock without changing the state, which is what keeps a captured
+## handle tracking the hand exactly and leaves no jump on release.
+var ambient := true
+var ambient_hold := false
+## The one clock. Seconds since the node was made, pushed to the shader every tick, and the
+## origin the grow-in and the palette drift are both measured from. A harness can step it by
+## calling tick() with the delta it wants, which the shader's own TIME would not allow.
+var anim_t := 0.0
+var breathe_t := 0.0
+## Morph progress, 1.0 when there is none. `morph_to` is the preset it is heading for.
+var morph_t := 1.0
+var morph_to := -1
 
 ## Published after build(). xforms already include the depth stretch.
 var xforms: Array[Transform3D] = []
@@ -144,29 +193,54 @@ var beams: Array = []
 var seed_box := AABB()
 
 var _mmi: MultiMeshInstance3D
-var _mat: StandardMaterial3D
+var _mat: ShaderMaterial
+var _shader: Shader
+var _shader_nocull: Shader
+var _grad: Gradient
+var _ramp: GradientTexture1D
 var _palette: Array = []
 var _seed_kind := ""
+var _born_at := -10000.0
+## The maps the morph runs between, both padded to a common length, and the seed frame it
+## has to swap to halfway. Kept apart from `base` so landing can restore the table's own
+## entry rather than whatever the last interpolation rounded to.
+var _morph_from: Array = []
+var _morph_to_maps: Array = []
+var _morph_seed := ""
 
 
 func _init() -> void:
 	name = "IFS"
-	_mat = StandardMaterial3D.new()
-	_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_mat.vertex_color_use_as_albedo = true
 	# Half the child maps have a negative determinant, and Godot flips the front face for a
 	# mirrored MeshInstance3D but not per instance inside a MultiMesh. The beams are closed
 	# boxes shaded by axis rather than by facing, so a mirrored frame draws its far faces in
-	# the same colours: IFS-1 measured no visible difference between culling and not. Back-face
-	# culling is therefore free fill savings, and the setter stays for anyone who disagrees.
-	_mat.cull_mode = BaseMaterial3D.CULL_BACK
+	# the same colours: IFS-1 measured no visible difference between culling and not. The
+	# shader therefore declares culling on, and set_cull_disabled() serves the harness probe.
+	_shader = load("res://shaders/ifs.gdshader")
+	_mat = ShaderMaterial.new()
+	_mat.shader = _shader
+	_grad = Gradient.new()
+	_ramp = GradientTexture1D.new()
+	_ramp.gradient = _grad
+	_ramp.width = RAMP_W
+	# Float texels, so a palette entry survives the ramp unrounded and the check can compare
+	# what it asked for with what the shader will sample.
+	_ramp.use_hdr = true
+	_mat.set_shader_parameter("ramp", _ramp)
+	_mat.set_shader_parameter("grow_s", GROW_S)
+	_mat.set_shader_parameter("scroll", SCROLL)
+	_mat.set_shader_parameter("radius_mix", RADIUS_MIX)
+	set_palette([])
 	_mmi = MultiMeshInstance3D.new()
 	_mmi.name = "Frames"
 	_mmi.material_override = _mat
 	_mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
+	# Colours carry the packed parent origin, custom data the level, radius and birth. See
+	# the note at the top of shaders/ifs.gdshader for why the origin lives in the colour.
 	mm.use_colors = true
+	mm.use_custom_data = true
 	_mmi.multimesh = mm
 	add_child(_mmi)
 	set_preset(0)
@@ -183,14 +257,24 @@ func set_preset(i: int) -> void:
 	# straight through would hand callers a `base` they cannot experiment on.
 	base = (p["maps"] as Array).duplicate()
 	detail = int(p["detail"])
-	var kind := String(p["seed"])
-	if kind != _seed_kind:
-		_seed_kind = kind
-		beams = _frame_beams(kind)
-		seed_mesh = _build_seed()
-		seed_tris = _triangles_of(seed_mesh)
-		seed_box = _box_of(beams)
-		_mmi.multimesh.mesh = seed_mesh
+	# Setting a preset outright is the other direction from morphing to one, so it ends any
+	# morph in flight rather than letting the next tick drag the shape back off this one.
+	morph_t = 1.0
+	morph_to = -1
+	_load_seed(String(p["seed"]))
+
+
+## The seed frame and everything derived from it. Apart from set_preset this is what a morph
+## calls at its midpoint, where the frame changes under the grow-in rather than beside it.
+func _load_seed(kind: String) -> void:
+	if kind == _seed_kind:
+		return
+	_seed_kind = kind
+	beams = _frame_beams(kind)
+	seed_mesh = _build_seed()
+	seed_tris = _triangles_of(seed_mesh)
+	seed_box = _box_of(beams)
+	_mmi.multimesh.mesh = seed_mesh
 
 
 static func preset_name(i: int) -> String:
@@ -207,9 +291,146 @@ func drag_detail() -> int:
 	return int(PRESETS[preset]["drag"])
 
 
+# --- ambient ----------------------------------------------------------------
+
+## Advance the clocks and do whatever per-frame rebuild breathing or a morph is asking for.
+## Returns true on the one frame a morph lands, which is when the caller has to resync the
+## DETAIL rung and the guides against the preset that just arrived.
+func tick(delta: float) -> bool:
+	anim_t += delta
+	_mat.set_shader_parameter("anim_t", anim_t)
+	# A captured handle owns the shape. Freezing the clock rather than dropping the offset is
+	# what leaves no jump at capture and none on release either.
+	if ambient_hold:
+		return false
+	if morph_t < 1.0:
+		morph_t = minf(morph_t + delta / MORPH_S, 1.0)
+		if morph_t >= 0.5 and _morph_seed != _seed_kind:
+			# Halfway, where the two rules are equally far away and the swap has the least to
+			# disagree with. The grow-in on landing covers the rest.
+			_load_seed(_morph_seed)
+		if morph_t >= 1.0:
+			# Land on the table's own entry, not on whatever the last interpolation rounded
+			# to, and take the preset's opening rung with it.
+			set_preset(morph_to)
+			morph_to = -1
+			build()
+			return true
+		_rebuild_live()
+		return false
+	if ambient:
+		breathe_t += delta
+		_rebuild_live()
+	return false
+
+
+## Travel to another preset's maps over MORPH_S. Retargets from wherever the shape is now, so
+## stepping again mid-morph continues from the interpolated state rather than snapping back.
+## The caller owns the mirrors, the depth and the undo, as it does for a plain preset change.
+func begin_morph(i: int) -> void:
+	var target := clampi(i, 0, PRESETS.size() - 1)
+	var from: Array = live_maps()
+	var to: Array = PRESETS[target]["maps"] as Array
+	var n := maxi(from.size(), to.size())
+	_morph_from = _pad(from, n)
+	_morph_to_maps = _pad(to, n)
+	_morph_seed = String(PRESETS[target]["seed"])
+	morph_to = target
+	morph_t = 0.0
+	_rebuild_live()
+
+
+func is_morphing() -> bool:
+	return morph_t < 1.0
+
+
+## Land any morph on its target now, without animating the rest of it. MOTION is deliberately
+## left alone: it is a look setting like the palette, not part of the shape.
+func settle() -> void:
+	if morph_to >= 0:
+		set_preset(morph_to)
+	morph_t = 1.0
+	morph_to = -1
+	build(false)
+
+
+## Skip to the end of the grow-in. For a still capture, where four rendered frames is not
+## enough time for a 0.6 s animation and every picture would come back half built.
+func finish_grow() -> void:
+	_born_at = anim_t - 10000.0
+	_mat.set_shader_parameter("born_at", _born_at)
+
+
+## The maps build() actually uses: the banked rule, or the morph's interpolation of it, with
+## the ambient offset on top. Nothing here is ever written back to `base`.
+func live_base() -> Array:
+	var b := live_maps()
+	if not ambient:
+		return b
+	return _breathed(b, breathe_t)
+
+
+## The maps without the ambient offset: `base`, or where the morph has got to. This is the
+## state a retarget continues from, which is why breathing must not be in it.
+func live_maps() -> Array:
+	if morph_t >= 1.0:
+		return base
+	var t := morph_t * morph_t * (3.0 - 2.0 * morph_t)
+	var out: Array = []
+	for i in _morph_from.size():
+		var a: Array = _morph_from[i]
+		var b: Array = _morph_to_maps[i]
+		out.append([
+			lerpf(float(a[0]), float(b[0]), t),
+			(a[1] as Vector3).lerp(b[1] as Vector3, t),
+			(a[2] as Vector3).lerp(b[2] as Vector3, t)])
+	return out
+
+
+## The ambient offset. The contraction breathes a few percent and the twist turns, both of
+## which compound with every generation, so the outer frames carry the visible movement.
+static func _breathed(b: Array, t: float) -> Array:
+	var s := 1.0 + BREATHE_AMP * sin(TAU * t / BREATHE_S)
+	var deg := 360.0 * fposmod(t / TWIST_S, 1.0)
+	var out: Array = []
+	for m in b:
+		var e: Vector3 = (m[2] as Vector3) if m.size() > 2 else Vector3.ZERO
+		out.append([float(m[0]) * s, m[1] as Vector3, e + Vector3(0.0, deg, 0.0)])
+	return out
+
+
+## A map list at a fixed length and a fixed shape, so a morph can walk two rules of different
+## sizes index by index. The shorter one repeats its last map, which lands the extra child on
+## top of its neighbour at the start and separates it as the morph runs.
+static func _pad(maps: Array, n: int) -> Array:
+	var out: Array = []
+	for i in n:
+		var m: Array = maps[mini(i, maps.size() - 1)]
+		out.append([float(m[0]), m[1] as Vector3,
+			(m[2] as Vector3) if m.size() > 2 else Vector3.ZERO])
+	return out
+
+
+## The per-frame rebuild that breathing and morphing share: the drag rung, never the full
+## one, and never a grow-in. A morph takes the lower of the two presets' rungs, because the
+## branching factor is already the target's from the first frame that pads the map list.
+func _rebuild_live() -> void:
+	var want := detail
+	var rung := drag_detail()
+	if morph_to >= 0:
+		rung = mini(rung, int(PRESETS[morph_to]["drag"]))
+	detail = mini(want, rung)
+	build(false)
+	detail = want
+
+
 ## Rebuild for the current parameters. Synchronous and deterministic: same parameters in,
 ## identical buffer out. Returns the instance count.
-func build() -> int:
+##
+## `grow` restarts the grow-in, which every full rebuild wants and no per-frame one does: a
+## drag has to track the hand exactly, and breathing or morphing would restart the animation
+## on every frame and so never show any of it.
+func build(grow := true) -> int:
 	var t0 := Time.get_ticks_usec()
 	rejected = 0
 	cap_note = ""
@@ -226,7 +447,15 @@ func build() -> int:
 		d2 = 0.0
 		rejected += 1
 	var dep := clampf(depth, DEPTH_MIN, DEPTH_MAX)
-	var maps := child_maps(n1.normalized(), d1, n2.normalized(), d2, base)
+	var maps := child_maps(n1.normalized(), d1, n2.normalized(), d2, live_base())
+	# Where each child map sends the origin back to, which is the parent's origin expressed in
+	# the child's own mesh space and a constant per map. The grow-in scales up out of it.
+	var back := PackedVector3Array()
+	var span := 1e-3
+	for m in maps:
+		var p: Vector3 = m.affine_inverse().origin
+		back.append(p)
+		span = maxf(span, maxf(absf(p.x), maxf(absf(p.y), absf(p.z))))
 
 	# Count before allocating and stop at the last level that fits whole. One fully
 	# detailed corner beside seven coarse ones would read as a bug, not as a limit.
@@ -250,32 +479,55 @@ func build() -> int:
 	var stretch := Transform3D(Basis.from_scale(Vector3(1.0, 1.0, dep)), Vector3.ZERO)
 	xforms = [stretch]
 	levels = PackedInt32Array([0])
+	# Which child map produced each instance, and so which entry of `back` its parent sits at.
+	# The root has no parent and grows out of its own centre.
+	var from_map := PackedInt32Array([-1])
 	var start := 0
 	for k in range(1, fit + 1):
 		var stop := xforms.size()
 		for i in range(start, stop):
-			for m in maps:
-				xforms.append(xforms[i] * m)
+			for j in maps.size():
+				xforms.append(xforms[i] * maps[j])
 				levels.append(k)
+				from_map.append(j)
 		start = stop
 	levels_built = fit
 	instance_count = xforms.size()
 	triangle_count = instance_count * seed_tris
 
+	# The outermost instance, so the radial coordinate the shader colours by spans exactly
+	# [0, 1] whatever the preset, the rung and the depth stretch have made of the shape.
+	var far := 0.0
+	for t in xforms:
+		far = maxf(far, t.origin.length())
+	var inv_r := 1.0 / maxf(far, 1e-4)
+	var inv_lvl := 1.0 / float(maxi(levels_built, 1))
+	var birth_span := float(levels_built) + BIRTH_RADIUS
+	var inv_birth := 1.0 / maxf(birth_span, 1e-3)
+	var inv_span := 0.5 / span
+
 	var buf := PackedFloat32Array()
-	buf.resize(instance_count * 16)
+	buf.resize(instance_count * 20)
 	bounds = xforms[0] * seed_box
 	for i in instance_count:
 		var t: Transform3D = xforms[i]
 		bounds = bounds.merge(t * seed_box)
 		var b := t.basis
 		var o := t.origin
-		var j := i * 16
+		var j := i * 20
 		buf[j + 0] = b.x.x; buf[j + 1] = b.y.x; buf[j + 2] = b.z.x; buf[j + 3] = o.x
 		buf[j + 4] = b.x.y; buf[j + 5] = b.y.y; buf[j + 6] = b.z.y; buf[j + 7] = o.y
 		buf[j + 8] = b.x.z; buf[j + 9] = b.y.z; buf[j + 10] = b.z.z; buf[j + 11] = o.z
-		var col := level_colour(levels[i])
-		buf[j + 12] = col.r; buf[j + 13] = col.g; buf[j + 14] = col.b; buf[j + 15] = col.a
+		var p: Vector3 = back[from_map[i]] if from_map[i] >= 0 else Vector3.ZERO
+		buf[j + 12] = p.x * inv_span + 0.5
+		buf[j + 13] = p.y * inv_span + 0.5
+		buf[j + 14] = p.z * inv_span + 0.5
+		buf[j + 15] = 1.0
+		var rad := clampf(o.length() * inv_r, 0.0, 1.0)
+		buf[j + 16] = clampf(float(levels[i]) * inv_lvl, 0.0, 1.0)
+		buf[j + 17] = rad
+		buf[j + 18] = clampf((float(levels[i]) + BIRTH_RADIUS * rad) * inv_birth, 0.0, 1.0)
+		buf[j + 19] = 0.0
 
 	var mm := _mmi.multimesh
 	mm.instance_count = 0
@@ -283,8 +535,17 @@ func build() -> int:
 	if instance_count > 0:
 		mm.buffer = buf
 	# MultiMesh instances are not culled individually, and an auto AABB would be recomputed
-	# from the buffer anyway. Publishing ours makes the bounds check mean something.
+	# from the buffer anyway. Publishing ours makes the bounds check mean something. Grown
+	# from the parent origins, every instance stays inside its finished box, so the bound a
+	# still shape publishes covers the animation too.
 	_mmi.custom_aabb = bounds
+	_mat.set_shader_parameter("origin_span", span)
+	_mat.set_shader_parameter("grow_span", birth_span * GROW_STAGGER)
+	# A grow-in started mid-morph would be restarted by the next frame's rebuild and never be
+	# seen; the morph runs its own on the frame it lands.
+	if grow and morph_t >= 1.0:
+		_born_at = anim_t
+		_mat.set_shader_parameter("born_at", _born_at)
 	build_ms = float(Time.get_ticks_usec() - t0) * 0.001
 	return instance_count
 
@@ -367,25 +628,39 @@ static func _point_to_segment(p: Vector3, a: Vector3, b: Vector3) -> float:
 
 
 ## Palette hook shaped like FractalTree.set_palette: an array of Colors, coarse to fine.
-## Recolours in place, so a theme change never rebuilds geometry.
+## Rebuilds the ramp the shader samples and nothing else, so a theme change costs one small
+## texture and never touches the geometry or the instance buffer.
+##
+## The ramp is cyclic: N palette entries land on the N sample points i/N, and the first
+## colour is repeated at 1.0. The colour coordinate scrolls, so an open ramp would drift
+## through a seam once a cycle; a closed one has nowhere to tear.
 func set_palette(pal: Array) -> void:
 	_palette = pal
-	var mm := _mmi.multimesh
-	for i in mm.instance_count:
-		mm.set_instance_color(i, level_colour(levels[i]))
+	var cols: Array = pal if not pal.is_empty() else DEFAULT_PALETTE
+	var n := cols.size()
+	var offs := PackedFloat32Array()
+	var out := PackedColorArray()
+	for i in n + 1:
+		offs.append(float(i) / float(n))
+		out.append(Color(cols[i % n]))
+	_grad.offsets = offs
+	_grad.colors = out
 
 
-func level_colour(level: int) -> Color:
-	if _palette.is_empty():
-		return Color(0.82, 0.86, 0.95)
-	var f := float(level) / float(maxi(levels_built, 1)) * float(_palette.size() - 1)
-	var i0 := clampi(int(f), 0, _palette.size() - 1)
-	var i1 := mini(i0 + 1, _palette.size() - 1)
-	return Color(_palette[i0]).lerp(Color(_palette[i1]), f - float(i0))
+## The texture the shader samples, for a check that wants to read what was built rather than
+## trust that building it was asked for.
+func ramp_texture() -> GradientTexture1D:
+	return _ramp
 
 
 func set_cull_disabled(on: bool) -> void:
-	_mat.cull_mode = BaseMaterial3D.CULL_DISABLED if on else BaseMaterial3D.CULL_BACK
+	# A render_mode is compile-time, so the other setting is a second compiled shader rather
+	# than a property. It is the same source with one word changed, built the first time the
+	# probe asks for it, so there is no second file to keep in step and the app never pays.
+	if on and _shader_nocull == null:
+		_shader_nocull = Shader.new()
+		_shader_nocull.code = _shader.code.replace("cull_back", "cull_disabled")
+	_mat.shader = _shader_nocull if on else _shader
 
 
 ## [centre, half-extents, frame] for every edge of a seed polyhedron. The frame's z column is
@@ -459,7 +734,10 @@ func _add_beam(st: SurfaceTool, c: Vector3, h: Vector3, b: Basis) -> void:
 			var quad := [o - uu - vv, o + uu - vv, o + uu + vv, o - uu + vv]
 			for idx in [0, 1, 2, 0, 2, 3]:
 				st.set_normal(n)
-				st.set_color(Color(shade, shade, shade))
+				# In the UV and not in vertex colour: a MultiMesh multiplies the instance
+				# colour into the vertex one, and the instance colour is carrying the parent
+				# origin the grow-in needs. The UV is otherwise unused on this mesh.
+				st.set_uv(Vector2(shade, 0.0))
 				st.add_vertex(quad[idx])
 
 

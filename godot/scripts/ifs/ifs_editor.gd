@@ -311,7 +311,9 @@ func _drag(hand: XRController3D) -> void:
 		_ifs.depth = clampf((sgn * target.z - DEPTH_MARGIN) / _z_per_depth,
 			FractalIFS.DEPTH_MIN, FractalIFS.DEPTH_MAX)
 	_ifs.detail = _drag_detail()
-	_ifs.build()
+	# No grow-in on a drag frame: the shape has to sit exactly where the hand is putting it,
+	# and restarting the animation every frame would show none of it anyway.
+	_ifs.build(false)
 	# Guides are placed from the parameters, not from the last published buffer, so a handle
 	# keeps up with the hand at whatever rung the rebuild is running.
 	refresh()
