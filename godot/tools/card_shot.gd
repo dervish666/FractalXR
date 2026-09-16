@@ -10,7 +10,7 @@ extends SceneTree
 ##
 ##   tools/card_shot.sh
 
-const MODES := ["flame", "bulb", "ground", "tree"]
+const MODES := ["flame", "bulb", "ground", "tree", "ifs"]
 
 
 func _init() -> void:

@@ -172,6 +172,32 @@ const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
 var tree_shape_idx := 0
 var tree_wind_idx := 0
 var tree_depth_idx := 0
+## The fifth: a finite IFS assembly of mirrored cube frames, sculpted at tabletop size.
+## Child of the cloud like the tree, so grab, scale and CENTRE apply unchanged; the cloud's
+## own draw is hidden underneath it and nothing is dispatched while it shows.
+var ifs := FractalIFS.new()
+var ifs_mode := false
+## The sculpting handles. A child of the IFS node, so its parameter space is the construction
+## space whatever the grab has done to the cloud, and hiding the sculpture hides the guides.
+var ifs_edit := IfsEditor.new()
+## Tabletop framing. The IFS is real geometry in construction units, so its scale comes from
+## its own published bounds rather than from the particle cloud's measured extent, which
+## describes a flame that is not being drawn.
+## 0.6 m across with its centre 0.8 m out puts the near face about half a metre from the
+## eyes: close enough to reach into, far enough to focus on. The first values tried put the
+## centre at 0.55 m, which left the near face 0.25 m away and filled the whole view.
+const IFS_WIDTH_M := 0.6          # how wide the sculpture arrives, in metres
+const IFS_DISTANCE := 0.8         # to the centre, along the viewer's forward axis
+const IFS_DROP := 0.28            # below the eye line, like something set down on a table
+## Recursion rungs. 3 is the default: 585 frames and ~84k triangles, the rung IFS-1
+## captured. 4 is 4,681 frames and is the rung worth measuring on the headset.
+const IFS_DETAIL := [1, 2, 3, 4]
+const IFS_DETAIL_DEFAULT := 2
+var ifs_detail_idx := IFS_DETAIL_DEFAULT
+## Front-to-back stretch, independent of DETAIL and of the grab's uniform scale. Default
+## first, then deeper, then wrapping to the flat end, as the other ladders here do.
+const IFS_DEPTH := [1.0, 1.5, 2.0, 0.25, 0.5]
+var ifs_depth_idx := 0
 const GROUND_ITER := [256, 512, 1024, 2048, 4096, 128]
 var ground_iter_idx := 0
 const GROUND_RELIEF := ["terrain", "terraces", "ridges", "flat"]
@@ -228,6 +254,14 @@ var _hud_accum := 0.0
 var _uptime := 0.0
 var _eye_res := Vector2i.ZERO
 var _prev := {}
+## Trigger state for the frame, read once in _process. The IFS editor pass runs before the
+## grab and _handle_input runs after it, and _pressed reports a rising edge exactly once, so
+## both have to read the same stored answer rather than poll the button twice. Left, right.
+var _trig := [false, false]
+var _trig_held := [false, false]
+## True when the IFS editor took this frame's trigger. Nothing below it in the priority order
+## gets a second go at the same press.
+var _trig_owned := false
 var _placed := false
 var _morph_from_idx := 0
 var _pending_cache := -1
@@ -391,6 +425,9 @@ func _ready() -> void:
 	add_child(cloud)
 	cloud.add_child(march)
 	cloud.add_child(tree)
+	cloud.add_child(ifs)
+	ifs.add_child(ifs_edit)
+	ifs_edit.setup(ifs)
 	add_child(ground)
 	add_child(orbit)
 	add_child(plant_marker)
@@ -463,20 +500,52 @@ func _load_preset(i: int) -> bool:
 func _build_menu() -> void:
 	# Which modes an item belongs to. Everything else hides, and the wrist menu drops a
 	# section whose tiles are all hidden, so each mode gets only its own controls.
-	var _vis_flame := func(): return not bulb_mode and not ground_mode and not tree_mode
-	var _vis_cloud := func(): return not ground_mode and not tree_mode
-	var _vis_grab := func(): return not ground_mode    # the tree is grabbed and spun too
+	var _vis_flame := func(): return not bulb_mode and not ground_mode and not tree_mode and not ifs_mode
+	var _vis_cloud := func(): return not ground_mode and not tree_mode and not ifs_mode
+	# The tree is grabbed and spun too. The IFS is grabbed but never spun (a shape you are
+	# about to edit has to hold still), and RESET below is its CENTRE.
+	var _vis_grab := func(): return not ground_mode and not ifs_mode
 	var _vis_tree := func(): return tree_mode
+	var _vis_ifs := func(): return ifs_mode
 	menu.items = [
-		# The mode strip: four segments under the title, always in the same place.
+		# The mode strip: five segments under the title, always in the same place.
 		WristMenu.Item.new("mode", "FLAME", func(): return "",
-			func(): _set_mode("flame")).chosen_when(func(): return not bulb_mode and not ground_mode and not tree_mode),
+			func(): _set_mode("flame")).chosen_when(func():
+				return not bulb_mode and not ground_mode and not tree_mode and not ifs_mode),
 		WristMenu.Item.new("mode", "BULB", func(): return "",
 			func(): _set_mode("bulb")).chosen_when(func(): return bulb_mode),
 		WristMenu.Item.new("mode", "GROUND", func(): return "",
 			func(): _set_mode("ground")).chosen_when(func(): return ground_mode),
 		WristMenu.Item.new("mode", "TREE", func(): return "",
 			func(): _set_mode("tree")).chosen_when(func(): return tree_mode),
+		WristMenu.Item.new("mode", "IFS", func(): return "",
+			func(): _set_mode("ifs")).chosen_when(func(): return ifs_mode),
+
+		# IFS controls. DEPTH and DETAIL are deliberately separate: one stretches the shape
+		# front to back, the other adds a generation. Both rebuild; the palette does not.
+		WristMenu.Item.new("make", "DETAIL",
+			func(): return "%d · %d" % [IFS_DETAIL[ifs_detail_idx], ifs.instance_count],
+			func(): _step_ifs_detail(1),
+			false, _vis_ifs).stepping(func(d: int): _step_ifs_detail(d)),
+		WristMenu.Item.new("make", "DEPTH",
+			func(): return "%.2fx" % IFS_DEPTH[ifs_depth_idx],
+			func(): _step_ifs_depth(1),
+			false, _vis_ifs).stepping(func(d: int): _step_ifs_depth(d)),
+		# EDIT puts the handles up; the trigger only picks one while they are showing. UNDO is a
+		# single step back to the parameters the last completed edit started from, and RESET is
+		# the other direction, which is why it clears the undo.
+		WristMenu.Item.new("make", "EDIT",
+			func(): return "handles on" if ifs_edit.guides_on else "handles off",
+			func(): ifs_edit.set_guides(not ifs_edit.guides_on),
+			false, _vis_ifs),
+		WristMenu.Item.new("make", "UNDO",
+			func(): return "last edit" if ifs_edit.has_undo() else "nothing yet",
+			func(): ifs_edit.undo(),
+			false, _vis_ifs),
+		WristMenu.Item.new("make", "RESET",
+			func(): return "shape + pose",
+			func(): _reset_ifs(),
+			false, _vis_ifs),
 
 		WristMenu.Item.new("make", "SHAPE",
 			func(): return FractalTree.SHAPE_NAMES[tree_shape_idx],
@@ -678,9 +747,13 @@ func _build_menu() -> void:
 		# of both eyes marching, and the bail-out left the renderer in a broken pipeline
 		# state that the GPU then faulted on. _enter_inside() stays for the desktop shot
 		# harness and for the day the interior gets a quarter-res pass with reprojection.
+		# Hidden in IFS, where DETAIL is a recursion rung. Two tiles reading DETAIL on one
+		# panel is worse than losing the eye-buffer step in the one mode that draws a few
+		# hundred opaque instances; the right menu button still steps it there.
 		WristMenu.Item.new("look", "DETAIL",
 			func(): return "%.2fx" % (MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx]),
-			func(): _step_detail(1)).stepping(func(d: int): _step_detail(d)),
+			func(): _step_detail(1),
+			false, func(): return not ifs_mode).stepping(func(d: int): _step_detail(d)),
 		WristMenu.Item.new("look", "SET",
 			func(): return ground.formula_name(),
 			func(): ground.set_formula(ground.formula + 1),
@@ -840,6 +913,8 @@ func _build_menu() -> void:
 					_exit_armed_until = _uptime + EXIT_ARM_S),
 	]
 	menu.title = func():
+		if ifs_mode:
+			return "Mirror frames  ·  detail %d" % IFS_DETAIL[ifs_detail_idx]
 		if tree_mode:
 			return "%s forest  ·  %d trees" % [FractalTree.SHAPE_NAMES[tree_shape_idx].capitalize(), _forest_tree_count()]
 		if ground_mode:
@@ -849,6 +924,16 @@ func _build_menu() -> void:
 				_zoom_text(z)]
 		return str(library.bulbs[bulb_idx].get("name", "?")) if bulb_mode else library.name_at(preset_idx)
 	menu.status_side = func():
+		if ifs_mode:
+			# Which handle has the trigger, while it has it. Nothing else on this line matters
+			# as much mid-drag as knowing what your hand is holding.
+			if ifs_edit.is_editing():
+				return ifs_edit.status()
+			# A capped build is the one thing here worth interrupting for: it means the rung
+			# on the tile is not the rung on the screen.
+			if ifs.cap_note != "":
+				return "capped at level %d" % ifs.levels_built
+			return "%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]
 		if tree_mode:
 			# At capacity the trigger stops doing anything and the marker goes away, so
 			# say why here rather than leaving the floor silently dead.
@@ -877,6 +962,11 @@ func _build_menu() -> void:
 		return "drifting" if _drift else ""
 
 	menu.status_main = func():
+		if ifs_mode:
+			# Build time, not draw time: the sculpture is static, so what a rung costs to
+			# generate is the number that decides whether a drag can rebuild every frame.
+			return "%.0f fps  ·  detail %d  ·  build %.2f ms" % [
+				Engine.get_frames_per_second(), IFS_DETAIL[ifs_detail_idx], ifs.build_ms]
 		return "%.0f fps  ·  %d flames  ·  %.1f ms" % [
 			Engine.get_frames_per_second(), library.count(),
 			RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
@@ -937,12 +1027,16 @@ func _set_mode(kind: String) -> void:
 	var want_bulb := kind == "bulb"
 	var want_ground := kind == "ground"
 	var want_tree := kind == "tree"
-	if bulb_mode == want_bulb and ground_mode == want_ground and tree_mode == want_tree:
+	var want_ifs := kind == "ifs"
+	if bulb_mode == want_bulb and ground_mode == want_ground and tree_mode == want_tree \
+			and ifs_mode == want_ifs:
 		return
 	if ground_mode and not want_ground:
 		_set_ground_mode(false)
 	if tree_mode and not want_tree:
 		_set_tree_mode(false)
+	if ifs_mode and not want_ifs:
+		_set_ifs_mode(false)
 	if bulb_mode and not want_bulb:
 		_set_bulb_mode(false)
 	if want_bulb and not bulb_mode:
@@ -951,6 +1045,8 @@ func _set_mode(kind: String) -> void:
 		_set_ground_mode(true)
 	if want_tree and not tree_mode:
 		_set_tree_mode(true)
+	if want_ifs and not ifs_mode:
+		_set_ifs_mode(true)
 	help.set_mode(kind)
 
 
@@ -975,6 +1071,82 @@ func _set_tree_mode(on: bool) -> void:
 	else:
 		_recenter()
 		cloud.request_measure()
+
+
+## The sculpture arrives within reach at tabletop size. The cloud underneath keeps its
+## source but is hidden and not iterated, exactly as tree mode leaves it. A grip still moves
+## and scales the whole thing; IFS-3 takes the trigger for the plane handles.
+func _set_ifs_mode(on: bool) -> void:
+	ifs_mode = on
+	ifs.visible = on
+	cloud.set_visible_cloud(not on)
+	if on:
+		if ifs.instance_count == 0:
+			ifs.detail = IFS_DETAIL[ifs_detail_idx]
+			ifs.depth = IFS_DEPTH[ifs_depth_idx]
+			ifs.build()
+		ifs_edit.refresh()
+		_recenter()
+		_apply_palette()
+	else:
+		# Nothing this mode changed outlives it: an unfinished edit is cancelled and its
+		# snapshot restored, the grab is reset with the destination's own framing, and the
+		# particle cloud is re-measured for whatever is about to draw it.
+		ifs_edit.cancel()
+		grab.suspended = false
+		_recenter()
+		cloud.request_measure()
+
+
+## Recursion rungs 1..4. Rebuilding is a few hundred transforms and one buffer fill; the
+## wrist panel prints what it measured rather than what this comment guesses.
+func _step_ifs_detail(d: int) -> void:
+	ifs_detail_idx = wrapi(ifs_detail_idx + d, 0, IFS_DETAIL.size())
+	ifs.detail = IFS_DETAIL[ifs_detail_idx]
+	# A drag previews one rung down, so it owns ifs.detail until the trigger comes up. Telling
+	# the editor keeps the release at the rung the tile now says.
+	ifs_edit.set_detail(ifs.detail)
+	ifs.build()
+	ifs_edit.refresh()
+
+
+## Front-to-back stretch. Deliberately not a rebuild of the world transform: DEPTH has to
+## feel different from grabbing the sculpture and pulling it wider.
+func _step_ifs_depth(d: int) -> void:
+	ifs_depth_idx = wrapi(ifs_depth_idx + d, 0, IFS_DEPTH.size())
+	ifs.depth = IFS_DEPTH[ifs_depth_idx]
+	ifs.build()
+	ifs_edit.refresh()   # the depth plates sit on the published z extent, which just moved
+
+
+## Back to the shape and the pose the mode opens with. Geometry and placement only: the
+## palette, the eye buffer and passthrough are the user's choices, not this mode's.
+func _reset_ifs() -> void:
+	# End any edit first, or the frame after this one would drag the reset shape straight back
+	# out. The undo goes with it: one step back must never land before a reset.
+	ifs_edit.cancel()
+	ifs_edit.clear_undo()
+	ifs.plane1_normal = FractalIFS.DEFAULT_N1
+	ifs.plane2_normal = FractalIFS.DEFAULT_N2
+	ifs.plane1_offset = 0.0
+	ifs.plane2_offset = 0.0
+	ifs_detail_idx = IFS_DETAIL_DEFAULT
+	ifs_depth_idx = 0
+	ifs.detail = IFS_DETAIL[ifs_detail_idx]
+	ifs.depth = IFS_DEPTH[ifs_depth_idx]
+	ifs.build()
+	ifs_edit.refresh()
+	_recenter()
+
+
+## Construction units to metres, so the sculpture arrives about IFS_WIDTH_M across whatever
+## the current detail makes of it. Width only: DEPTH is meant to be seen as a change in the
+## shape, and normalising against the z extent would quietly undo it.
+func _ifs_scale() -> float:
+	var span := maxf(ifs.bounds.size.x, ifs.bounds.size.y)
+	if span < 1e-3:
+		span = 2.0 * FractalIFS.SEED_HALF
+	return IFS_WIDTH_M / span
 
 
 ## The selected species controls the hero tree and the next sapling planted with the
@@ -1008,6 +1180,15 @@ func _perf_tail() -> String:
 	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
 	var head := " cpu_ms=%.3f hz=%.0f guard=%.2f mr=%s" % [
 		cpu_ms, hz, _perf_scale, "on" if passthrough else "off"]
+	if ifs_mode:
+		# edit= is what makes a drag measurable after the fact: build_ms during a drag is the
+		# number that decides whether every frame can rebuild, and without this field there is
+		# no way to tell a drag frame from an idle one in the log.
+		return head + (" mode=ifs detail=%d depth=%.2f instances=%d triangles=%d build_ms=%.3f"
+			+ " edit=%s") % [
+			IFS_DETAIL[ifs_detail_idx], ifs.depth, ifs.instance_count,
+			ifs.triangle_count, ifs.build_ms,
+			ifs_edit.handle_label().replace(" ", "_") if ifs_edit.is_editing() else "none"]
 	if tree_mode:
 		return head + " mode=tree species=%s trees=%d branches=%d wind=%s leaves=%s" % [
 			FractalTree.SHAPE_NAMES[tree_shape_idx], _forest_tree_count(),
@@ -1034,7 +1215,11 @@ func _zoom_text(z: float) -> String:
 
 
 func _step_specimen(d: int) -> void:
-	if tree_mode:
+	# IFS has one shape rather than a gallery, so A and B step the only ladder it has. Left
+	# out, they fell through to _morph_to_preset and walked the flame gallery invisibly.
+	if ifs_mode:
+		_step_ifs_detail(d)
+	elif tree_mode:
 		_cycle_tree_shape(d)
 	elif ground_mode:
 		ground_relief_idx = wrapi(ground_relief_idx + d, 0, GROUND_RELIEF.size())
@@ -1443,6 +1628,11 @@ func _should_iterate() -> bool:
 
 
 func _sync_iteration() -> void:
+	# Nothing is dispatched in IFS, so leave whatever update rate the destination mode is
+	# going to want. Hiding the cloud is not enough on its own: this runs earlier than the
+	# visibility checks in _process and would otherwise keep re-arming a source that is idle.
+	if ifs_mode:
+		return
 	if bulb_mode:
 		if _bulb == null:
 			return
@@ -1696,6 +1886,18 @@ func _recenter() -> void:
 			fwd = Vector3.FORWARD
 		fwd = fwd.normalized()
 		t = Transform3D(Basis(), Vector3(cam.origin.x, 0.0, cam.origin.z) + fwd * TREE_DISTANCE)
+	elif ifs_mode:
+		# Its own fixed tabletop framing, not the particle cloud's measured bounds: those
+		# describe a flame that is not being drawn.
+		var cam := xr_camera.global_transform
+		var fwd := -cam.basis.z
+		fwd.y = 0.0
+		if fwd.length_squared() < 1e-4:
+			fwd = Vector3.FORWARD
+		fwd = fwd.normalized()
+		var pos := cam.origin + fwd * IFS_DISTANCE
+		pos.y = cam.origin.y - IFS_DROP
+		t = Transform3D(Basis().scaled(Vector3.ONE * _ifs_scale()), pos)
 	if grab != null:
 		grab.reset(t)
 	else:
@@ -1726,7 +1928,10 @@ func _process(delta: float) -> void:
 	_menu_active = menu.update(delta)
 	if _xr_focused:
 		_run_guard(delta)
-	if _bulb != null:
+	# _set_mode leaves bulb mode before IFS starts, so _bulb is already null here. The guard
+	# is written out anyway: breathing and marching a surface nobody is drawing is pure cost,
+	# and the ordering that makes it unreachable lives in another function.
+	if _bulb != null and not ifs_mode:
 		# The breath is the animation: each genome slowly reshapes whichever parameter
 		# defines its form, so the surface is never static.
 		_bulb.clock += delta * BREATH_STEPS[breath_idx]
@@ -1736,7 +1941,7 @@ func _process(delta: float) -> void:
 			_guard_inside()
 		elif march.is_on():
 			_guard_march()
-	if not ground_mode and not tree_mode:
+	if not ground_mode and not tree_mode and not ifs_mode:
 		_tick_morph(delta)   # the flame and its drift wait while you are on the ground
 	if _converge > 0:
 		_converge -= 1
@@ -1755,11 +1960,18 @@ func _process(delta: float) -> void:
 			print("[cloud] cached framing for %s" % library.name_at(_pending_cache))
 		_pending_cache = -1
 	_sync_iteration()
-	if spin and _xr_focused and not ground_mode and (grab == null or not grab.is_grabbing()):
+	# No ambient spin in IFS: a shape you are about to reach into and edit has to hold still.
+	if spin and _xr_focused and not ground_mode and not ifs_mode \
+			and (grab == null or not grab.is_grabbing()):
 		cloud.rotate_y(AMBIENT_SPIN * delta)
 		if not tree_mode:   # a tree turns; it does not tip over
 			cloud.rotate_object_local(Vector3.RIGHT, AMBIENT_TILT * delta)
+	_read_triggers()
+	# The IFS handles resolve before the grab polls its grips, so an edit that starts this
+	# frame suspends the grab in the same frame rather than a frame late.
+	_trig_owned = _ifs_edit_pass()
 	if grab != null:
+		grab.suspended = ifs_edit.is_editing()
 		grab.update(delta)
 	_handle_input(delta)
 	_update_hud(delta)
@@ -1779,6 +1991,10 @@ func _process(delta: float) -> void:
 		for planted in _forest_trees:
 			planted.tick(delta)
 		return
+	# Static geometry: nothing to tick, and nothing to dispatch. Returning here is what keeps
+	# the chaos game off the GPU while the sculpture is up.
+	if ifs_mode:
+		return
 	# The depth sort is for the head; both eyes share one order, as Spark does.
 	cloud.set_view(xr_camera.global_transform)
 	RenderingServer.call_on_render_thread(cloud.iterate)
@@ -1794,13 +2010,10 @@ func _process(delta: float) -> void:
 # Left trigger           previous preset / regrow forest / glide to ground point
 
 func _handle_input(delta: float) -> void:
-	# While the card is up the triggers only dismiss it. Both are read every frame rather
-	# than short-circuited, or _pressed's edge state for the unread hand goes stale.
+	# While the card is up the triggers only dismiss it. The edges were read in _process, for
+	# both hands, so nothing here can leave one hand's edge state stale.
 	if help.is_open():
-		var r_trig := _pressed(right_hand, "trigger_click")
-		var l_trig := _pressed(left_hand, "trigger_click")
-		var key := _key(KEY_SPACE)
-		if r_trig or l_trig or key:
+		if _trig[0] or _trig[1] or _key(KEY_SPACE):
 			help.close()
 		return
 
@@ -1832,8 +2045,9 @@ func _handle_input(delta: float) -> void:
 			if absf(rs.x) > 0.15:
 				ground.rotate_about_head(-rs.x * GROUND_TURN_RAD_S * delta)
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
-	# same transform makes the cloud feel like it is slipping.
-	elif grab == null or not grab.is_grabbing():
+	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
+	# the sculpture moves out from under the plane you are dragging.
+	elif (grab == null or not grab.is_grabbing()) and not ifs_edit.is_editing():
 		if absf(rs.x) > 0.15 and not menu.wants_stick():
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
@@ -1845,8 +2059,9 @@ func _handle_input(delta: float) -> void:
 
 	# Read every button every frame, even when this mode maps it differently. Otherwise a
 	# held button becomes a phantom new press after a hand regains tracking or a mode flips.
-	var r_trigger := _pressed(right_hand, "trigger_click")
-	var l_trigger := _pressed(left_hand, "trigger_click")
+	# The triggers were read in _process, before the grab, for the same reason.
+	var r_trigger: bool = _trig[1]
+	var l_trigger: bool = _trig[0]
 	var r_a := _pressed(right_hand, "ax_button")
 	var r_b := _pressed(right_hand, "by_button")
 	var r_stick := _pressed(right_hand, "primary_click")
@@ -1856,13 +2071,20 @@ func _handle_input(delta: float) -> void:
 	var l_menu := _pressed(left_hand, "menu_button")
 	var r_menu := _pressed(right_hand, "menu_button")
 
-	if r_trigger or _key(KEY_RIGHT):
+	# An edit trigger is spent. The editor sits below the wrist menu and above everything else
+	# in the priority order, so a press it took cannot also step a gallery or plant a tree.
+	if (r_trigger or _key(KEY_RIGHT)) and not _trig_owned:
 		if _menu_active:
 			menu.activate()
 		elif ground_mode:
 			_ground_teleport(right_hand)
 		elif tree_mode:
 			_plant_tree_from_hand(right_hand)
+		elif ifs_mode:
+			# The handles own the trigger here, and they are picked in _ifs_edit_pass before
+			# the grab. Falling through would quietly walk the flame gallery behind the
+			# sculpture, which is the bug the bulb branch below was added to fix.
+			pass
 		elif bulb_mode:
 			# Bulb mode used to fall through to the flame morph. Nothing moved, because
 			# _tick_morph returns early for bulbs, but preset_idx advanced anyway: the
@@ -1871,16 +2093,18 @@ func _handle_input(delta: float) -> void:
 			_load_bulb(bulb_idx + 1)
 		else:
 			_morph_to_preset(preset_idx + 1)
-	if l_trigger or _key(KEY_LEFT):
+	if (l_trigger or _key(KEY_LEFT)) and not _trig_owned:
 		if ground_mode:
 			_ground_teleport(left_hand)
 		elif tree_mode:
 			_regrow_forest()
+		elif ifs_mode:
+			pass   # same as the right trigger: the handles have it
 		elif bulb_mode:
 			_load_bulb(bulb_idx - 1)
 		else:
 			_morph_to_preset(preset_idx - 1)
-	if (l_menu or _key(KEY_D)) and not ground_mode and not tree_mode:
+	if (l_menu or _key(KEY_D)) and not ground_mode and not tree_mode and not ifs_mode:
 		_drift = not _drift
 		_drift_hold = 0.0
 
@@ -1906,6 +2130,17 @@ func _handle_input(delta: float) -> void:
 			_recenter()
 		if l_y or _key(KEY_5):
 			_regrow_forest()
+	elif ifs_mode:
+		# The sculpture has no cloud under it, so the flame's brightness and motion toggles
+		# have nothing to act on. DEPTH and RESET take their place; exposure still means
+		# what it means everywhere, because it is the Environment's.
+		if r_stick or _key(KEY_3):
+			_step_ifs_depth(1)
+		if l_x or _key(KEY_R):
+			_reset_ifs()
+		if l_y or _key(KEY_5):
+			exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size()
+			_apply_exposure()
 	elif ground_mode:
 		if r_stick or _key(KEY_3):
 			orbit_on = not orbit_on
@@ -1938,7 +2173,7 @@ func _handle_input(delta: float) -> void:
 			_apply_exposure()
 	if _key(KEY_W):
 		spin = not spin
-	if _key(KEY_S) and not ground_mode and not tree_mode:
+	if _key(KEY_S) and not ground_mode and not tree_mode and not ifs_mode:
 		cloud.request_seed()
 		_converge = CONVERGE_FRAMES
 	if r_menu or _key(KEY_6):
@@ -1964,26 +2199,34 @@ func _apply_palette() -> void:
 	if cloud.source == null:
 		return
 	var target := _theme_palette()
+	var pal := target
 	if _theme_blend < 1.0 and _theme_from.size() == target.size():
 		var mixed: Array = []
 		for i in target.size():
 			mixed.append((_theme_from[i] as Vector3).lerp(target[i] as Vector3,
 				Morph.smoothstep_t(_theme_blend)))
-		cloud.override_palette(mixed)
-		ground.set_palette(mixed)
-		menu.set_palette(mixed)
-		march.set_palette(mixed)
-		_set_forest_palette(mixed)
-		orbit.set_palette(mixed)
-		plant_marker.set_palette(mixed)
-	else:
-		cloud.override_palette(target)
-		ground.set_palette(target)
-		menu.set_palette(target)
-		march.set_palette(target)
-		_set_forest_palette(target)
-		orbit.set_palette(target)
-		plant_marker.set_palette(target)
+		pal = mixed
+	cloud.override_palette(pal)
+	ground.set_palette(pal)
+	menu.set_palette(pal)
+	march.set_palette(pal)
+	_set_forest_palette(pal)
+	orbit.set_palette(pal)
+	plant_marker.set_palette(pal)
+	# Recolouring the sculpture walks every instance, so only the mode that draws it pays.
+	# Entering IFS calls this, so it always arrives wearing the current theme.
+	if ifs_mode:
+		ifs.set_palette(_ifs_colours(pal))
+
+
+## The shared palette travels as Vector3 rgb, straight into shader parameters. FractalIFS
+## tints MultiMesh instances instead, which takes real Colors.
+func _ifs_colours(pal: Array) -> Array:
+	var out: Array = []
+	for c in pal:
+		var v: Vector3 = c
+		out.append(Color(v.x, v.y, v.z))
+	return out
 
 
 var _theme_cache: Dictionary = {}   # theme index -> Array[Vector3], parsed once
@@ -2101,6 +2344,40 @@ func _pressed(c: XRController3D, action: String) -> bool:
 	var was: bool = _prev.get(key, false)
 	_prev[key] = now
 	return now and not was
+
+
+## Both triggers, once per frame: the rising edge for anything that acts on a press, and the
+## held state for the editor, which needs to know when a captured handle is let go.
+func _read_triggers() -> void:
+	_trig = [_pressed(left_hand, "trigger_click"), _pressed(right_hand, "trigger_click")]
+	_trig_held = [_held_trigger(left_hand), _held_trigger(right_hand)]
+
+
+func _held_trigger(c: XRController3D) -> bool:
+	if not _tracked_hand(c):
+		return false
+	return c.is_button_pressed("trigger_click")
+
+
+## The app's one answer to "is this hand usable". On the desktop there is no XR interface and
+## no tracking data, and the controller node's own transform stands in, which is what the shot
+## harness poses; _hand_floor_hit has said the same thing since tree mode landed.
+func _tracked_hand(c: XRController3D) -> bool:
+	return c != null and (xr == null or c.get_has_tracking_data())
+
+
+## Input ownership, resolved once per frame in the plan's order: lost focus or tracking, the
+## help card, the wrist menu, then a captured edit, then a new handle pick, then world grab.
+## Everything above the editor is a reason to cancel an edit in progress, not merely to skip
+## it, which is why `allow` goes in rather than an early return.
+func _ifs_edit_pass() -> bool:
+	if not ifs_mode:
+		ifs_edit.cancel()
+		return false
+	var allow := _xr_focused and not help.is_open() and not _menu_active
+	var hands: Array[XRController3D] = [left_hand, right_hand]
+	var tracked := [_tracked_hand(left_hand), _tracked_hand(right_hand)]
+	return ifs_edit.update(hands, _trig, _trig_held, tracked, allow)
 
 
 func _key(code: Key) -> bool:

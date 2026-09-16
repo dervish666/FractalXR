@@ -5,7 +5,7 @@ extends SceneTree
 ## Placement on the forearm and the feel of the hover are still headset work.
 ##
 ## It drives main.tscn, not a fixture. The previous version rebuilt a flame-shaped control
-## list by hand: it had three mode segments where the app has four, a tree-only CLEAR tile
+## list by hand: it had three mode segments where the app has five, a tree-only CLEAR tile
 ## in the flame layout, and no way at all to see the bulb, ground or tree menus. Every
 ## judgement made against those images was a judgement about the fixture.
 ##
@@ -14,7 +14,7 @@ extends SceneTree
 ##
 ##   tools/menu_shot.sh
 
-const MODES := ["flame", "bulb", "ground", "tree"]
+const MODES := ["flame", "bulb", "ground", "tree", "ifs"]
 ## Themes to sweep. -1 is the genome's own palette; the rest are library themes.
 const THEMES := [-1, 6, 12]
 ## Long strings, to prove the header and a value cell survive the worst real content.

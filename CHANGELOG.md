@@ -6,6 +6,42 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **Sculpting the IFS by hand.** EDIT puts up two outlined mirror-plane guides, PLANE A with
+  a continuous border and PLANE B with a dashed one, plus a labelled ring on the front and
+  back of the sculpture. Point or reach at a grab target, hold the trigger, and the plane
+  translates along its normal with your hand and turns with your wrist, clamped to 0.3
+  construction units of offset and 30 degrees of tilt. The rings stretch the shape front to
+  back about its own centre, between 0.08x and 2x. The geometry rebuilds on every frame of a
+  drag; detail 4 previews at detail 3 and rebuilds at 4 on release, because a detail-4 rebuild
+  measured 15 ms on the Quest, more than a frame. UNDO is one step back to where the last completed edit started, and RESET clears it.
+  Only one handle is edited at a time and the second controller is ignored while it is held.
+- **Input ownership is resolved once per frame**, in this order: lost focus or tracking, the
+  help card, the wrist menu, a captured edit, a new handle pick, then world grab. The editor
+  pass runs before `WorldGrab.update`, so an edit that starts this frame suspends the grab in
+  the same frame rather than a frame late, and the trigger it took cannot also step a preset
+  or activate a tile. Losing tracking, losing focus, hovering a wrist tile or changing mode
+  all cancel an unfinished edit, put the parameters back to where the drag started, and
+  require the trigger to be released before anything can be captured again.
+- **A fifth mode: IFS.** A finite assembly of mirrored cube frames arrives 0.6 m wide,
+  0.8 m in front of you, and stays put. Two mirror planes and a pair of contracting corner
+  maps generate eight children per level; DETAIL steps the recursion 1 to 4 (9 to 4,681
+  frames), DEPTH stretches the result front to back without changing the count, and RESET
+  returns both along with the tabletop pose. Grip moves it, two grips scale it. The
+  particle cloud is hidden and, more to the point, not dispatched: `ifs_mode` returns
+  before the chaos game, before `_sync_iteration()` and before the bulb clock, and the
+  ambient spin is off because a shape you are about to reach into has to hold still.
+  Sculpting the planes is the next milestone; the triggers do nothing here yet.
+- **`ifs_mode_shot.sh`, an integration check for the mode rather than the geometry.** It
+  drives the real main scene and asserts what a capture cannot show: that the cloud's
+  dispatch counter really stops (with flame mode as the control, because a zero from a
+  counter that never moves is not evidence), that the trigger cannot walk the flame
+  gallery from IFS, that the sculpture measures 0.6 m across with its near face half a
+  metre from the eyes, and that flame/tree, bulb and ground all come back with their own
+  settings after a trip through IFS.
+- **`WorldGrab.suspended`.** Set it and `update()` drops the grabbing set and stops moving
+  the target; clear it and the next frame recaptures from the current pose, so a still-held
+  grip does not snap the world by however far the hand travelled. Nothing uses it yet.
+  `ifs_check.sh` exercises the whole path through a registered fake XR controller tracker.
 - **Eight escape-time families on the ground, not one.** SET now cycles Mandelbrot,
   Burning Ship, Tricorn, Celtic, Perpendicular, Buffalo, Cubic and Quartic, and JULIA
   toggles the z0/c swap on whichever of them is showing, so all sixteen are reachable.
@@ -38,6 +74,12 @@ All notable changes to FractalXR are documented here. Format based on
   the ground without being nothing.
 
 ### Changed
+- **The eye-buffer DETAIL tile is hidden in IFS mode**, where DETAIL means a recursion
+  rung. Two tiles reading DETAIL on one wrist panel is worse than losing the eye-buffer
+  step in the one mode that draws a few hundred opaque instances, and the right menu
+  button still steps it there.
+- **The mode strip has five segments.** GROUND keeps its full label: the capture shows the
+  strip fitting at 760 px with no wrap and no squeeze.
 - **The distance stops shimmering.** The orbit texture and the specular are damped where
   the iteration bands crowd tighter than a pixel, measured as `fwidth` of the count,
   which is what the contour fade has always used. The first attempt derived it from

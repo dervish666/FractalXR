@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render the real wrist menu in all four modes to .spike-out/menu_<mode>_<theme>.png.
+# Render the real wrist menu in all five modes to .spike-out/menu_<mode>_<theme>.png.
 # Imports first, as selftest.sh does: a --script run does not rescan the filesystem.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"

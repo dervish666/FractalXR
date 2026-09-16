@@ -189,6 +189,8 @@ class ControlsCard extends Control:
 			subtitle = "walk a Mandelbrot landscape in your room"
 		elif _mode == "bulb":
 			subtitle = "a solid you can pick up and turn over"
+		elif _mode == "ifs":
+			subtitle = "a mirrored frame sculpture on the table in front of you"
 		draw_string(font, Vector2(0, 152), subtitle,
 			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, SUB_SIZE, DIM)
 
@@ -206,7 +208,7 @@ class ControlsCard extends Control:
 		var right_grip := PackedStringArray(["Both grips: scale", "and fly through"])
 		# A and B are previous and next in every mode. Only the noun changes.
 		var face := PackedStringArray(["A · B: previous,", "next flame"])
-		var mode_note := "Left wrist up for the menu:  FLAME · BULB · GROUND · TREE"
+		var mode_note := "Left wrist up for the menu:  FLAME · BULB · GROUND · TREE · IFS"
 		if _mode == "tree":
 			left_trigger = PackedStringArray(["Regrow", "every tree"])
 			right_trigger = PackedStringArray(["Plant a tree", "at the point"])
@@ -231,6 +233,17 @@ class ControlsCard extends Control:
 			right_trigger = PackedStringArray(["Next bulb"])
 			face = PackedStringArray(["A · B: previous,", "next bulb"])
 			mode_note = "It arrives hand-sized. Both grips make it a room; SURFACE changes how it is drawn."
+		elif _mode == "ifs":
+			# Written against what IFS-3 wires up. Either trigger picks a handle, and only
+			# while EDIT has the guides showing, so the card says both things.
+			left_trigger = PackedStringArray(["Hold on a handle", "to sculpt"])
+			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt"])
+			left_stick = PackedStringArray(["Grow and shrink"])
+			right_stick = PackedStringArray(["Turn it,", "push it away"])
+			face = PackedStringArray(["A · B: less,", "more detail"])
+			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
+			right_grip = PackedStringArray(["Both grips:", "scale it"])
+			mode_note = "EDIT shows the mirrors and depth handles; UNDO takes back the last edit"
 		_callout(left["trigger"], 310.0, true, left_trigger)
 		_callout(left["stick"], 450.0, true, left_stick)
 		_callout(left["grip"], 660.0, true, left_grip)

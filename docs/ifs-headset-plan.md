@@ -1,6 +1,6 @@
 # IFS sculpting and exploration — implementation handoff
 
-2026-09-15 · Native Godot / Quest 3 · Proposed implementation, not implemented
+2026-09-15, revised 2026-09-16 · Native Godot / Quest 3 · Proposed implementation, not implemented
 
 ## Outcome
 
@@ -8,7 +8,11 @@ Create a tabletop fractal using two movable mirror planes and a depth handle, th
 enlarge it into an architectural space. The user should understand the relationship:
 **move a mirror → change the repeated structure → explore the result from inside.**
 
-Start with one attractive open frame sculpture. Success means readable repetition,
+Start with one attractive open frame sculpture. The default rule may read as boxes
+stuffed into corners rather than a sculpture; IFS-1 must try two or three offset and
+contraction values in the desktop harness before any interaction code exists.
+Sculpt (IFS-1 to IFS-3) is the deliverable; Enter/Return (IFS-4) is decided after
+handling the sculpture on-device. Success means readable repetition,
 responsive manipulation, convincing stereo depth, and a stable headset frame rate.
 Feature count is secondary.
 
@@ -40,20 +44,20 @@ the viewer; it does not promise a watertight building or walkable virtual floors
 
 ## 2. Existing code and constraints
 
-Source inspected at `a6197c2` with ongoing uncommitted ground/main/help changes.
+Source inspected at `c376cca` (the ground/main/help changes are committed; tree is clean).
 Re-read named symbols before editing; preserve all unrelated work. Source takes
 precedence over older README/architecture descriptions.
 
 | Existing location | Reuse / integration point |
 |---|---|
 | `godot/scripts/tree/fractal_tree.gd` | Native procedural geometry pattern: `Node3D`, `MultiMeshInstance3D`, bounded recursion, palette, bounds. Tree is a child of `cloud`. Reuse the pattern, not tree-specific growth/wind. |
-| `godot/scripts/xr/world_grab.gd` | `WorldGrab.update`, `_recapture`, `reset`: one grip moves/rotates; two grips scale. Currently polls both controllers directly and targets `cloud`. |
+| `godot/scripts/xr/world_grab.gd` | `WorldGrab.update`, `_recapture`, `reset`: one grip moves/rotates; two grips scale. Polls both controllers directly and targets `cloud`. `update()` runs at `main.gd` ~1763, before `_handle_input()`. |
 | `godot/scripts/main.gd` | `_ready`, `_build_menu`, `_set_mode`, `_process`, `_handle_input`, `_recenter`, `_apply_palette`, `_update_hud`, `_sync_iteration`. Main integration owner. |
 | `godot/scripts/xr/wrist_menu.gd` | Existing sections/tiles, hover activation and `wants_stick()`. Mode tiles are built in `main.gd`. |
 | `godot/scripts/xr/help_card.gd` | `set_mode` and mode-specific controller copy. Add accurate Sculpt/Inside help. |
 | `godot/shaders/bulb.glsl`, `godot/scripts/sources/bulb_source.gd` | Existing KIFS distance estimator; reference only for this prototype. |
 | `src/flame/bulbs.ts` | Lattice/Cathedral/Snowflake parameters; aesthetic reference, not a mesh recipe. |
-| `godot/tools/tree_check.*`, `tree_shot.*`, `menu_shot.*` | CPU checks and real-scene capture patterns. Inspect current helpers before reuse. |
+| `godot/tools/orbit_check.*`, `forest_shot.*`, `ground_shot.*`, `menu_shot.*` | CPU checks (`orbit_check`) and real-scene capture patterns (`*_shot`). There is no `tree_check`/`tree_shot`; `forest_shot` is the tree capture. Inspect current helpers before reuse. |
 
 The existing KIFS folds coordinates for distance estimation. The proposed mesh
 prototype instead recursively places reflected, contracted copies of a seed frame.
@@ -84,9 +88,21 @@ A concrete starting rule, in construction coordinates:
    `{identity, R1, R2, R2 ∘ R1}` with each `B±`: eight children.
 5. Recursively compose the child maps, starting from identity. The 0.35 contraction
    keeps the repeated transforms bounded; plane movement changes their offsets.
+   Order is load-bearing: each child map is `reflect(contract(p))`. Contracting
+   after reflecting stacks all eight children into two corners (found in IFS-1).
 6. Render seed plus generations 1 through the selected detail level. At detail 3,
    this is `1 + 8 + 64 + 512 = 585` frame instances, roughly 84k triangles for a
-   144-triangle seed. Verify actual mesh counts rather than trusting this estimate.
+   144-triangle seed; detail 4 is 4,681 instances and ~674k triangles. Verify actual
+   mesh counts rather than trusting this estimate.
+
+Checked 2026-09-16: with default planes the children span `[0.25, 0.95]` on each
+axis, so they never overlap each other and the centre cube `|p| < 0.25` is empty at
+every detail level. A plane offset of 0.3 shifts its reflected children by 0.6, which
+can push them into the centre; that is why Enter needs the clearance test in §4.
+IFS-1 measured the real clearance at the origin as 0.406 (nearest beam end, minus
+the capsule radius), not the 0.25 box figure. The main scene has no light, so the
+seed bakes a per-axis shade into vertex colour and the material is unshaded; the
+palette multiplies through instance colour without a rebuild.
 
 These values are a visual starting point. Refine offsets, beam width and default
 plane angles during the geometry milestone if it resembles disconnected clutter.
@@ -112,29 +128,40 @@ nearly flat relief through to a deep volume while DETAIL remains unchanged.
 It stretches existing openings; it does not manufacture new topology. Store depth
 separately from the uniform transform used by world grab.
 
-Handle reflections with negative determinants correctly: verify winding, normals
-and backface visibility from both sides. Prefer a baked reversed-winding seed
-variant grouped by transform parity if the renderer requires it; do not solve
-missing faces by making the entire scene transparent or casually doubling fill.
+Handle reflections with negative determinants correctly. Godot flips the front
+face for a mirrored `MeshInstance3D` but (as far as we know) not per instance
+inside a `MultiMesh`, so half the frames will render inside-out with default
+culling. First rung: `cull_mode = CULL_DISABLED` on the one opaque material; the
+frames are thin so the extra back-face fill is small. Fallback only if that
+measures badly on Quest: a second MultiMesh holding a reversed-winding copy of the
+seed, instances grouped by transform parity. Verify both eyes in IFS-1. Do not
+solve missing faces by making the scene transparent.
 
 ### Bounded generation and publication
 
-- Detail rungs 1/2/3 initially; hard instance cap 2,048 and triangle cap 300,000.
-  Count the seed and all retained generations before allocation. Stop at the last
-  complete level that fits; do not produce one detailed corner and truncate others.
+- Detail rungs 1/2/3/4; hard instance cap 8,192 and triangle cap 1,000,000. The
+  tree already draws 80k six-sided cylinders (~1M triangles) on Quest, so the earlier
+  300k cap was conservative; detail 4 is the interesting rung to measure. Count the
+  seed and all retained generations before allocation. Stop at the last complete
+  level that fits; do not produce one detailed corner and truncate others.
 - Generate only when parameters change. No rebuilds for head motion, world grab,
   palette changes or an idle frame.
-- While dragging, preview at detail 2 at up to 15 updates/sec. Handles track every
-  frame. On release, rebuild once at the selected detail.
-- Start with time-sliced generation: at most approximately 1 ms CPU work/frame,
-  retaining the last completed geometry. Coalesce requests and discard stale
-  generations. Publish a complete buffer and matching bounds atomically.
-- Measure GPU upload cost too. If bounded main-thread publication still stalls,
-  reduce the preview workload before adding a worker. Any worker must produce
-  immutable numeric data; scene/resource publication stays on the main thread.
+- Rebuild synchronously, the way `FractalTree.build()` does. At 585 instances the
+  transform walk and buffer fill are well under a millisecond of GDScript; even
+  detail 4 is a few thousand transforms. Rebuild on every frame while a handle is
+  dragged, at the selected detail, and print the measured build time in the HUD.
+  Only if a drag rebuild measures over ~3 ms on Quest: preview at one detail rung
+  lower while dragging and rebuild at full detail on release. IFS-1 measured 0.55 ms
+  at detail 3 and about 4 ms at detail 4 on desktop. Quest 3 (2026-09-16, 72 Hz,
+  2800x2800 per eye) measured 3.6x that: detail 3 rebuilds at 2.0 ms median, 3.6 ms
+  max, holding 72 fps with 10.5 ms p95 draw; detail 4 rebuilds at 15.0 ms median, more
+  than a whole frame. Dragging at one rung below detail 4 is therefore mandatory, and
+  detail 3 has no headroom left for extra per-drag work. No time-slicing, no
+  request coalescing, no workers. This is the deliberate simplification; the
+  measurement is what may reverse it.
 - Bounds must include beam thickness, reflections and depth. Do not auto-fit the
   object after every edit: that would counteract the user's hand motion.
-- One or a few MultiMeshes initially. Individual instances are not independently
+- One MultiMesh initially. Individual instances are not independently
   frustum-culled; proximity and looking away must be included in Quest measurements.
 
 ## 4. Headset interaction contract
@@ -174,10 +201,12 @@ Do not let an edit trigger also step a flame/bulb preset, plant a tree or activa
 tile. Read/update button edge states even when their actions are consumed.
 
 `WorldGrab.update()` currently runs before `_handle_input()` and polls grips itself.
-Reorder the IFS interaction pass and add the smallest explicit suspend/cancel API
-needed in WorldGrab. Merely skipping update leaves stale grip frames. On release,
-mode change or tracking recovery require release/re-press before reacquisition;
-recapture from current poses to prevent jumps. Preserve existing modes' behavior.
+Add a `suspended` flag to WorldGrab: when set, `update()` clears the grabbing set,
+sets `_active = false` and returns. On resume a still-held grip differs from the
+(empty) grabbing set, so `update()` recaptures from the current pose and nothing
+jumps. That is the whole API, about four lines. Run the IFS handle pass before
+`grab.update()` so an edit that starts this frame suspends the grab before it polls.
+Preserve existing modes' behavior.
 
 On tracking loss/focus loss/menu takeover, cancel the unfinished parameter edit and
 restore its starting snapshot. Invalidate pending builds from that edit. On a mode
@@ -236,7 +265,9 @@ state on exit, and return before particle dispatch. Visibility alone is not enou
 Ensure IFS recenter uses its own fixed tabletop framing, not stale particle bounds.
 
 Add only IFS-relevant menu tiles; existing mode-specific tiles must remain hidden.
-Five modes must fit the real wrist panel without reducing text into illegibility.
+Five modes must fit the real wrist panel: the mode strip is one column per segment
+and `COLUMNS := 4` in `wrist_menu.gd` was sized for four. Capture it with
+`menu_shot` and shorten a label if it wraps or squeezes.
 Update Help and HUD to report IFS state, actual detail, instance count and build
 status. Reuse palette integration without rebuilding geometry. Update CHANGELOG
 when user-visible code lands. No broad main.gd state-machine rewrite.
@@ -265,8 +296,8 @@ marching and returning to TREE/forest and GROUND with their previous settings.
 
 ### IFS-3 — Sculpting
 
-Implement handle capture, transform-space conversion, bounded previews, full rebuild
-on release, depth, detail, Undo and Reset. Validate near/far picking, rotated/scaled
+Implement handle capture, transform-space conversion, synchronous rebuild while
+dragging, depth, detail, Undo and Reset. Validate near/far picking, rotated/scaled
 sculptures, menu interception, two-controller conflicts, lost tracking, release and
 reacquisition. Confirm handles track smoothly while generated geometry catches up.
 
@@ -345,8 +376,8 @@ run `npm run build` if implementation unexpectedly changes web code.
 - Run at least 15 minutes including edit/entry cycles. Record eye resolution and QGO
   profile; do not hide a regression by changing resolution or refresh mid-comparison.
 
-If performance misses: lower preview detail/update work first; then reduce selected
-geometry and remeasure. Add spatial MultiMesh grouping only for a measured visibility
+If performance misses: drop one detail rung while dragging first; then reduce
+selected geometry and remeasure. Add spatial MultiMesh grouping only for a measured visibility
 problem. Do not switch to interior raymarching, add dependencies, or declare success
 from a cold desktop screenshot. Preserve a usable prototype and record the failing
 measurement if the bounded approach cannot meet the target.

@@ -20,6 +20,11 @@ var _g0_inv := Transform3D()
 var _m0 := Transform3D()
 var _active := false
 
+## Set while something else owns the grips, such as an IFS handle edit. update() drops the
+## grabbing set and stops moving the target. On resume a still-held grip differs from the
+## now-empty set, so update() recaptures from the current pose and the target never jumps.
+var suspended := false
+
 ## Below this the two-hand scale is ignored; hands touching would divide by ~0.
 const MIN_SPAN := 1e-4
 const MIN_SCALE := 0.02
@@ -42,6 +47,10 @@ func grip_count() -> int:
 ## Poll the grip buttons and recapture whenever the grabbing set changes. Polled
 ## rather than signal-driven so it cannot get out of step with the tracking data.
 func update(_delta: float) -> void:
+	if suspended:
+		_grabbing.clear()
+		_active = false
+		return
 	var now: Array[XRController3D] = []
 	for c in _controllers:
 		if c != null and c.get_has_tracking_data() and c.is_button_pressed("grip_click"):
