@@ -16,3 +16,7 @@ dist/
 # Generated splat clouds. The bulb/flame exports run to 26-65MB each and the viewer now
 # builds them in the browser, so there is nothing to track — see src/splat/build.ts.
 *.ply
+
+# Agent skills installed locally, not part of this project.
+agent/
+.agents/
