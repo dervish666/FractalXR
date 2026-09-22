@@ -17,10 +17,21 @@ uniform float anim_t = 0.0;        // seconds, from FractalIFS.tick
 uniform float born_at = -10000.0;  // anim_t at the last rebuild that was allowed to grow in
 uniform float grow_s = 0.6;        // seconds for one generation to reach full size
 uniform float grow_span = 0.0;     // seconds between the first generation and the last
+// Instances born before this (in INSTANCE_CUSTOM.z units) are already grown. 0 grows the
+// whole shape; a morph landing on a deeper rung grows only the generation it adds.
+uniform float grow_from = 0.0;
+// The seed cross-fade of a morph between two frames: UV.y picks the group, and each group is
+// scaled about the frame's centre. Outside a morph the mesh is all group 0 at scale 1.
+uniform float seed_scale0 = 1.0;
+uniform float seed_scale1 = 0.0;
 uniform float scroll = 0.02;       // palette turns per second
 uniform float radius_mix = 0.45;   // colour coordinate: level at 0, radial distance at 1
 uniform float origin_span = 4.0;   // construction units the packed parent origin covers
 uniform float brightness = 1.0;
+// Multiply the level and radius channels. 1 except for the half second after a rebuild at
+// another rung, where they hold every frame's colour still while the normalisation catches up.
+uniform float level_gain = 1.0;
+uniform float radius_gain = 1.0;
 
 varying float v_u;
 varying float v_shade;
@@ -34,13 +45,15 @@ void vertex() {
 	// points is affine and so is MODEL_MATRIX, which is why doing this in mesh space and
 	// letting the model matrix carry it out gives the same answer as doing it in world space
 	// without needing the node transform here.
-	float g = clamp((anim_t - born_at - birth * grow_span) / grow_s, 0.0, 1.0);
+	float late = birth - grow_from;
+	float g = late < 0.0 ? 1.0 : clamp((anim_t - born_at - late * grow_span) / grow_s, 0.0, 1.0);
 	g = g * g * (3.0 - 2.0 * g);
 	vec3 parent = (COLOR.rgb * 2.0 - 1.0) * origin_span;
+	VERTEX *= UV.y < 0.5 ? seed_scale0 : seed_scale1;
 	VERTEX = mix(parent, VERTEX, g);
 	// Level and radius together. Level alone bands the palette by generation with a hard
 	// line between bands, radius alone ignores the recursion that built the shape.
-	v_u = mix(level, radius, radius_mix) + anim_t * scroll;
+	v_u = mix(level * level_gain, radius * radius_gain, radius_mix) + anim_t * scroll;
 	v_shade = UV.x;
 }
 

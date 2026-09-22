@@ -1179,7 +1179,8 @@ func _reset_ifs_shape() -> void:
 	ifs_depth_idx = 0
 	ifs.detail = IFS_DETAIL[ifs_detail_idx]
 	ifs.depth = IFS_DEPTH[ifs_depth_idx]
-	ifs.build()
+	# A preset change arrives here with its morph already started, and the morph owns the rung.
+	ifs.rebuild()
 	ifs_edit.set_detail(ifs.detail)
 	ifs_edit.refresh()
 
@@ -1189,7 +1190,7 @@ func _reset_ifs_shape() -> void:
 ## rung that preset says lands in the comfortable range for its branching factor.
 func _cycle_ifs_preset(d: int) -> void:
 	ifs_preset_idx = wrapi(ifs_preset_idx + d, 0, FractalIFS.PRESETS.size())
-	# The maps travel to the new rule over MORPH_S and the seed frame changes halfway. The
+	# The maps travel to the new rule over MORPH_S while the seed frames cross-fade. The
 	# mirrors, the depth and the undo go back to where a new sculpture starts straight away,
 	# as they always did: those are the user's, and a two second fade of them would read as lag.
 	ifs.begin_morph(ifs_preset_idx)

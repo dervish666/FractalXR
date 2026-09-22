@@ -581,8 +581,8 @@ func _ambient(ifs: FractalIFS) -> void:
 
 
 ## The morph's two ends and its middle. t=0 has to be the source rule padded to the common
-## length, t=1 has to be the target's own table entry down to the byte, the seed frame has to
-## change at the midpoint and not before, and a second step part way through has to carry on
+## length, t=1 has to be the target's own table entry down to the byte, the two seed frames
+## have to cross-fade rather than swap, and a second step part way through has to carry on
 ## from where the shape is rather than snapping back to the rule it started from.
 func _morph(ifs: FractalIFS) -> void:
 	_defaults(ifs)
@@ -591,18 +591,39 @@ func _morph(ifs: FractalIFS) -> void:
 	var tris_before := ifs.seed_tris
 	ifs.begin_morph(1)
 	var at_zero: bool = _maps_same(ifs.live_maps(), src, 1e-9)
-	# Just short of halfway: the seed frame is still the one it started with.
+	# Both frames are in the mesh for the whole morph, cube shrinking and tetrahedron growing.
 	ifs.tick(FractalIFS.MORPH_S * 0.49)
 	var early_seed := ifs.seed_tris
+	var e := ifs._morph_ease()
+	var fade_ok: bool = absf(_uniform(ifs, "seed_scale0") - (1.0 - e)) < 1e-5 \
+		and absf(_uniform(ifs, "seed_scale1") - e) < 1e-5
 	ifs.tick(FractalIFS.MORPH_S * 0.02)
 	var mid_seed := ifs.seed_tris
 	var guard := 0
-	while ifs.is_morphing() and guard < 200:
-		ifs.tick(0.1)
+	while ifs.morph_t < 0.999 and guard < 200:
+		ifs.tick(minf(0.1, (0.999 - ifs.morph_t) * FractalIFS.MORPH_S))
 		guard += 1
+	var last: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	var born_before := _uniform(ifs, "born_at")
+	var landed_now := ifs.tick(0.1)
 	var landed: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	var born_after := _uniform(ifs, "born_at")
 	var landed_preset := ifs.preset
 	var landed_detail := ifs.detail
+	var landed_seed := ifs.seed_tris
+	var landed_fade: bool = _uniform(ifs, "seed_scale0") == 1.0 and _uniform(ifs, "seed_scale1") == 0.0
+	# How far any float of the buffer moved across the landing frame: the last morph frame
+	# is already the target, so the answer should be rounding, not a shape.
+	var step := INF
+	if last.size() == landed.size():
+		step = 0.0
+		for k in last.size():
+			step = maxf(step, absf(last[k] - landed[k]))
+	# Control: a full build() is what landing used to do, and it must move born_at, or the
+	# born_at comparison above cannot see a grow-in restart.
+	ifs.anim_t += 1.0
+	ifs.build()
+	var control_regrows: bool = _uniform(ifs, "born_at") != born_after
 	# Independent reference: a second node told to be TETRA outright, never morphed into it.
 	var ref := FractalIFS.new()
 	root.add_child(ref)
@@ -620,22 +641,75 @@ func _morph(ifs: FractalIFS) -> void:
 	ifs.begin_morph(2)
 	ifs.tick(FractalIFS.MORPH_S * 0.5)
 	var mid_maps: Array = ifs.live_maps().duplicate(true)
+	var s_cube := _uniform(ifs, "seed_scale0")
+	var s_octa := _uniform(ifs, "seed_scale1")
 	ifs.begin_morph(3)
 	var after: Array = ifs.live_maps()
 	var padded_src: Array = FractalIFS._pad(src, mid_maps.size())
-	var continuous: bool = _maps_same(after, mid_maps, 1e-9) 		and not _maps_same(mid_maps, padded_src, 1e-4)
+	var continuous: bool = _maps_same(after, mid_maps, 1e-9) \
+		and not _maps_same(mid_maps, padded_src, 1e-4)
+	# CROSS is a tetrahedron: of the cube and the octahedron on screen, the bigger one fades
+	# out from the size it was drawn at and the tetrahedron grows from nothing.
+	var keep := maxf(s_cube, s_octa)
+	var fade_continues: bool = absf(_uniform(ifs, "seed_scale0") - keep) < 1e-5 \
+		and _uniform(ifs, "seed_scale1") == 0.0 and ifs.seed_tris == 144 + 72
 	_defaults(ifs)
 	ifs.build(false)
-	_ok("morph ends", at_zero and landed == want and landed_preset == 1
-			and landed_detail == ref_detail and tris_before == 144 and early_seed == 144
-			and mid_seed == 72,
+	_ok("morph ends", at_zero and landed == want and landed_preset == 1 and landed_now
+			and landed_detail == ref_detail and tris_before == 144 and early_seed == 216
+			and mid_seed == 216 and landed_seed == 72 and fade_ok and landed_fade,
 		("t=0 is the source=%s, t=1 identical to a plain TETRA build=%s (preset %d, rung %d), "
-			+ "seed %d -> %d at 0.49, %d at 0.51") % [str(at_zero), str(landed == want),
-			landed_preset, landed_detail, tris_before, early_seed, mid_seed])
-	_ok("morph retarget", continuous,
-		"%d maps, second step continues from the interpolated state=%s, differs from the source=%s" % [
+			+ "seed %d -> %d at 0.49 (fade %s), %d at 0.51, %d landed (fade reset %s)") % [
+			str(at_zero), str(landed == want), landed_preset, landed_detail, tris_before,
+			early_seed, str(fade_ok), mid_seed, landed_seed, str(landed_fade)])
+	_ok("morph lands still", step < 1e-3 and born_after == born_before and control_regrows,
+		("largest buffer step across the landing frame %.6f, grow-in clock untouched=%s, "
+			+ "control full build restarts it=%s") % [step, str(born_after == born_before),
+			str(control_regrows)])
+	_ok("morph retarget", continuous and fade_continues,
+		("%d maps, second step continues from the interpolated state=%s, differs from the "
+			+ "source=%s, fade carries on from %.3f=%s") % [
 			mid_maps.size(), str(_maps_same(after, mid_maps, 1e-9)),
-			str(not _maps_same(mid_maps, padded_src, 1e-4))])
+			str(not _maps_same(mid_maps, padded_src, 1e-4)), keep, str(fade_continues)])
+	_morph_deeper(ifs)
+
+
+## A morph that animates at a shallower rung than it lands on (STAR drags a rung lower than
+## FRAMES opens at) grows in only the generation it adds: every instance of the levels already
+## on screen sits below the grow_from threshold and every new one above it.
+func _morph_deeper(ifs: FractalIFS) -> void:
+	_defaults(ifs)
+	ifs.build(false)
+	ifs.begin_morph(2)
+	var morph_levels := ifs.levels_built
+	var guard := 0
+	while ifs.is_morphing() and guard < 200:
+		ifs.tick(0.1)
+		guard += 1
+	var gf := _uniform(ifs, "grow_from")
+	var old_full := true
+	var new_growing := true
+	var buf: PackedFloat32Array = ifs.get_node("Frames").multimesh.buffer
+	for i in ifs.instance_count:
+		var birth := buf[i * 20 + 18]
+		if ifs.levels[i] <= morph_levels:
+			old_full = old_full and birth < gf
+		else:
+			new_growing = new_growing and birth >= gf
+	# Control: a plain full build resets the threshold, so everything grows again.
+	ifs.build()
+	var reset := _uniform(ifs, "grow_from") == 0.0
+	_defaults(ifs)
+	ifs.build(false)
+	_ok("morph adds a level", morph_levels == 2 and ifs.PRESETS[2]["detail"] == 3
+			and gf > 0.0 and old_full and new_growing and reset,
+		"animated at level %d, grow_from %.3f, drawn levels full=%s, new level grows=%s, full build resets=%s" % [
+			morph_levels, gf, str(old_full), str(new_growing), str(reset)])
+
+
+static func _uniform(ifs: FractalIFS, name_: String) -> float:
+	var v: Variant = ifs._mat.get_shader_parameter(name_)
+	return float(v) if v != null else 0.0
 
 
 ## Two base-map lists the same, to a tolerance. A shorter list is padded the way a morph pads

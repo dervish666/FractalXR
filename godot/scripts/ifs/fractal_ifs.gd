@@ -66,6 +66,7 @@ const BREATHE_AMP := 0.04
 ## so a cube preset comes back to itself every 30 s rather than every 120.
 const TWIST_S := 120.0
 const MORPH_S := 2.0         # seconds from one preset's maps to the next
+const COLOUR_EASE_S := 0.5   # time constant of the palette settling after a change of rung
 ## The ramp texture the shader samples. 256 is more than a five-stop palette needs and still
 ## a rounding-free number of texels per stop for the sizes a palette actually comes in.
 const RAMP_W := 256
@@ -201,12 +202,30 @@ var _ramp: GradientTexture1D
 var _palette: Array = []
 var _seed_kind := ""
 var _born_at := -10000.0
-## The maps the morph runs between, both padded to a common length, and the seed frame it
-## has to swap to halfway. Kept apart from `base` so landing can restore the table's own
-## entry rather than whatever the last interpolation rounded to.
+## The maps the morph runs between, both padded to a common length. Kept apart from `base`
+## so landing can restore the table's own entry rather than whatever the last interpolation
+## rounded to.
 var _morph_from: Array = []
 var _morph_to_maps: Array = []
-var _morph_seed := ""
+## The seed cross-fade. While a morph changes the seed frame the mesh carries both frames,
+## the outgoing one tagged UV.y = 0 and the incoming one UV.y = 1, and the shader scales each
+## group about the frame's centre. `_blend_kinds` is [outgoing, incoming] while that mesh is
+## loaded and empty otherwise; the fades are (start, end) scales for each group over the
+## morph's eased clock. A swap at one instant, which is what this replaced, drew a different
+## polyhedron on the next frame and needed a grow-in on landing to hide it.
+var _blend_kinds: Array = []
+## Colour continuity across a change of rung. The buffer's level and radius channels are
+## normalised by the deepest level and the outermost frame actually built, so a build one rung
+## deeper recolours every frame at once: a morph out of STAR (animated at level 2, landing at 3)
+## slid the whole palette a third of a turn on its last frame. The shader multiplies each
+## channel by a gain that cancels the step on the frame it happens, and tick() eases the
+## gains back to 1 so the new normalisation arrives as a drift.
+var _gain_l := 1.0
+var _gain_r := 1.0
+var _norm_l := 0.0
+var _norm_r := 0.0
+var _fade0 := Vector2(1.0, 1.0)
+var _fade1 := Vector2(0.0, 0.0)
 
 
 func _init() -> void:
@@ -264,17 +283,52 @@ func set_preset(i: int) -> void:
 	_load_seed(String(p["seed"]))
 
 
-## The seed frame and everything derived from it. Apart from set_preset this is what a morph
-## calls at its midpoint, where the frame changes under the grow-in rather than beside it.
+## The seed frame and everything derived from it. Also what a morph lands on: the blended
+## mesh at the end of its fade draws exactly this frame at full size, so the swap back to a
+## single frame is invisible.
 func _load_seed(kind: String) -> void:
-	if kind == _seed_kind:
+	_set_fade(1.0, 0.0)
+	if kind == _seed_kind and _blend_kinds.is_empty():
 		return
 	_seed_kind = kind
+	_blend_kinds = []
 	beams = _frame_beams(kind)
-	seed_mesh = _build_seed()
+	seed_mesh = _build_seed(beams, [])
 	seed_tris = _triangles_of(seed_mesh)
 	seed_box = _box_of(beams)
 	_mmi.multimesh.mesh = seed_mesh
+
+
+## Both frames in one mesh for a morph between seeds. `beams` and `seed_box` become the union,
+## so the clearance query and the published bounds stay conservative while both are drawn.
+func _load_blend(out_kind: String, in_kind: String) -> void:
+	if _blend_kinds == [out_kind, in_kind]:
+		return
+	_seed_kind = out_kind
+	_blend_kinds = [out_kind, in_kind]
+	var a := _frame_beams(out_kind)
+	var b := _frame_beams(in_kind)
+	beams = a + b
+	seed_mesh = _build_seed(a, b)
+	seed_tris = _triangles_of(seed_mesh)
+	seed_box = _box_of(a).merge(_box_of(b))
+	_mmi.multimesh.mesh = seed_mesh
+
+
+func _set_gains() -> void:
+	_mat.set_shader_parameter("level_gain", _gain_l)
+	_mat.set_shader_parameter("radius_gain", _gain_r)
+
+
+func _set_fade(s0: float, s1: float) -> void:
+	_mat.set_shader_parameter("seed_scale0", s0)
+	_mat.set_shader_parameter("seed_scale1", s1)
+
+
+## The morph's clock, eased. Maps and the seed fade both run on it, so the frame that is
+## arriving is full size on the same frame the maps arrive.
+func _morph_ease() -> float:
+	return morph_t * morph_t * (3.0 - 2.0 * morph_t)
 
 
 static func preset_name(i: int) -> String:
@@ -299,23 +353,38 @@ func drag_detail() -> int:
 func tick(delta: float) -> bool:
 	anim_t += delta
 	_mat.set_shader_parameter("anim_t", anim_t)
+	if _gain_l != 1.0 or _gain_r != 1.0:
+		var f := exp(-delta / COLOUR_EASE_S)
+		_gain_l = 1.0 + (_gain_l - 1.0) * f
+		_gain_r = 1.0 + (_gain_r - 1.0) * f
+		if absf(_gain_l - 1.0) < 1e-4 and absf(_gain_r - 1.0) < 1e-4:
+			_gain_l = 1.0
+			_gain_r = 1.0
+		_set_gains()
 	# A captured handle owns the shape. Freezing the clock rather than dropping the offset is
 	# what leaves no jump at capture and none on release either.
 	if ambient_hold:
 		return false
 	if morph_t < 1.0:
 		morph_t = minf(morph_t + delta / MORPH_S, 1.0)
-		if morph_t >= 0.5 and _morph_seed != _seed_kind:
-			# Halfway, where the two rules are equally far away and the swap has the least to
-			# disagree with. The grow-in on landing covers the rest.
-			_load_seed(_morph_seed)
 		if morph_t >= 1.0:
 			# Land on the table's own entry, not on whatever the last interpolation rounded
-			# to, and take the preset's opening rung with it.
+			# to, and take the preset's opening rung with it. No grow-in: the last morph frame
+			# already drew this shape, and restarting the grow-in here collapsed it and grew it
+			# back, which read as the shape reloading. Only a generation the morph could not
+			# afford to draw grows in, out of the frames already on screen.
+			var shown := levels_built
 			set_preset(morph_to)
-			morph_to = -1
-			build()
+			if ambient:
+				_rebuild_live()
+			else:
+				build(false)
+			if levels_built > shown:
+				_grow_levels_from(shown + 1)
 			return true
+		if not _blend_kinds.is_empty():
+			var e := _morph_ease()
+			_set_fade(lerpf(_fade0.x, _fade0.y, e), lerpf(_fade1.x, _fade1.y, e))
 		_rebuild_live()
 		return false
 	if ambient:
@@ -334,7 +403,29 @@ func begin_morph(i: int) -> void:
 	var n := maxi(from.size(), to.size())
 	_morph_from = _pad(from, n)
 	_morph_to_maps = _pad(to, n)
-	_morph_seed = String(PRESETS[target]["seed"])
+	# The seed frames on screen now and how big each is drawn, so the fade starts from there.
+	var shown := {}
+	if _blend_kinds.is_empty():
+		shown[_seed_kind] = 1.0
+	else:
+		var e := _morph_ease() if morph_t < 1.0 else 1.0
+		shown[_blend_kinds[0]] = lerpf(_fade0.x, _fade0.y, e)
+		shown[_blend_kinds[1]] = lerpf(_fade1.x, _fade1.y, e)
+	var in_kind := String(PRESETS[target]["seed"])
+	# The frame that fades out is the biggest one that is not the target's. A retarget to a
+	# third seed mid-fade has three frames and a mesh that holds two, so the smaller of the
+	# two outgoing ones, at most half size, is the one that is dropped.
+	var out_kind := ""
+	for k in shown:
+		if k != in_kind and (out_kind == "" or float(shown[k]) > float(shown[out_kind])):
+			out_kind = k
+	if out_kind == "":
+		_load_seed(in_kind)
+	else:
+		_load_blend(out_kind, in_kind)
+		_fade0 = Vector2(float(shown[out_kind]), 0.0)
+		_fade1 = Vector2(float(shown.get(in_kind, 0.0)), 1.0)
+		_set_fade(_fade0.x, _fade1.x)
 	morph_to = target
 	morph_t = 0.0
 	_rebuild_live()
@@ -352,6 +443,18 @@ func settle() -> void:
 	morph_t = 1.0
 	morph_to = -1
 	build(false)
+
+
+## Grow in only the generations from `first` outward, leaving the ones already drawn at full
+## size. What a morph landing on a deeper rung than it animated at uses, so the extra level
+## buds out of the finished shape instead of the whole shape regrowing.
+func _grow_levels_from(first: int) -> void:
+	_born_at = anim_t
+	_mat.set_shader_parameter("born_at", _born_at)
+	# Half a generation early, so float rounding of the stored birth can never leave an
+	# instance of `first` on the wrong side of the threshold.
+	_mat.set_shader_parameter("grow_from",
+		(float(first) - 0.5) / (float(levels_built) + BIRTH_RADIUS))
 
 
 ## Skip to the end of the grow-in. For a still capture, where four rendered frames is not
@@ -422,6 +525,16 @@ func _rebuild_live() -> void:
 	detail = mini(want, rung)
 	build(false)
 	detail = want
+
+
+## Rebuild after the caller changed a parameter: at the morph's rung while one is running,
+## because a full build() mid-morph drew the deeper rung for one frame before the next tick
+## took it away again.
+func rebuild() -> void:
+	if morph_t < 1.0:
+		_rebuild_live()
+	else:
+		build()
 
 
 ## Rebuild for the current parameters. Synchronous and deterministic: same parameters in,
@@ -542,12 +655,24 @@ func build(grow := true) -> int:
 	# still shape publishes covers the animation too.
 	_mmi.custom_aabb = bounds
 	_mat.set_shader_parameter("origin_span", span)
+	# A full rebuild grows in from nothing and may recolour. Any other rebuild keeps each
+	# frame's colour where it was; see _gain_l.
+	if (grow and morph_t >= 1.0) or _norm_l <= 0.0:
+		_gain_l = 1.0
+		_gain_r = 1.0
+	else:
+		_gain_l *= _norm_l / inv_lvl
+		_gain_r *= _norm_r / inv_r
+	_norm_l = inv_lvl
+	_norm_r = inv_r
+	_set_gains()
 	_mat.set_shader_parameter("grow_span", birth_span * GROW_STAGGER)
 	# A grow-in started mid-morph would be restarted by the next frame's rebuild and never be
-	# seen; the morph runs its own on the frame it lands.
+	# seen. A morph grows in only what its landing adds; see _grow_levels_from.
 	if grow and morph_t >= 1.0:
 		_born_at = anim_t
 		_mat.set_shader_parameter("born_at", _born_at)
+		_mat.set_shader_parameter("grow_from", 0.0)
 	build_ms = float(Time.get_ticks_usec() - t0) * 0.001
 	return instance_count
 
@@ -713,17 +838,20 @@ static func _box_of(bs: Array) -> AABB:
 	return AABB(lo, hi - lo)
 
 
-func _build_seed() -> ArrayMesh:
+## `fade_in` beams are tagged UV.y = 1 for the morph's seed cross-fade; see _blend_kinds.
+func _build_seed(solid: Array, fade_in: Array) -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for beam in beams:
-		_add_beam(st, beam[0], beam[1], beam[2])
+	for beam in solid:
+		_add_beam(st, beam[0], beam[1], beam[2], 0.0)
+	for beam in fade_in:
+		_add_beam(st, beam[0], beam[1], beam[2], 1.0)
 	# No index(): it merged corner vertices that different beams shade differently, and at
 	# 144 triangles there is nothing worth saving.
 	return st.commit()
 
 
-func _add_beam(st: SurfaceTool, c: Vector3, h: Vector3, b: Basis) -> void:
+func _add_beam(st: SurfaceTool, c: Vector3, h: Vector3, b: Basis, group: float) -> void:
 	for a in 3:
 		var u := (a + 1) % 3
 		var v := (a + 2) % 3
@@ -739,7 +867,7 @@ func _add_beam(st: SurfaceTool, c: Vector3, h: Vector3, b: Basis) -> void:
 				# In the UV and not in vertex colour: a MultiMesh multiplies the instance
 				# colour into the vertex one, and the instance colour is carrying the parent
 				# origin the grow-in needs. The UV is otherwise unused on this mesh.
-				st.set_uv(Vector2(shade, 0.0))
+				st.set_uv(Vector2(shade, group))
 				st.add_vertex(quad[idx])
 
 

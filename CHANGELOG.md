@@ -26,8 +26,7 @@ All notable changes to FractalXR are documented here. Format based on
   are on to the rule you are going to, over two seconds, and lands on the new preset's own
   table entry byte for byte. Where the two rules have different numbers of children the
   shorter one repeats its last map, so the branching factor is the destination's from the
-  first frame. Where the seed frame differs, cube to tetrahedron, it changes at the midpoint
-  and the grow-in on landing covers the swap. Stepping again part way through retargets from
+  first frame. Where the seed frame differs, cube to tetrahedron, the two cross-fade. Stepping again part way through retargets from
   the shape as it is rather than snapping back to where it set off. The mirrors, the depth
   and the undo still reset the instant you step, because those are yours and fading them for
   two seconds would read as lag.
@@ -102,6 +101,18 @@ All notable changes to FractalXR are documented here. Format based on
   reached the headset unchecked.
 
 ### Fixed
+- **A SHAPE morph runs through to the new sculpture instead of reloading it.** Landing called a
+  full rebuild, and every full rebuild restarts the grow-in, so the shape that had just
+  arrived collapsed into its parents and regrew over about a second: in a capture the lit
+  pixels dropped from ~4800 to 0 on the landing frame. The seed frame also swapped at the
+  halfway point in a single frame. Now the two seed frames cross-fade for the whole morph,
+  the outgoing one shrinking into each frame's centre while the incoming one grows, and the
+  landing rebuilds without a grow-in. A morph that animates at a shallower rung than it lands
+  on (anything into or out of STAR) grows in only the generation it adds, out of the frames
+  already there, and the palette no longer jumps a third of a turn when the rung changes: a
+  shader gain holds each frame's colour and eases to the new normalisation over half a
+  second. The preset step also no longer draws one frame at the full rung before the morph
+  takes over.
 - **The Mandelbox cloud is no longer mostly reseeded to noise.** Raising the Mandelbox bailout
   to 1e4 for the marcher also moved the escape flag that decides whether a particle is
   interior, and shell points rarely reach |z|=100 in ten folds; 74-90% of the cloud was
