@@ -22,10 +22,15 @@ uniform vec4 rot = vec4(1.0, 0.0, 0.0, 1.0);   // world -> fractal rotation, two
 uniform ivec2 view_texel0 = ivec2(0);   // level-0 texel index of the viewer's fractal position
 uniform vec2 view_frac0 = vec2(0.0);    // and the fraction within it, so world offsets stay small
 // The floor reference, in level-0 texels from the viewer: the terrain is lowered by the
-// height at this point so it sits at floor level. The host lags it behind the viewer
-// over a couple of seconds; sampling under the head itself made the whole field jump
-// every time you stepped over a terrace.
+// height at this point so it sits at floor level. The host holds it still while the eye
+// stays within ref_hold of it and lags it behind the viewer over a couple of seconds
+// once it moves; sampling under the head itself made the whole field jump every time you
+// stepped over a terrace.
 uniform vec2 level_e0 = vec2(0.0);
+// How far the eye may wander from that reference before it moves (REF_HOLD_M). The
+// displaced field picks its level by distance from the reference plus this, so it cannot
+// be finer than the eye-centred mesh can carry anywhere the eye is allowed to be.
+uniform float ref_hold = 0.3;
 uniform float slack = 48.0;             // texels of window kept around the viewer (see .gd)
 uniform float fog_end = 100.0;          // metres; the coarsest window ends a little past this
 uniform vec3 fog_colour : source_color = vec3(0.02, 0.02, 0.04);
@@ -193,6 +198,20 @@ void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float 
 	centre = mix(mix(t[5], t[6], w.x), mix(t[9], t[10], w.x), w.y);
 }
 
+// The displaced big shape at a level-0 texel offset from the viewer, at a fractional level
+// blended continuously between its two neighbours so no ring of distance pops. The grain
+// is per-texel and scales with the level's texel, so displacing it at coarse levels raised
+// a field of metre-high spikes on the horizon; it stays a shading term.
+float shape_height(vec2 e0p, float lod, out bool inside) {
+	float lc = clamp(lod, float(min_level), float(max_level));
+	int la = int(lc);
+	int lb = min(la + 1, max_level);
+	bool ib;
+	vec4 a = sample_level(la, e0p, inside);
+	vec4 b = sample_level(lb, e0p, ib);
+	return mix(height_of(a, la, false), height_of(b, lb, false), lc - float(la));
+}
+
 void vertex() {
 	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	if (displace > 0.5 && (relief_mode != 0 || bump_strength > 0.0)) {
@@ -204,27 +223,38 @@ void vertex() {
 		float lod_win = log2(max(max(abs(e0.x), abs(e0.y)), 1e-3) / (0.5 * R));
 		float lod_fp = log2(max(length(w) * mesh_spacing, 1e-6) / (texel0 * wpu));
 		int l = int(clamp(max(lod_win, lod_fp), float(min_level), float(max_level)));
-		// Snap the vertex to the centre of the texel it samples, so it sits on a fixed
-		// world point and reads one texel exactly. The rings slide with the viewer, and
-		// without this every triangle re-interpolated between new sample points each
-		// frame and the whole surface swam as you walked. Ring spacing is at least one
-		// texel of the chosen level, so neighbours never cross.
+		// Snap the vertex to the centre of a texel of the level its spacing matches, so it
+		// sits on a fixed world point. The rings slide with the viewer, and without this
+		// every triangle re-interpolated between new sample points each frame and the
+		// whole surface swam as you walked. Ring spacing is at least one texel of this
+		// level, so neighbours never cross.
 		float sc = float(1 << l);
 		ivec2 rem = view_texel0 - ((view_texel0 >> l) << l);
 		vec2 t = (vec2(rem) + view_frac0 + e0) / sc;
 		vec2 e0s = (floor(t) + 0.5) * sc - vec2(rem) - view_frac0;
 		vec2 ws = (transpose(mat2(rot.xy, rot.zw)) * e0s) * (wpu * texel0);
 		VERTEX += transpose(mat3(MODEL_MATRIX)) * vec3(ws.x - w.x, 0.0, ws.y - w.y);
+		// The displaced height is a function of the world point and the floor reference,
+		// never of where the eye is. The rings are centred on the eye, and turning your
+		// head swings the eye about 9 cm round the neck, so every glance slid them across
+		// the field; picking the height's level by distance from the EYE then resampled
+		// the same world point at another level, and the texels the snapped vertices
+		// landed on changed too, so the bumps rose and fell as you looked about. Measured
+		// from the reference, which holds still while you turn (REF_HOLD_M), the level of
+		// every point is fixed. Half a level coarser than the mesh spacing, smoothed by
+		// sample_level's C1 weights, is a field the triangles can follow wherever their
+		// corners land: a 90 degree turn in place moved the surface 2-3 mm on average
+		// against 6-50 mm before, and a full level coarser bought almost nothing more while
+		// flattening the filament cliffs. The per-texel detail stays in the shading.
+		float tm = texel0 * wpu;
+		float d_ref = length(e0s - level_e0) * tm;
 		bool inside;
-		vec4 sv = sample_level(l, e0s, inside);
-		// The big shape only. The grain is per-texel and scales with the level's texel,
-		// so displacing it at coarse levels raised a field of metre-high spikes on the
-		// horizon; it stays a shading term, which is where it belongs.
-		float lod_ref = log2(max(max(abs(level_e0.x), abs(level_e0.y)), 1e-3) / (0.5 * R));
-		int lr = int(clamp(lod_ref, float(min_level), float(max_level)));
+		float hv = shape_height(e0s, max(lod_win, log2((d_ref + ref_hold) * mesh_spacing / tm) + 0.5), inside);
+		// The same field at the reference itself, so the floor under a still viewer is at 0.
 		bool dh;
-		float h_ref = height_of(sample_level(lr, level_e0, dh), lr, false);
-		float h = inside ? height_of(sv, l, false) - h_ref : 0.0;
+		float lod_rw = log2(max(max(abs(level_e0.x), abs(level_e0.y)), 1e-3) / (0.5 * R));
+		float h_ref = shape_height(level_e0, max(lod_rw, log2(ref_hold * mesh_spacing / tm) + 0.5), dh);
+		float h = inside ? hv - h_ref : 0.0;
 		// Local up, so the mirrored sky displaces toward the viewer as a reflection would.
 		VERTEX.y += h;
 	}

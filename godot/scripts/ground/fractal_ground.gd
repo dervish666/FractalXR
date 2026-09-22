@@ -38,6 +38,13 @@ const STAGE_MAX := 13
 const BUDGET_MIN := 20000.0
 const BUDGET_MAX := 2000000.0
 const TARGET_US := 3500.0
+## The floor reference holds still while the eye stays within this many metres of it, and
+## once it has to move it follows until it is back within REF_SETTLE_M. Turning your head
+## swings the eye 8-10 cm round the neck, and a reference that followed every centimetre
+## re-levelled the whole displaced field on every glance: in a capture, a 90 degree turn in
+## place changed the frame as much as walking does. Walking still carries it along.
+const REF_HOLD_M := 0.3
+const REF_SETTLE_M := 0.01
 
 ## Fractal coordinate under world (0, 0). GDScript floats are 64-bit, so this and the
 ## texel arithmetic below keep precision the shaders cannot; only small offsets cross.
@@ -83,6 +90,7 @@ var _m := Transform2D.IDENTITY
 var _glide := Vector2.ZERO        # world metres still to travel toward a trigger target
 var _level_f := Vector2.ZERO      # fractal point the floor is levelled to; lags the viewer
 var _level_set := false
+var _level_chasing := false
 var _pending_peak := 0
 
 
@@ -430,12 +438,21 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 		_track_window(i, vf)
 
 	# The floor reference drifts after the viewer with a two-second time constant, so
-	# stepping over a terrace eases the ground down instead of dropping it.
+	# stepping over a terrace eases the ground down instead of dropping it, and it ignores
+	# the small circles a turning head draws; see REF_HOLD_M. Fractal units times wpu is
+	# metres, because _m is a pure rotation.
 	if not _level_set or delta <= 0.0:
 		_level_f = vf
 		_level_set = true
+		_level_chasing = false
 	else:
-		_level_f = _level_f.lerp(vf, 1.0 - exp(-delta / 2.0))
+		var gap_m := (vf - _level_f).length() * wpu
+		if gap_m > REF_HOLD_M:
+			_level_chasing = true
+		if _level_chasing:
+			_level_f = _level_f.lerp(vf, 1.0 - exp(-delta / 2.0))
+			if (vf - _level_f).length() * wpu < REF_SETTLE_M:
+				_level_chasing = false
 
 	var t0 := _texel0()
 	var vt0 := Vector2i(int(floor(vf.x / t0)), int(floor(vf.y / t0)))
@@ -457,6 +474,7 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_material.set_shader_parameter("view_texel0", vt0)
 	_material.set_shader_parameter("view_frac0", frac)
 	_material.set_shader_parameter("level_e0", (_level_f - vf) / t0)
+	_material.set_shader_parameter("ref_hold", REF_HOLD_M)
 	_material.set_shader_parameter("level_rot", _rot)
 	_material.set_shader_parameter("min_level", min_level)
 	_material.set_shader_parameter("max_level", maxi(max_level, min_level))

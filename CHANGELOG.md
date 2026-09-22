@@ -101,6 +101,20 @@ All notable changes to FractalXR are documented here. Format based on
   reached the headset unchecked.
 
 ### Fixed
+- **The displaced ground no longer bobs as you look around.** With HEIGHT above 0 the bumps
+  rose and fell with every turn of the head. Turning moves the eye as well as pointing it,
+  about 9 cm round the neck, and the ground followed the eye in two ways: the floor
+  reference re-levelled the whole field to the height under wherever the eye had got to,
+  and each vertex picked the level it sampled its height from by distance from the eye, so
+  the same world point was resampled at another level after every glance. The floor
+  reference now holds still until you have moved 30 cm from it, then follows as before,
+  and the displaced height picks its level by distance from that reference, half a level
+  coarser than the mesh spacing. Measured with a fixed camera painting the displaced height
+  (`tools/ground_turn.sh`), a turn about the neck moved the surface 9-21 mm on average
+  before (up to 50 mm once the old reference lag settled) and 2-3 mm after; turning with the eye on the pivot moves nothing, before
+  or after. The tallest single-texel spikes along the filaments come out lower, since a
+  field that holds still cannot carry detail finer than the mesh; the lit relief still
+  shows every texel.
 - **A SHAPE morph runs through to the new sculpture instead of reloading it.** Landing called a
   full rebuild, and every full rebuild restarts the grow-in, so the shape that had just
   arrived collapsed into its parents and regrew over about a second: in a capture the lit
