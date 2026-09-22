@@ -98,7 +98,12 @@ vec4 mandelboxDE(vec3 q) {
 		else if (r2 < fixedR2) { float t = fixedR2 / r2; z *= t; dr *= t; } // sphere fold, shell
 		z = p.scale * z + offset;
 		dr = dr * abs(p.scale) + 1.0;
-		if (dot(z, z) > 1e4) { esc = 1.0; break; }   // see march.gdshader: 36 is not a bound
+		// The distance needs the far bailout (see march.gdshader: 36 is not a bound), but
+		// the escape flag feeds the interior reseed below and must keep the old threshold:
+		// flagged at 1e4, shell points rarely escaped in ten folds and 74-90% of the cloud
+		// was reseeded to ball noise every update.
+		if (dot(z, z) > 36.0) esc = 1.0;
+		if (dot(z, z) > 1e4) break;
 		trapR = min(trapR, length(z));
 		trapY = min(trapY, abs(z.y));
 	}

@@ -27,6 +27,9 @@ var _splat_material: ShaderMaterial    # quad path
 var _mats: Array[ShaderMaterial] = []  # both, for settings that apply to either path
 var _splat := false
 var _count := 0
+# Splat quad indices, grown to the largest count seen and sliced for smaller ones, so a
+# count change only fills the new tail in GDScript rather than every quad again.
+var _splat_idx := PackedInt32Array()
 var _frame := 0
 var _needs_seed := true
 var _ready_ok := false
@@ -111,6 +114,8 @@ var _bake_norm_buf: RID
 var _bake_tex: RID
 var _bake_texture := Texture2DRD.new()
 var _baking := false
+# Bumped by every bake start and source change; a readback from an older generation is dropped.
+var _bake_gen := 0
 var _bake_first := 0
 var _bake_centre := Vector3.ZERO
 var _bake_extent := 1.0
@@ -395,6 +400,7 @@ func bake() -> void:
 	if not _ensure_sorted(_count):
 		return
 	_baking = true
+	_bake_gen += 1
 	_bake_first = 0
 	bake_progress = 0.0
 	bake_ready = false
@@ -491,12 +497,13 @@ func _bake_step() -> void:
 	# into the radius the user asked for. Asynchronous, so the last chunk does not end
 	# on a pipeline drain; _baking stays true until the numbers land, which keeps the
 	# cloud held still for the extra frames and costs nothing.
-	_rd.buffer_get_data_async(_bake_norm_buf, _on_bake_norm, 0, 24)
+	_rd.buffer_get_data_async(_bake_norm_buf, _on_bake_norm.bind(_bake_gen), 0, 24)
 
 
-func _on_bake_norm(raw: PackedByteArray) -> void:
-	# A bake restarted while this readback was in flight owns _baking now; leave it.
-	if _bake_first < _count:
+func _on_bake_norm(raw: PackedByteArray, gen: int) -> void:
+	# A bake restarted, or a source changed, while this readback was in flight; the
+	# numbers describe a cloud that is gone.
+	if gen != _bake_gen or _bake_first < _count:
 		return
 	_baking = false
 	if not _ready_ok or raw.size() < 24:
@@ -605,6 +612,11 @@ func set_source(s: FractalSource) -> bool:
 	# A source with normals is a surface; one without is a density field.
 	_splat_material.set_shader_parameter("density_exponent", 0.5 if s.wants_normals() else 0.3333)
 	clear_bake()
+	# A bake in flight belongs to the old source; left running it kept stepping over the
+	# new one and switched use_bake back on when it finished.
+	_baking = false
+	_bake_first = _count
+	_bake_gen += 1
 	if not s.setup(_rd, _state_tex, tex_size, _normal_tex):
 		_error = s.get_error()
 		return false
@@ -674,14 +686,15 @@ func set_count(n: int) -> void:
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	if _splat:
-		var idx := PackedInt32Array()
-		idx.resize(n * 6)
-		for i in n:
-			var b := i * 4
-			var o := i * 6
-			idx[o] = b; idx[o + 1] = b + 1; idx[o + 2] = b + 2
-			idx[o + 3] = b; idx[o + 4] = b + 2; idx[o + 5] = b + 3
-		arrays[Mesh.ARRAY_INDEX] = idx
+		var built := _splat_idx.size() / 6
+		if built < n:
+			_splat_idx.resize(n * 6)
+			for i in range(built, n):
+				var b := i * 4
+				var o := i * 6
+				_splat_idx[o] = b; _splat_idx[o + 1] = b + 1; _splat_idx[o + 2] = b + 2
+				_splat_idx[o + 3] = b; _splat_idx[o + 4] = b + 2; _splat_idx[o + 5] = b + 3
+		arrays[Mesh.ARRAY_INDEX] = _splat_idx.slice(0, n * 6)
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(
 		Mesh.PRIMITIVE_TRIANGLES if _splat else Mesh.PRIMITIVE_POINTS, arrays,
@@ -771,8 +784,10 @@ func iterate() -> void:
 		_measure_pending = false
 		_dispatch_measure()
 		# Density rides along with the measure: same cadence, same reason. A finished
-		# bake owns the sizing outright, so skip the grid entirely while one is live.
-		if _splat and not bake_ready:
+		# bake owns the sizing outright, so skip the grid entirely while one is live. Nor
+		# while one is running: bake_shape reads _density_buf as the counts its sorted
+		# runs were built from, and re-binning it mid-bake walks into other cells.
+		if _splat and not bake_ready and not _baking:
 			_run_density()
 
 	if _baking and _bake_first < _count:

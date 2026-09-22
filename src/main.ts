@@ -116,7 +116,8 @@ const initial = GALLERY[0]
 const palette = new Palette(initial.palette)
 
 const sim = new Simulation(SIZE)
-sim.setParams({ iterations: 4, reseedProb: 0.0015 })
+const RESEED_PROB = 0.0015
+sim.setParams({ iterations: 4, reseedProb: RESEED_PROB })
 
 const flamePoints = new FlamePoints(SIZE, palette.texture, initial.pointBrightness)
 
@@ -820,6 +821,10 @@ const domeCenter = new Vector3()
 let frame = 0
 let settleFrames = 0
 const SETTLE_TAIL = 45 // keep simulating briefly after a morph settles, then freeze
+// flam3 fuses 15-20 unplotted iterations after a reseed; here a reseeded point is drawn
+// after whatever is left of its frame. No reseeds in the last few frames before the freeze,
+// so every point that gets frozen has had at least FUSE_FRAMES x iterations.
+const FUSE_FRAMES = 5
 let last = performance.now()
 
 function getRenderSize(out: Vector2): Vector2 {
@@ -902,6 +907,7 @@ renderer.setAnimationLoop(() => {
   else settleFrames++
   // bulb mode re-relaxes every frame (the cloud chases the live isosurface); flames freeze once settled
   if (sim.mode === 'bulb' || morphT < 1 || settleFrames <= SETTLE_TAIL) {
+    sim.setFlameReseed(morphT >= 1 && settleFrames > SETTLE_TAIL - FUSE_FRAMES ? 0 : RESEED_PROB)
     gpuTimer.begin('sim')
     sim.update(renderer, frame)
     gpuTimer.end()
@@ -1023,7 +1029,7 @@ window.addEventListener('resize', () => {
   },
   setFoveation: (x: number) => renderer.xr.setFoveation(x), // 0..1, live
   setProjSteps: (n: number) => sim.setBulbParams({ projSteps: n }), // bulb DE Newton steps (cost), live
-  setIterations: (n: number) => sim.setParams({ iterations: n, reseedProb: 0.0015 }), // flame chaos-game iters/frame
+  setIterations: (n: number) => sim.setParams({ iterations: n, reseedProb: RESEED_PROB }), // flame chaos-game iters/frame
   // splat-target resolution fraction, live. <1 renders the additive glow into a sub-res HDR
   // target (¼ the fill at 0.5) that the tone-map upscales — the overdraw lever. The glow is
   // low-frequency so it softens rather than aliases; 0.5–0.8 is the range to A/B on-device.

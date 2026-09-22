@@ -185,6 +185,11 @@ export class Simulation {
     this.updateMat.uniforms.uReseedProb.value = p.reseedProb
   }
 
+  /** Flame reseed probability alone, for the reseed-free tail before a freeze. */
+  setFlameReseed(p: number): void {
+    this.updateMat.uniforms.uReseedProb.value = p
+  }
+
   /** Only simulate the `n` texels that are actually drawn — the rest are wasted work,
    *  which the heavy Mandelbulb DE can't afford. Scissors the update pass to ⌈n/size⌉ rows. */
   setActiveTexels(n: number): void {

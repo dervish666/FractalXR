@@ -97,17 +97,44 @@ func _colour(t: float) -> Color:
 
 ## Pure iteration: the orbit of `p` as fractal-space points, z0 = 0 with c = p for the
 ## Mandelbrot set, z0 = p with the ground's constant for a Julia set. 64-bit floats.
-static func iterate(p: Vector2, julia: bool, julia_c: Vector2) -> PackedVector2Array:
+## `formula` indexes FractalGround.FORMULA_NAMES and mirrors iterate() in ground.glsl;
+## keep the two in step.
+static func iterate(p: Vector2, julia: bool, julia_c: Vector2, formula := 0) -> PackedVector2Array:
 	var zx: float = p.x if julia else 0.0
 	var zy: float = p.y if julia else 0.0
 	var cx: float = julia_c.x if julia else p.x
 	var cy: float = julia_c.y if julia else p.y
 	var out := PackedVector2Array()
 	for k in MAX_POINTS:
-		var nx := zx * zx - zy * zy + cx
-		var ny := 2.0 * zx * zy + cy
-		zx = nx
-		zy = ny
+		var nx: float
+		var ny: float
+		if formula == 6:     # cubic
+			nx = zx * zx * zx - 3.0 * zx * zy * zy
+			ny = 3.0 * zx * zx * zy - zy * zy * zy
+		elif formula == 7:   # quartic: (z^2)^2
+			var ax := zx * zx - zy * zy
+			var ay := 2.0 * zx * zy
+			nx = ax * ax - ay * ay
+			ny = 2.0 * ax * ay
+		else:
+			var fx := zx
+			var fy := zy
+			if formula == 1:     # burning ship
+				fx = absf(zx); fy = absf(zy)
+			elif formula == 2:   # tricorn
+				fy = -zy
+			elif formula == 4:   # perpendicular
+				fx = absf(zx)
+			nx = fx * fx - fy * fy
+			ny = 2.0 * fx * fy
+			if formula == 3:     # celtic
+				nx = absf(nx)
+			elif formula == 4:
+				ny = -ny
+			elif formula == 5:   # buffalo
+				nx = absf(nx); ny = -absf(ny)
+		zx = nx + cx
+		zy = ny + cy
 		out.append(Vector2(zx, zy))
 		if zx * zx + zy * zy > BAILOUT2:
 			break
@@ -116,8 +143,8 @@ static func iterate(p: Vector2, julia: bool, julia_c: Vector2) -> PackedVector2A
 
 ## Draw the orbit of the fractal point `p` over the world spot `hand_xz`. `dir_to_world`
 ## turns a fractal-space offset into a world direction (the map's rotation, no zoom).
-func update(p: Vector2, julia: bool, julia_c: Vector2, dir_to_world: Callable, hand_xz: Vector2) -> void:
-	var orbit := iterate(p, julia, julia_c)
+func update(p: Vector2, julia: bool, julia_c: Vector2, formula: int, dir_to_world: Callable, hand_xz: Vector2) -> void:
+	var orbit := iterate(p, julia, julia_c, formula)
 	var n := orbit.size()
 	point_count = n
 	var mm := _beads.multimesh

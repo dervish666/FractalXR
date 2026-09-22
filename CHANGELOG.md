@@ -102,6 +102,27 @@ All notable changes to FractalXR are documented here. Format based on
   reached the headset unchecked.
 
 ### Fixed
+- **The Mandelbox cloud is no longer mostly reseeded to noise.** Raising the Mandelbox bailout
+  to 1e4 for the marcher also moved the escape flag that decides whether a particle is
+  interior, and shell points rarely reach |z|=100 in ten folds; 74-90% of the cloud was
+  reset to random ball points every update. The flag keeps the old threshold of 36 while
+  the distance keeps the far bailout.
+- **A flame loaded after a bulb no longer stays a ball of seeds.** With the default frozen
+  stability it never got a converge window, so it never iterated.
+- **Entering bulb mode no longer stalls.** It built the splat index at the flame's million-
+  plus count before shrinking to the bulb's 147K; the count now shrinks first, and the
+  index is grown once and sliced rather than rebuilt per count change.
+- **A frozen flame no longer keeps half-converged dust.** The last five settle frames
+  reseed nothing, so every point that gets frozen has had at least twenty iterations
+  (native and web).
+- **Bulbs are hand-sized as intended.** BULB_TOY_SCALE was overwritten by the recenter that
+  followed it and had never applied.
+- **ORBIT follows the ground's formula.** It always traced z^2+c, wrong for seven of the
+  eight families.
+- Smaller state fixes: a bulb's framing is no longer cached under the selected flame preset;
+  a bake no longer reads a density grid a measure pass re-binned mid-bake, and no longer
+  survives a source change; a button held while the help card closes no longer fires; and
+  `soak.sh` no longer dies on a generated flame's name.
 - **A and B are previous and next, in every mode.** They had been four unrelated tuning
   dials (particle count in flame, coverage in bulb, orbit toggle in ground, leaves in
   tree), so there was nothing to learn once. They now step the gallery the mode is of:

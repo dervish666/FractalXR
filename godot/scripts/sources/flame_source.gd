@@ -13,7 +13,8 @@ const FLOATS := 224
 const NVAR := 12
 
 var iterations := 4
-var reseed_prob := 0.0015
+const RESEED_PROB := 0.0015
+var reseed_prob := RESEED_PROB
 ## 1 = every particle every frame (maximum flicker), 4 = a quarter per frame.
 var update_mod := 4
 

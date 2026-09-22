@@ -65,6 +65,7 @@ const STABILITY := [0, 1, 2, 4, 8, 16]   # 1/n of the cloud per frame; 0 = froze
 # A morph iterates the cloud the whole way through, so by the time it finishes the
 # particles are already on the final attractor. Only a fresh load needs a long settle.
 const CONVERGE_FRAMES := 150             # ~2s at 72Hz, for a cold start
+const FUSE_FRAMES := 5                   # reseed-free tail before a freeze (5 x 4 iterations)
 const SETTLE_FRAMES := 30                # after a morph, which has already converged it
 const MEASURE_EVERY := 12                # frames between framing updates while moving
 # A sixth of the cloud per frame during a transition. This is NOT a performance trade:
@@ -492,6 +493,9 @@ func _load_preset(i: int) -> bool:
 	var src := FlameSource.new(preset)
 	src.iterations = ITER_STEPS[iter_idx]
 	src.update_mod = STABILITY[stability_idx]
+	# set_source reseeds into a ball; without a fresh converge window a frozen stability
+	# (the default) never iterates it, and a flame loaded after a bulb stays a ball.
+	_converge = CONVERGE_FRAMES
 	_apply_tone(preset)
 	# set_source touches the RenderingDevice, so it has to happen on the render thread.
 	# Failures surface through cloud.get_error() on a later frame rather than here.
@@ -1456,7 +1460,7 @@ func _tick_orbit() -> void:
 		orbit.visible = false
 		return
 	orbit.visible = true
-	orbit.update(ground.world_to_fractal(hit), ground.julia, ground.julia_c,
+	orbit.update(ground.world_to_fractal(hit), ground.julia, ground.julia_c, ground.formula,
 		ground.fractal_dir_to_world, hit)
 
 
@@ -1545,10 +1549,11 @@ func _set_bulb_mode(on: bool) -> void:
 		_flame_opacity_idx = opacity_idx
 		opacity_idx = 1   # 0.22, the WebXR build's ALPHA
 		colour_idx = 1
+		# Shrink to the bulb's count BEFORE switching to splats: the other order built the
+		# splat mesh at the flame's million-plus count first, a main-thread stall in VR.
+		cloud.set_count(int(TEX_SIZE * TEX_SIZE * BULB_PARTICLES))
 		_apply_point_look()
 		_apply_exposure()
-		# Hand-sized, in front. Once only, on entry: later bulb switches keep the grab.
-		cloud.scale = Vector3.ONE * BULB_TOY_SCALE
 		_load_bulb(bulb_idx)
 		_apply_surface()
 	else:
@@ -1743,6 +1748,11 @@ func _sync_iteration() -> void:
 		src.update_mod = 1
 	else:
 		src.update_mod = STABILITY[stability_idx]
+	# flam3 fuses 15-20 unplotted iterations after a reseed; here a reseeded point is
+	# stored after whatever is left of the frame. Stop reseeding for the last few settle
+	# frames so anything that will be frozen has had at least FUSE_FRAMES * iterations.
+	var fusing := _morph_t >= 1.0 and _converge > 0 and _converge <= FUSE_FRAMES
+	src.reseed_prob = 0.0 if fusing else FlameSource.RESEED_PROB
 
 
 func _tick_morph(delta: float) -> void:
@@ -1876,7 +1886,10 @@ func _home_transform() -> Transform3D:
 	var drop := BULB_HOME_DROP if bulb_mode else HOME_DROP
 	var pos := cam.origin + fwd * dist
 	pos.y = cam.origin.y - drop
-	return Transform3D(Basis(), pos)
+	# Bulbs sit hand-sized in front. Setting cloud.scale on entry never took: the
+	# _recenter that follows resets the whole transform through here.
+	var s := BULB_TOY_SCALE if bulb_mode else 1.0
+	return Transform3D(Basis().scaled(Vector3.ONE * s), pos)
 
 
 ## Keep the frame rate off the floor whatever the settings multiply out to. Cuts are
@@ -2018,7 +2031,9 @@ func _process(delta: float) -> void:
 		_tick_morph(delta)   # the flame and its drift wait while you are on the ground
 	if _converge > 0:
 		_converge -= 1
-		if _converge == 0 and _morph_t >= 1.0:
+		# Flame only: a bulb also sets _converge, and caching its measurement here filed
+		# the bulb's framing under the flame preset that happened to be selected.
+		if _converge == 0 and _morph_t >= 1.0 and not bulb_mode:
 			# Settled: record this preset's framing so future morphs to or from it can
 			# interpolate rather than chase.
 			_cache_gen = cloud.measure_generation
@@ -2091,6 +2106,17 @@ func _process(delta: float) -> void:
 # Left trigger           previous preset / regrow forest / glide to ground point
 
 func _handle_input(delta: float) -> void:
+	# Read every button edge before anything can return: the help card's early return
+	# used to skip these, so a button pressed under the card and still held when it
+	# closed registered as a new press.
+	var r_a := _pressed(right_hand, "ax_button")
+	var r_b := _pressed(right_hand, "by_button")
+	var r_stick := _pressed(right_hand, "primary_click")
+	var l_stick := _pressed(left_hand, "primary_click")
+	var l_x := _pressed(left_hand, "ax_button")
+	var l_y := _pressed(left_hand, "by_button")
+	var l_menu := _pressed(left_hand, "menu_button")
+	var r_menu := _pressed(right_hand, "menu_button")
 	# While the card is up the triggers only dismiss it. The edges were read in _process, for
 	# both hands, so nothing here can leave one hand's edge state stale.
 	if help.is_open():
@@ -2143,14 +2169,7 @@ func _handle_input(delta: float) -> void:
 	# The triggers were read in _process, before the grab, for the same reason.
 	var r_trigger: bool = _trig[1]
 	var l_trigger: bool = _trig[0]
-	var r_a := _pressed(right_hand, "ax_button")
-	var r_b := _pressed(right_hand, "by_button")
-	var r_stick := _pressed(right_hand, "primary_click")
-	var l_stick := _pressed(left_hand, "primary_click")
-	var l_x := _pressed(left_hand, "ax_button")
-	var l_y := _pressed(left_hand, "by_button")
-	var l_menu := _pressed(left_hand, "menu_button")
-	var r_menu := _pressed(right_hand, "menu_button")
+	# (Button edges are read at the top of _handle_input, before the help card's return.)
 
 	# An edit trigger is spent. The editor sits below the wrist menu and above everything else
 	# in the priority order, so a press it took cannot also step a gallery or plant a tree.
@@ -2518,8 +2537,9 @@ func _update_hud(delta: float) -> void:
 		str(xr.foveation_dynamic) if xr != null else "n/a",
 		str(xr.get_render_target_size()) if xr != null else "n/a",
 		int(vp_size.x), int(vp_size.y), get_viewport().scaling_3d_scale,
-		(str(library.bulbs[bulb_idx].get("name", "?")) + "/bulb") if bulb_mode
-			else library.name_at(preset_idx),
+		# Spaces break soak.sh's preset=([^ ]+) field; generated flames are "Wild 3".
+		((str(library.bulbs[bulb_idx].get("name", "?")) + "/bulb") if bulb_mode
+			else library.name_at(preset_idx)).replace(" ", "_"),
 		cloud.get_count(), POINT_STEPS[point_idx], ITER_STEPS[iter_idx],
 		_eye_res.x, _eye_res.y, _perf_tail()])
 
