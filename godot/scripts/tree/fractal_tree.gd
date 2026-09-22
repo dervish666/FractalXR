@@ -269,10 +269,13 @@ func set_leaves(on: bool) -> void:
 	_leaves.visible = on
 
 
+const _PAL_NAMES: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal4"]
+
+
 func set_palette(pal: Array) -> void:
 	for m in [_branch_mat, _leaf_mat]:
 		for i in mini(5, pal.size()):
-			m.set_shader_parameter("pal%d" % i, pal[i])
+			m.set_shader_parameter(_PAL_NAMES[i], pal[i])
 
 
 ## Per frame while showing: growth clock and the wind field, in the tree's own frame so

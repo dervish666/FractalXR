@@ -42,9 +42,12 @@ func is_on() -> bool:
 	return _steps > 0
 
 
+const _PAL_NAMES: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal4"]
+
+
 func set_palette(pal: Array) -> void:
 	for i in mini(5, pal.size()):
-		_mat.set_shader_parameter("pal%d" % i, pal[i])
+		_mat.set_shader_parameter(_PAL_NAMES[i], pal[i])
 
 
 func set_gain(g: float) -> void:

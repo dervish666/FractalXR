@@ -94,6 +94,14 @@ vec4 fetch(int level, ivec2 a) {
 // Bilinear sample of a level at a level-0 texel coordinate (already relative to the
 // viewer's texel, so the arithmetic below never sees a large number). Also returns, via
 // `inside_window`, whether the point lies inside this level's valid window.
+// Whether the point lies in level `level`'s window: sample_level's test without the fetches.
+bool in_window(int level, vec2 e0) {
+	ivec2 vt = view_texel0 >> level;
+	ivec2 rem = view_texel0 - (vt << level);
+	vec2 rel = (vec2(rem) + view_frac0 + e0) / float(1 << level);
+	return all(lessThan(abs(rel), vec2(float(tex_size) * 0.5 - slack - 1.0)));
+}
+
 vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 	// Level-i texel coordinate of the point, split as (viewer texel >> i) + small float.
 	ivec2 vt = view_texel0 >> level;
@@ -148,7 +156,8 @@ float height_at(int level, vec2 e0) {
 // and z. Those four and the centre share one 4x4 block of texels, so fetch the block
 // once (16 fetches) instead of five separate bilinears (20). Same arithmetic, same
 // result: each height is height_of() of the bilinear vec4, as before.
-void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float hz0, out float hz1) {
+void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float hz0, out float hz1,
+		out vec4 centre) {
 	ivec2 vt = view_texel0 >> level;
 	ivec2 rem = view_texel0 - (vt << level);
 	float sc = float(1 << level);
@@ -179,6 +188,9 @@ void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float 
 	hx1 = height_of(sx1, level, true);
 	hz0 = height_of(sz0, level, true);
 	hz1 = height_of(sz1, level, true);
+	// The centre bilinear is the same four texels and weights sample_level uses, so the
+	// fragment takes its colour sample from here rather than fetching them again.
+	centre = mix(mix(t[5], t[6], w.x), mix(t[9], t[10], w.x), w.y);
 }
 
 void vertex() {
@@ -240,8 +252,23 @@ void fragment() {
 	int l1 = min(l0 + 1, max_level);
 	bool in0;
 	bool in1;
-	vec4 sa = sample_level(l0, e0, in0);
-	vec4 sb = sample_level(l1, e0, in1);
+	// Relief needs a 4x4 block at l0 that contains this sample: fetch it once, up front.
+	bool relief_on = relief_mode != 0 || bump_strength > 0.0;
+	float hx0 = 0.0;
+	float hx1 = 0.0;
+	float hz0 = 0.0;
+	float hz1 = 0.0;
+	vec4 sa;
+	if (relief_on) {
+		relief_heights(l0, e0, hx0, hx1, hz0, hz1, sa);
+		in0 = in_window(l0, e0);
+	} else {
+		sa = sample_level(l0, e0, in0);
+	}
+	// At the coarsest level l1 == l0: the same sample, not a second one.
+	vec4 sb = sa;
+	in1 = in0;
+	if (l1 != l0) sb = sample_level(l1, e0, in1);
 	float k = fract(lod);
 	if (!in0) { sa = sb; k = 1.0; }
 	vec4 s = mix(sa, sb, k);
@@ -273,14 +300,9 @@ void fragment() {
 	// Relief: a height from the data and its normal from the neighbouring texels of the
 	// level actually sampled, so slopes carry per-texel detail up close and coarsen with
 	// distance the way terrain does. Lit by one fixed directional light.
-	if (relief_mode != 0 || bump_strength > 0.0) {
+	if (relief_on) {
 		float step = float(1 << l0);              // one texel of that level, in level-0 texels
 		float tm = step * texel0 * wpu;           // and in metres
-		float hx0;
-		float hx1;
-		float hz0;
-		float hz1;
-		relief_heights(l0, e0, hx0, hx1, hz0, hz1);
 		float hc = height_of(sa, l0, true);
 		vec3 n = normalize(vec3(-(hx1 - hx0) * relief_contrast / (2.0 * tm), 1.0,
 			-(hz1 - hz0) * relief_contrast / (2.0 * tm)));

@@ -114,6 +114,11 @@ var _bake_norm_buf: RID
 var _bake_tex: RID
 var _bake_texture := Texture2DRD.new()
 var _baking := false
+# Mirrors the mesh's visibility as a plain field, readable from the render thread. A hidden
+# cloud (marcher, ground, tree, IFS) skips the depth sort: nothing draws the order.
+var _hidden := false
+# The scan stages' push constants never change; built on the first sort, not every frame.
+var _scan_pcs: Array[PackedByteArray] = []
 # Bumped by every bake start and source change; a readback from an older generation is dropped.
 var _bake_gen := 0
 var _bake_first := 0
@@ -766,6 +771,10 @@ func set_brightness(b: float) -> void:
 
 func set_visible_cloud(v: bool) -> void:
 	_mesh_instance.visible = v
+	_hidden = not v
+	# The permutation went stale while nothing drew it; sort before the first shown frame.
+	if v:
+		_sort_valid = false
 
 
 func request_seed() -> void:
@@ -812,7 +821,7 @@ func iterate() -> void:
 	# moves materially avoids five otherwise identical GPU passes in that steady state.
 	# Flames and any moving bulb still sort every frame.
 	if _splat and _sort_ok:
-		if _needs_sort(state_changed):
+		if not _hidden and _needs_sort(state_changed):
 			_run_sort()
 			_last_sort_view = _view_mv
 			_sort_valid = true
@@ -995,12 +1004,10 @@ func _needs_sort(state_changed: bool) -> bool:
 		return true
 	# Comparing the basis columns catches both head rotation and cloud rotation.  A
 	# scale change is included as well, which matters because it changes every depth.
-	for axis in [_view_mv.basis.x - _last_sort_view.basis.x,
-			_view_mv.basis.y - _last_sort_view.basis.y,
-			_view_mv.basis.z - _last_sort_view.basis.z]:
-		if axis.length() > SORT_STILL_BASIS_DELTA:
-			return true
-	return false
+	# Unrolled rather than looping an Array literal, which allocated every frame.
+	return (_view_mv.basis.x - _last_sort_view.basis.x).length() > SORT_STILL_BASIS_DELTA \
+		or (_view_mv.basis.y - _last_sort_view.basis.y).length() > SORT_STILL_BASIS_DELTA \
+		or (_view_mv.basis.z - _last_sort_view.basis.z).length() > SORT_STILL_BASIS_DELTA
 
 
 func _run_sort() -> void:
@@ -1040,14 +1047,17 @@ func _run_sort() -> void:
 
 	_rd.compute_list_bind_compute_pipeline(cl, _scan_pipeline)
 	_rd.compute_list_bind_uniform_set(cl, _sort_scan_set, 0)
+	if _scan_pcs.is_empty():
+		for stage in 3:
+			var spc := PackedByteArray()
+			spc.resize(16)
+			spc.encode_s32(0, SORT_BUCKETS)
+			spc.encode_s32(4, SORT_BLOCKS)
+			spc.encode_s32(8, stage)
+			spc.encode_s32(12, 0)
+			_scan_pcs.append(spc)
 	for stage in 3:
-		var spc := PackedByteArray()
-		spc.resize(16)
-		spc.encode_s32(0, SORT_BUCKETS)
-		spc.encode_s32(4, SORT_BLOCKS)
-		spc.encode_s32(8, stage)
-		spc.encode_s32(12, 0)
-		_rd.compute_list_set_push_constant(cl, spc, 16)
+		_rd.compute_list_set_push_constant(cl, _scan_pcs[stage], 16)
 		_rd.compute_list_dispatch(cl, 1 if stage == 1 else SORT_BLOCKS, 1, 1)
 		_rd.compute_list_add_barrier(cl)
 

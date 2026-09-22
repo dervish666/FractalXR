@@ -123,6 +123,16 @@ All notable changes to FractalXR are documented here. Format based on
   a bake no longer reads a density grid a measure pass re-binned mid-bake, and no longer
   survives a source change; a button held while the help card closes no longer fires; and
   `soak.sh` no longer dies on a generated flame's name.
+- **Less per-frame work across modes.** A morph or theme blend recolours only what is on
+  screen (it used to restyle every tree, the ground, the orbit and the folded wrist panel
+  every frame); the IFS sculpture stops reallocating its instance buffer twice a frame
+  while breathing; a hidden particle cloud (under the marcher, ground, tree or IFS) skips
+  its depth sort; RENDER's 302MB ground stack is released on leaving ground mode; bulb
+  projection takes four distance evaluations per step instead of five; ground relief
+  reuses its centre texels instead of fetching them twice. Button edges, the hidden HUD
+  and the sort's push constants no longer allocate every frame.
+- The staggered chaos and bulb dispatches no longer update up to 255 particles of the
+  next slab twice.
 - **A and B are previous and next, in every mode.** They had been four unrelated tuning
   dials (particle count in flame, coverage in bulb, orbit toggle in ground, leaves in
   tree), so there was nothing to learn once. They now step the gallery the mode is of:

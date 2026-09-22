@@ -108,6 +108,9 @@ void main() {
 		// 4.4ms for all of it). The host dispatches one slab's worth of workgroups and
 		// this maps them onto the slab for this frame's phase.
 		uint slab = (uint(p.count) + uint(p.update_mod) - 1u) / uint(p.update_mod);
+		// The dispatch rounds up to whole workgroups; lanes past the slab belong to the
+		// next phase's particles and would update them twice.
+		if (idx >= slab) return;
 		idx = uint(p.update_phase) * slab + idx;
 		if (idx >= uint(p.count)) return;
 		ip = ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);

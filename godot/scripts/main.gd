@@ -1398,6 +1398,10 @@ func _set_ground_mode(on: bool) -> void:
 		_apply_ground_look()
 		_apply_palette()
 	else:
+		# RENDER's 2048 stack is 302MB; leaving it allocated under the other modes held
+		# that for nothing. Leaving ground drops back to the normal quality.
+		if _render_hq:
+			_set_render_hq(false)
 		# Restore the flame's DETAIL only if it was not changed here; a value picked on
 		# the ground is a choice, not the mode's default.
 		if render_idx == GROUND_RENDER_IDX:
@@ -2307,12 +2311,16 @@ func _apply_palette() -> void:
 				Morph.smoothstep_t(_theme_blend)))
 		pal = mixed
 	cloud.override_palette(pal)
-	ground.set_palette(pal)
 	menu.set_palette(pal)
 	march.set_palette(pal)
-	_set_forest_palette(pal)
-	orbit.set_palette(pal)
-	plant_marker.set_palette(pal)
+	# This runs every morph and theme-blend frame, so only the modes on screen are
+	# recoloured. Entering ground or tree calls this, so each arrives in the current theme.
+	if ground_mode:
+		ground.set_palette(pal)
+		orbit.set_palette(pal)
+	if tree_mode:
+		_set_forest_palette(pal)
+		plant_marker.set_palette(pal)
 	# Recolouring the sculpture walks every instance, so only the mode that draws it pays.
 	# Entering IFS calls this, so it always arrives wearing the current theme.
 	if ifs_mode:
@@ -2440,9 +2448,14 @@ func _pressed(c: XRController3D, action: String) -> bool:
 	if xr != null and not c.get_has_tracking_data():
 		return false
 	var now := c.is_button_pressed(action)
-	var key := "%s/%s" % [c.name, action]
-	var was: bool = _prev.get(key, false)
-	_prev[key] = now
+	# Keyed per controller then per action: formatting a "name/action" key allocated a
+	# String for every button of both hands every frame.
+	var per = _prev.get(c)
+	if per == null:
+		per = {}
+		_prev[c] = per
+	var was: bool = per.get(action, false)
+	per[action] = now
 	return now and not was
 
 
@@ -2481,10 +2494,9 @@ func _ifs_edit_pass() -> bool:
 
 
 func _key(code: Key) -> bool:
-	var key := "k%d" % code
 	var now := Input.is_key_pressed(code)
-	var was: bool = _prev.get(key, false)
-	_prev[key] = now
+	var was: bool = _prev.get(code, false)
+	_prev[code] = now
 	return now and not was
 
 
@@ -2495,6 +2507,10 @@ func _update_hud(delta: float) -> void:
 	if _hud_accum < 0.25:
 		return
 	_hud_accum = 0.0
+	# The HUD is retired to the wrist and the perf print is debug-only; a release build
+	# with the label hidden has nothing to format.
+	if not hud.visible and not OS.is_debug_build():
+		return
 
 	var vp := get_viewport().get_viewport_rid()
 	var gpu := RenderingServer.viewport_get_measured_render_time_gpu(vp)
@@ -2502,25 +2518,8 @@ func _update_hud(delta: float) -> void:
 	var fps := Engine.get_frames_per_second()
 	var grabbing := 0 if grab == null else grab.grip_count()
 
-	var lines := [
-		"%s  (%d/%d)%s" % [library.name_at(preset_idx), preset_idx + 1, library.count(),
-			("   morph %d%%" % int(_morph_t * 100.0)) if _morph_t < 1.0
-			else ("   DRIFT" if _drift else "")],
-		"%.0f fps   draw %.1f ms   sim %.1f ms" % [fps, gpu, sim],
-		"%s pts   %.2fpx   bright %.3f   x%.2f   %s%s" % [
-			_fmt_count(cloud.get_count()), POINT_STEPS[point_idx], BRIGHT_STEPS[bright_idx],
-			RENDER_STEPS[render_idx],
-			("settling" if _should_iterate() else
-				("frozen" if STABILITY[stability_idx] == 0 else "1/%d" % STABILITY[stability_idx])),
-			"   GRAB x%d" % grabbing if grabbing > 0 else ""],
-		"eye %dx%d   exp %.2fx   tone %s   %s" % [
-			_eye_res.x, _eye_res.y, EXPOSURE_MUL[exposure_idx],
-			"ON" if tonemap.enabled else "off", _fmt_time(_uptime)],
-	]
-	if _status != "":
-		lines.append(_status)
 	if hud.visible:   # retired to the wrist; the perf print below is what this is for now
-		hud.text = "\n".join(lines)
+		hud.text = "\n".join(_hud_lines(fps, gpu, sim, grabbing))
 
 	# Log the levers that could be quietly reducing image quality over time, so the
 	# degradation can be attributed instead of guessed at. Debug builds only: it is
@@ -2542,6 +2541,27 @@ func _update_hud(delta: float) -> void:
 			else library.name_at(preset_idx)).replace(" ", "_"),
 		cloud.get_count(), POINT_STEPS[point_idx], ITER_STEPS[iter_idx],
 		_eye_res.x, _eye_res.y, _perf_tail()])
+
+
+func _hud_lines(fps: float, gpu: float, sim: float, grabbing: int) -> Array:
+	var lines := [
+		"%s  (%d/%d)%s" % [library.name_at(preset_idx), preset_idx + 1, library.count(),
+			("   morph %d%%" % int(_morph_t * 100.0)) if _morph_t < 1.0
+			else ("   DRIFT" if _drift else "")],
+		"%.0f fps   draw %.1f ms   sim %.1f ms" % [fps, gpu, sim],
+		"%s pts   %.2fpx   bright %.3f   x%.2f   %s%s" % [
+			_fmt_count(cloud.get_count()), POINT_STEPS[point_idx], BRIGHT_STEPS[bright_idx],
+			RENDER_STEPS[render_idx],
+			("settling" if _should_iterate() else
+				("frozen" if STABILITY[stability_idx] == 0 else "1/%d" % STABILITY[stability_idx])),
+			"   GRAB x%d" % grabbing if grabbing > 0 else ""],
+		"eye %dx%d   exp %.2fx   tone %s   %s" % [
+			_eye_res.x, _eye_res.y, EXPOSURE_MUL[exposure_idx],
+			"ON" if tonemap.enabled else "off", _fmt_time(_uptime)],
+	]
+	if _status != "":
+		lines.append(_status)
+	return lines
 
 
 func _fmt_count(n: int) -> String:

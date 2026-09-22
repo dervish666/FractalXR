@@ -530,8 +530,10 @@ func build(grow := true) -> int:
 		buf[j + 19] = 0.0
 
 	var mm := _mmi.multimesh
-	mm.instance_count = 0
-	mm.instance_count = instance_count
+	# Only when the count changes: each assignment reallocates the RenderingServer buffer,
+	# and breathing rebuilds every frame at a constant count.
+	if mm.instance_count != instance_count:
+		mm.instance_count = instance_count
 	if instance_count > 0:
 		mm.buffer = buf
 	# MultiMesh instances are not culled individually, and an auto AABB would be recomputed

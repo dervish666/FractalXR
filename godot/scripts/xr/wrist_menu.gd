@@ -109,6 +109,7 @@ var _accent: Color     # values, hover border
 var _hot: Color        # hover fill
 
 var _vp: SubViewport
+var _theme_dirty := false
 var _root: PanelContainer
 var _tiles: Array[PanelContainer] = []
 var _styles: Array[StyleBoxFlat] = []
@@ -181,8 +182,13 @@ func set_palette(pal: Array) -> void:
 		return
 	_pal = pal
 	_derive_theme()
+	# Restyling is ~50 tiles of theme overrides, and a morph calls this every frame. A
+	# folded panel keeps the palette and restyles once when it next goes live.
 	if _vp != null:
-		_apply_theme()
+		if visible:
+			_apply_theme()
+		else:
+			_theme_dirty = true
 
 
 static func _lum(c: Color) -> float:
@@ -633,6 +639,9 @@ func wants_stick() -> bool:
 ## A SubViewport is not scene geometry: hiding the parent node does not stop it
 ## rendering. Folded away, the panel was still drawn 72 times a second.
 func _set_live(on: bool) -> void:
+	if on and _theme_dirty:
+		_theme_dirty = false
+		_apply_theme()
 	var want := SubViewport.UPDATE_ALWAYS if on else SubViewport.UPDATE_DISABLED
 	if _vp != null and _vp.render_target_update_mode != want:
 		_vp.render_target_update_mode = want

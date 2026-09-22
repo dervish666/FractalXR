@@ -167,6 +167,19 @@ vec4 de(vec3 q) {
 	return (p.formula > 0.5) ? mandelboxDE(q) : mandelbulbDE(q);
 }
 
+// The four tetrahedral taps give the gradient AND, averaged, the estimate at q itself
+// (the offsets sum to zero, so the mean is de(q) + O(e^2)). A projection step used to call
+// de(q) separately on top of the four taps: five evaluations where four do.
+vec3 deGradMean(vec3 q, float e, out vec4 mean) {
+	vec2 k = vec2(1.0, -1.0);
+	vec4 a = de(q + k.xyy * e);
+	vec4 b = de(q + k.yyx * e);
+	vec4 c = de(q + k.yxy * e);
+	vec4 d = de(q + k.xxx * e);
+	mean = 0.25 * (a + b + c + d);
+	return normalize(k.xyy * a.x + k.yyx * b.x + k.yxy * c.x + k.xxx * d.x);
+}
+
 vec3 deGrad(vec3 q, float e) {
 	vec2 k = vec2(1.0, -1.0);
 	return normalize(
@@ -192,6 +205,9 @@ void main() {
 		// 4.4ms for all of it). The host dispatches one slab's worth of workgroups and
 		// this maps them onto the slab for this frame's phase.
 		uint slab = (uint(p.count) + uint(p.update_mod) - 1u) / uint(p.update_mod);
+		// The dispatch rounds up to whole workgroups; lanes past the slab belong to the
+		// next phase's particles and would update them twice.
+		if (idx >= slab) return;
 		idx = uint(p.update_phase) * slab + idx;
 		if (idx >= uint(p.count)) return;
 		ip = ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);
@@ -215,8 +231,7 @@ void main() {
 	vec3 n = vec3(0.0, 0.0, 1.0);
 	for (int i = 0; i < 6; i++) {
 		if (float(i) >= p.proj_steps) break;
-		d = de(pos);
-		n = deGrad(pos, e);
+		n = deGradMean(pos, e, d);
 		pos -= n * (d.x - shellEps);
 	}
 	// With no projection steps nothing above ran, so evaluate once here. (Doing this
