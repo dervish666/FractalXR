@@ -18,28 +18,34 @@ class_name IfsEchoes
 ## opens or recentres, and nothing moves per frame: the echoes already breathe and twist with
 ## the shared buffer, and an extra drift in peripheral vision is motion nobody asked for.
 
-## Echo counts, default first, as the other ladders open on their default. FEW is the default
-## because Sam asked for this and it should be there when the mode opens, at the cost that
-## fits whatever else the headset is doing; MANY waits for a measured frame time.
-const STEPS := [16, 40, 0]
-const STEP_NAMES := ["few", "many", "off"]
-const MAX_ECHOES := 40
+## Echo counts. MANY opens by default: Sam ran it on the headset, called it rock solid and
+## asked for more, so LOTS is there to try and FEW is kept for a busy scene. Each count is a
+## prefix of the next, so stepping up adds echoes without moving any.
+const STEPS := [16, 40, 96, 0]
+const STEP_NAMES := ["few", "many", "lots", "off"]
+const DEFAULT_STEP := 1
+const MAX_ECHOES := 96
 ## Fixed, so the room is the same room every time the mode opens.
 const SEED := 20260923
 ## Echo width as a multiple of the hero's. Power law between the two, N(>s) ~ s^-SIZE_D, so a
 ## few large echoes sit among many small ones, the way a fractal's parts are distributed.
 ## 0.2 and not smaller: at the 2 m minimum a 0.1x echo is 6 cm across and its beams are under
 ## half a pixel, which with MSAA off shimmers instead of reading as a sculpture.
+## 12x at the top: at 2x the largest echo was still a thing in the room, and Sam asked for
+## much larger ones further off, where a sculpture tens of metres across reads as scenery.
+## SIZE_D 1.0 rather than 1.3 so the giants are a handful and not one or two.
 const S_MIN := 0.2
-const S_MAX := 2.0
-const SIZE_D := 1.3
+const S_MAX := 12.0
+const SIZE_D := 1.0
 ## Distance grows with size, d = D_MIN * (s / S_MIN)^DIST_POW, jittered. A small echo stays
 ## near enough to resolve and a large one goes far enough not to loom, and a large echo still
 ## looks larger than a small one, so the sizes read as sizes and not as perspective. 0.6 was
 ## tried first and pushed everything so far out that the room read as specks.
+## DIST_POW rose from 0.45 with the size range, so a 12x echo lands 25-40 m out (about 10-17
+## degrees across) instead of looming at 15 m. The camera's far plane is 200 m.
 const D_MIN := 2.0
-const D_MAX := 12.0
-const DIST_POW := 0.45
+const D_MAX := 40.0
+const DIST_POW := 0.6
 const DIST_JITTER := Vector2(0.85, 1.6)
 ## Comfort. Nothing reaches within HEAD_CLEAR of the eyes, nothing comes within FLOOR_CLEAR of
 ## the floor, and no echo sits inside SIGHT_CONE of the line to the hero, so the one you are
@@ -68,7 +74,7 @@ const GAIN_NEAR := 0.85
 const GAIN_FAR := 0.5
 const TRIES := 400
 
-var step := 0
+var step := DEFAULT_STEP
 ## One record per placed echo, in placement order: pos and basis in the anchor's frame, the
 ## width multiple, the distance, the tier and the two shader values. Published for the checks.
 var placements: Array = []
@@ -147,14 +153,24 @@ func nodes() -> Array[MultiMeshInstance3D]:
 
 
 ## The placement itself, pure and seeded, so a check can run it without a scene. Two groups:
-## the first STEPS[0] echoes are placed on their own and the rest around them, so FEW is
-## exactly the first part of MANY and stepping up adds echoes without moving any.
+## each rung's echoes are placed around the smaller rung's, so FEW is exactly the first part
+## of MANY, MANY of LOTS, and stepping up adds echoes without moving any.
 static func layout(floor_y: float, width_m: float, hero: Vector3) -> Array:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = SEED
 	var out: Array = []
 	var hero_dir := hero.normalized() if hero.length() > 1e-4 else Vector3.FORWARD
-	var groups := [int(STEPS[0]), MAX_ECHOES - int(STEPS[0])]
+	# One group per ladder rung, so each count is placed around the smaller one before it.
+	var counts: Array[int] = []
+	for c in STEPS:
+		if int(c) > 0:
+			counts.append(int(c))
+	counts.sort()
+	var groups: Array[int] = []
+	var prev := 0
+	for c in counts:
+		groups.append(c - prev)
+		prev = c
 	for g in groups:
 		# Stratified quantiles, so even sixteen echoes span the whole size range.
 		var sizes: Array[float] = []

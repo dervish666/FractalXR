@@ -809,6 +809,9 @@ func _echoes(ifs: FractalIFS) -> void:
 	var many := echoes.count()
 	var many_total := echoes.instance_total()
 	echoes.set_step(2)
+	var lots := echoes.count()
+	var lots_total := echoes.instance_total()
+	echoes.set_step(3)
 	var off := echoes.count()
 	var drawn := 0
 	for m in echoes.nodes():
@@ -823,9 +826,9 @@ func _echoes(ifs: FractalIFS) -> void:
 			+ "detail-4 tiers 9/73=%s material shared=%s tier mm shared=%s stale control='%s'") % [
 			_or_ok(before), _or_ok(after_edit), _or_ok(mid_morph), _or_ok(landed), str(moved),
 			str(blended), str(capped), str(shared_mat), str(shared_mm), ctl])
-	_ok("echoes ladder", few == 16 and many == 40 and off == 0 and drawn == 0,
-		"few=%d (%d frames) many=%d (%d frames) off=%d nodes drawn when off=%d" % [
-			few, few_total, many, many_total, off, drawn])
+	_ok("echoes ladder", few == 16 and many == 40 and lots == 96 and off == 0 and drawn == 0,
+		"few=%d (%d frames) many=%d (%d frames) lots=%d (%d frames) off=%d nodes drawn when off=%d" % [
+			few, few_total, many, many_total, lots, lots_total, off, drawn])
 
 
 static func _or_ok(s: String) -> String:

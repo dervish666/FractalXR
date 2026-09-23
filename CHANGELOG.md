@@ -6,6 +6,10 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **ECHOES reaches further.** MANY (40) now opens by default, a new LOTS rung places 96, and
+  the largest echoes grow to about nine times the sculpture, 25 to 40 metres out, so the far
+  room reads as scenery rather than more of the same small copies. Each rung still adds
+  echoes around the smaller one without moving any.
 - **ECHOES fills the room with the sculpture.** A new tile in IFS mode (few, many, off; few
   by default) scatters 16 or 40 view-only copies of the sculpture around and above you,
   anchored where the mode opened or last recentred, so a grab moves the one on the table and

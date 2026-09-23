@@ -40,6 +40,9 @@ func _init() -> void:
 		_ok("echoes tile", false, "no ECHOES tile in the look section while in IFS")
 		quit(1)
 		return
+	# MANY opens by default; start the walk from FEW.
+	var opened := str(tile.read.call())
+	main.ifs_echoes.set_step(0)
 	var reads := [str(tile.read.call())]
 	await _shot(main, "echoes-few.png", TABLE)
 	var few: Image = await _shot(main, "echoes-few-up.png", UP)
@@ -53,22 +56,30 @@ func _init() -> void:
 	var many_i: int = main.ifs_echoes.instance_total()
 	tile.advance.call()
 	reads.append(str(tile.read.call()))
+	await _shot(main, "echoes-lots.png", TABLE)
+	var lots: Image = await _shot(main, "echoes-lots-up.png", UP)
+	var lots_i: int = main.ifs_echoes.instance_total()
+	tile.advance.call()
+	reads.append(str(tile.read.call()))
 	await _shot(main, "echoes-off.png", TABLE)
 	var off: Image = await _shot(main, "echoes-off-up.png", UP)
-	var lit := [_lit(off), _lit(few), _lit(many)]
-	_ok("echoes tile", reads == ["few · 16", "many · 40", "off"] and main.ifs_echoes.count() == 0,
-		"reads %s" % str(reads))
-	_ok("echoes draw", lit[1] > lit[0] * 2 + 200 and lit[2] > lit[1],
-		("lit samples looking up: off=%d few=%d many=%d, few=%d echoes %d frames, "
-			+ "many=%d echoes %d frames, hero %d frames") % [lit[0], lit[1], lit[2], few_n, few_i,
-			many_n, many_i, main.ifs.instance_count])
+	var lit := [_lit(off), _lit(few), _lit(many), _lit(lots)]
+	_ok("echoes tile", opened == "many · 40"
+			and reads == ["few · 16", "many · 40", "lots · 96", "off"] and main.ifs_echoes.count() == 0,
+		"opened %s, reads %s" % [opened, str(reads)])
+	_ok("echoes draw", lit[1] > lit[0] * 2 + 200 and lit[2] > lit[1] and lit[3] > lit[2],
+		("lit samples looking up: off=%d few=%d many=%d lots=%d, few=%d echoes %d frames, "
+			+ "many=%d echoes %d frames, lots %d frames, hero %d frames") % [lit[0], lit[1], lit[2],
+			lit[3], few_n, few_i, many_n, many_i, lots_i, main.ifs.instance_count])
 
-	# Two more views of MANY: turned left and looking up, and turned right, where the hero is
+	# Three more views of LOTS: turned left and looking up, and turned right, where the hero is
 	# out of frame and the room is all there is.
 	tile.advance.call()
 	tile.advance.call()
-	await _shot(main, "echoes-many-left-up.png", Vector3(20.0, 70.0, 0.0))
-	await _shot(main, "echoes-many-right.png", Vector3(5.0, -100.0, 0.0))
+	tile.advance.call()
+	await _shot(main, "echoes-lots-left-up.png", Vector3(20.0, 70.0, 0.0))
+	await _shot(main, "echoes-lots-right.png", Vector3(5.0, -100.0, 0.0))
+	await _shot(main, "echoes-lots-far.png", Vector3(8.0, 30.0, 0.0))
 	main.xr_camera.rotation_degrees = TABLE
 
 	# Room-anchored: a grab moves the hero and nothing else.
