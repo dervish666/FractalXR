@@ -3,10 +3,11 @@ render_mode unshaded, cull_back, fog_disabled, shadows_disabled;
 
 // Fractal tree branches: one instanced unit cylinder per segment. The instance transform
 // carries position, direction, length and radius; INSTANCE_CUSTOM carries (birth, taper,
-// level, phase). Growth and wind live here so the script never touches the buffer again:
-// a segment extends from its base once the growth clock passes its birth, and every
-// vertex is displaced by one wind field of height, so the whole tree bends as one thing
-// and joints never pull apart.
+// level, phase), and the branches ignore phase since the flutter follows position. Growth
+// and wind live here so the script never touches the buffer again: a segment extends
+// from its base once the growth clock passes its birth, and every vertex is displaced by
+// one wind field of height, so the whole tree bends as one thing and joints never pull
+// apart.
 
 uniform vec3 pal0 = vec3(0.05, 0.02, 0.0);
 uniform vec3 pal1 = vec3(0.35, 0.18, 0.05);
@@ -41,6 +42,13 @@ varying vec3 v_world;
 // One displacement field for branches and leaves: lateral bend growing with the square
 // of height (a cantilever), a slow body sway, a faster ripple up the trunk, and a small
 // per-branch flutter. Metres, in world space.
+// The flutter phase comes from the point's place in the tree, not from its branch: with a
+// phase per branch, a parent's tip ring and its child's base ring fluttered apart by up to
+// 0.3 x amp. A smooth field of position gives both rings the same phase.
+float flutter_phase(vec3 w0) {
+	return dot(w0 - tree_origin, vec3(1.7, 0.9, 1.3)) / max(tree_scale, 1e-3);
+}
+
 vec3 sway(vec3 w, float phase) {
 	float h = clamp(dot(w - tree_origin, tree_up) / max(tree_height * tree_scale, 1e-3), 0.0, 1.5);
 	float g = sin(TIME * 0.7) * 0.6 + sin(TIME * 1.9 + h * 2.0) * 0.25 + sin(TIME * 3.1 + phase) * 0.15;
@@ -54,7 +62,6 @@ void vertex() {
 	float birth = INSTANCE_CUSTOM.x;
 	float taper = INSTANCE_CUSTOM.y;
 	float level = INSTANCE_CUSTOM.z;
-	float phase = INSTANCE_CUSTOM.w;
 	// Growth: extends from the base over 0.9 s after birth, thickening with it.
 	float g = clamp((grow_t - birth * grow_s) / 0.9, 0.0, 1.0);
 	g = g * g * (3.0 - 2.0 * g);
@@ -68,7 +75,7 @@ void vertex() {
 	float h01 = clamp(dot(w0 - tree_origin, tree_up) / max(tree_height * tree_scale, 1e-3), 0.0, 1.0);
 	v_u = mix(level, h01, colour_height);
 	vec3 w = (MODEL_MATRIX * vec4(v, 1.0)).xyz;
-	w = sway(w, phase);
+	w = sway(w, flutter_phase(w0));
 	v_world = w;
 	// The basis scales x and z equally, so a radial normal keeps its direction.
 	v_normal_w = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);

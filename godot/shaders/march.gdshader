@@ -71,7 +71,8 @@ vec4 mandelbulbDE(vec3 q, float lod) {
 		float rr = max(r, 1e-9);
 		float theta = acos(clamp(z.z / rr, -1.0, 1.0));
 		float phi = atan(z.y, z.x);
-		dr = pow(rr, power - 1.0) * power * dr + 1.0;
+		// dc/dp is 1 only when c is the point; a Julia constant adds nothing to the derivative.
+		dr = pow(rr, power - 1.0) * power * dr + mandelbulb;
 		float zr = pow(rr, power);
 		theta *= power; phi *= power;
 		z = zr * vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + c;
@@ -95,7 +96,7 @@ vec4 mandelboxDE(vec3 q, float lod) {
 		if (r2 < minR2) { float t = fixedR2 / minR2; z *= t; dr *= t; }
 		else if (r2 < fixedR2) { float t = fixedR2 / r2; z *= t; dr *= t; }
 		z = scale * z + offset;
-		dr = dr * abs(scale) + 1.0;
+		dr = dr * abs(scale) + mandelbulb;   // + dc/dp, 0 for a Julia constant
 		// Bailout at |z|=100, not 6: length(z)/dr is only a distance bound once z has
 		// escaped far, and at 36 it overestimated at 97% of sampled points (the marcher
 		// stepped through walls and painted noise). Ten iterations still reach it.
@@ -152,7 +153,8 @@ vec4 quatDE(vec3 pos, float lod) {
 	float m2 = dot(z, z);
 	float trapR = 1e10, trapY = 1e10, esc = 0.0;
 	for (int i = 0; i < 11; i++) {
-		md2 *= 4.0 * m2;
+		// |dz'| <= 2|z||dz| + dc/dp; with a Julia constant this is the old 4 m2 md2.
+		md2 = pow(2.0 * sqrt(m2 * md2) + mandelbulb, 2.0);
 		z = quatSqr(z) + c;
 		m2 = dot(z, z);
 		trapR = min(trapR, length(z.xyz));
@@ -195,16 +197,23 @@ void fragment() {
 	vec3 rd = normalize((v_inv_mv * vec4(normalize(VERTEX), 0.0)).xyz);
 	vec3 ro = ro_l / cloud_fit + cloud_center;
 
-	// Start at the bounding sphere, or at the eye when the head is inside it.
+	// Start at the bounding sphere, or at the eye when the head is inside it. `bound` is
+	// already march_bound(), 8-15% past the measured extent, and the extra 1.15 looks
+	// redundant, but it is load-bearing from the inside: dropping it (2026-09-23) cut the
+	// lit pixels of the inside Mandelbox view from 14% to 4%, because the escape walk and
+	// the march both stop at t1 and the far walls sit past the tighter sphere.
 	float R = bound * 1.15;
 	float b = dot(ro, rd);
 	float cc = dot(ro, ro) - R * R;
 	float h = b * b - cc;
-	if (h < 0.0) { discard; }
-	h = sqrt(h);
+	// A ray that misses the sphere is not discarded here: dFdx/dFdy below need every pixel
+	// of the 2x2 quad alive, or a hit beside a miss reads undefined derivatives (NaN on
+	// Adreno) and the silhouette pixel lights wrongly. It skips the march instead.
+	bool outside = h < 0.0;
+	h = sqrt(max(h, 0.0));
 	float t0 = max(0.0, -b - h);
 	float t1 = -b + h;
-	if (t1 <= 0.0) { discard; }
+	outside = outside || t1 <= 0.0;
 
 	// One pixel's angular size, so the stopping distance grows with range: near
 	// surfaces get the fine detail, far ones stop early instead of stalling.
@@ -222,6 +231,7 @@ void fragment() {
 	bool clear = false;
 	float stride = 0.012 * bound;
 	for (int i = 0; i < max_steps; i++) {
+		if (outside) { break; }
 		vec3 pos = ro + rd * t;
 		eps = max(t * pix * 1.0, 1e-5 * bound);
 		r = de(pos, eps * 0.5);
@@ -236,15 +246,17 @@ void fragment() {
 		t += r.x * 0.85;
 		if (t > t1) { break; }
 	}
+	// The derivative of the hit positions is the rendered surface normal. It is stable
+	// at the screen resolution the marcher can display and replaces the four extra DE
+	// samples of a tetrahedral gradient after every successful ray. Taken BEFORE the
+	// discard, with misses parked at their exit point, so every quad pixel contributes.
+	vec3 pos = ro + rd * (hit ? t : t1);
+	vec3 dn = cross(dFdx(pos), dFdy(pos));
 	// A budget miss must stay a miss. Treating it as a hit painted the enclosing seed
 	// sphere when a low-step ray had not reached the actual DE surface yet.
 	if (!hit) { discard; }
-
-	vec3 pos = ro + rd * t;
-	// The derivative of the hit positions is the rendered surface normal. It is stable
-	// at the screen resolution the marcher can display and replaces the four extra DE
-	// samples of a tetrahedral gradient after every successful ray.
-	vec3 n = normalize(cross(dFdx(pos), dFdy(pos)));
+	// Degenerate at a silhouette where a neighbour missed: face the ray rather than NaN.
+	vec3 n = dot(dn, dn) > 1e-24 ? normalize(dn) : -rd;
 	vec3 v = -rd;
 	// Different DE families disagree about the sign around their interior folds. The
 	// visible side of a two-sided marched shell is always the side facing the ray; make

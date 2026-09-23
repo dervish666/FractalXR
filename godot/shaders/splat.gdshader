@@ -260,7 +260,11 @@ void vertex() {
 		float eig_del = sqrt(max(0.0, eig_avg * eig_avg - det));
 		float eig1 = eig_avg + eig_del;
 		float eig2 = max(0.0, eig_avg - eig_del);
-		vec2 ev1 = normalize(vec2((abs(cb) < 1e-6) ? 1.0 : cb, eig1 - ca));
+		// (cb, eig1 - ca) is the eigenvector; it vanishes only for an isotropic footprint, where
+		// any axis will do. The old cb ~ 0 fallback of (1, eig1 - ca) pointed 45 degrees off
+		// when cd > ca. Same guard as bake_shape.glsl.
+		vec2 ev_e = vec2(cb, eig1 - ca);
+		vec2 ev1 = dot(ev_e, ev_e) > 1e-12 ? normalize(ev_e) : vec2(1.0, 0.0);
 		vec2 ev2 = vec2(ev1.y, -ev1.x);
 		float sc1 = min(MAX_PIXEL_RADIUS, sqrt(MAX_STDDEV2) * sqrt(eig1));
 		float sc2 = min(MAX_PIXEL_RADIUS, sqrt(MAX_STDDEV2) * sqrt(eig2));

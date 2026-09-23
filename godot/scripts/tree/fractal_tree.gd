@@ -204,7 +204,12 @@ func build() -> int:
 		buf[o + 12] = level_frac; buf[o + 13] = 0.0; buf[o + 14] = 0.0; buf[o + 15] = 1.0
 		# Custom: birth (0..1 along the growth), taper (child radius / own), level, phase.
 		var birth: float = (s[5] * k) / maxf(total_dist * k, 1e-3)
-		var taper: float = rr if level + 1 < depth else 0.35
+		# The apical leader continues the trunk at 0.85 of its radius (see the queue above);
+		# tapering a trunk segment to rr instead ended it at half the leader's base, and the
+		# pine read as stacked cones.
+		var taper: float = 0.35
+		if level + 1 < depth:
+			taper = 0.85 if apical and bool(s[6]) else rr
 		buf[o + 16] = birth; buf[o + 17] = taper; buf[o + 18] = level_frac
 		buf[o + 19] = _rng.randf() * TAU
 		if level + 1 >= depth or (level + 2 >= depth and _rng.randf() < 0.5):

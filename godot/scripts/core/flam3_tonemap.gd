@@ -27,12 +27,11 @@ const SHADER := "res://shaders/flam3.glsl"
 const TILE := 8   # must match local_size in flam3.glsl
 
 ## Godot's DATA_FORMAT enum is Vulkan's VkFormat minus one.
+## flam3.glsl binds the colour buffer as rgba16f, which is only valid for 96. The UNORM and
+## packed-float formats that used to be listed passed this check and then clipped or read
+## undefined.
 const HDR_FORMATS := [
-	90,   # R16G16B16A16_UNORM is not float, but listed formats below are
 	96,   # R16G16B16A16_SFLOAT   <- what Forward+ gives us
-	108,  # R32G32B32A32_SFLOAT
-	121,  # B10G11R11_UFLOAT_PACK32
-	122,  # E5B9G9R9_UFLOAT_PACK32
 ]
 
 var exposure := 0.32

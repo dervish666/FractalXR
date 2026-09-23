@@ -118,6 +118,22 @@ All notable changes to FractalXR are documented here. Format based on
   reached the headset unchecked.
 
 ### Fixed
+- **Ground lighting follows the map through a twist.** The relief normal was built along the
+  fractal's axes and never turned back to the world's, so after a rotation the hillshade and
+  highlights turned with the terrain against a fixed light. It also no longer jumps in a
+  ring where the detail level changes: the normal fades to the next level's over the last
+  quarter before the switch.
+- **The cubic and quartic grounds have their orbit texture.** It bounded |z| with a square
+  for every family, which pinned it flat on the two higher powers.
+- **Marched bulb edges no longer light wrongly.** The surface normal read screen-space
+  derivatives after a discard, which leaves them undefined beside a missed pixel.
+- **The pine's trunk is one trunk.** Each trunk segment tapered to half the radius the
+  next one started at, so it read as stacked cones. Branch and leaf flutter now follow
+  position rather than branch, so joints stay joined in the wind.
+- Smaller maths: Julia-mode distance estimates no longer add a derivative term that only a
+  point-as-c set has (no current preset was affected), the splat footprint no longer points
+  45 degrees off when its covariance is nearly diagonal, and the desktop tone map accepts
+  only the colour buffer format it can actually bind.
 - **The displaced ground no longer bobs as you look around.** With HEIGHT above 0 the bumps
   rose and fell with every turn of the head. Turning moves the eye as well as pointing it,
   about 9 cm round the neck, and the ground followed the eye in two ways: the floor

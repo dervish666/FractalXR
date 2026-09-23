@@ -96,6 +96,9 @@ void fragment() {
 	float r2 = dot(d, d);
 	if (r2 > 0.25) discard;
 	float fall = exp(-r2 * sharpness);
+	// blend_add is SRC_ALPHA, ONE, so each dot lands as v_col * fall^2: tighter and about half
+	// the energy of the web build's One/One blend. That is the tuned native look, kept on
+	// purpose; SHARPNESS was set against it.
 	ALBEDO = v_col * fall;
 	ALPHA = fall;
 }

@@ -121,7 +121,10 @@ vec4 escape(vec2 c, vec2 z0) {
 		n = i + 1;
 		if (p.tex_on > 0.5 && i > 1) {
 			minAxis = min(minAxis, min(abs(z.x), abs(z.y)));
-			float azp2 = dot(zp, zp);
+			// Triangle inequality on z = f(zp) + c: | |f(zp)| - |c| | <= |z| <= |f(zp)| + |c|.
+			// |f(zp)| is |zp|^degree (the folds keep |zp|). Using |zp|^2 for every family
+			// pinned t to 0 or 1 on the cubic and quartic, and their texture came out flat.
+			float azp2 = pow(dot(zp, zp), 0.5 * degree_of(p.formula));
 			float lo = abs(azp2 - ac);
 			float hi = azp2 + ac;
 			float t = (sqrt(m2) - lo) / max(1e-12, hi - lo);

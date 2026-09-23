@@ -74,7 +74,8 @@ vec4 mandelbulbDE(vec3 q) {
 		float rr = max(r, 1e-9);
 		float theta = acos(clamp(z.z / rr, -1.0, 1.0));
 		float phi = atan(z.y, z.x);
-		dr = pow(rr, p.power - 1.0) * p.power * dr + 1.0;
+		// dc/dp is 1 only when c is the point; a Julia constant adds nothing to the derivative.
+		dr = pow(rr, p.power - 1.0) * p.power * dr + p.mandelbulb;
 		float zr = pow(rr, p.power);
 		theta *= p.power; phi *= p.power;
 		z = zr * vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + c;
@@ -97,7 +98,7 @@ vec4 mandelboxDE(vec3 q) {
 		if (r2 < minR2) { float t = fixedR2 / minR2; z *= t; dr *= t; }     // sphere fold, inner
 		else if (r2 < fixedR2) { float t = fixedR2 / r2; z *= t; dr *= t; } // sphere fold, shell
 		z = p.scale * z + offset;
-		dr = dr * abs(p.scale) + 1.0;
+		dr = dr * abs(p.scale) + p.mandelbulb;   // + dc/dp, 0 for a Julia constant
 		// The distance needs the far bailout (see march.gdshader: 36 is not a bound), but
 		// the escape flag feeds the interior reseed below and must keep the old threshold:
 		// flagged at 1e4, shell points rarely escaped in ten folds and 74-90% of the cloud
@@ -150,7 +151,9 @@ vec4 quatDE(vec3 pos) {
 	float m2 = dot(z, z);
 	float trapR = 1e10, trapY = 1e10, esc = 0.0;
 	for (int i = 0; i < 11; i++) {
-		md2 *= 4.0 * m2;
+		// |dz'| <= 2|z||dz| + dc/dp. The +1 matters when c is the point; with a Julia constant
+		// this is the old 4 m2 md2 exactly.
+		md2 = pow(2.0 * sqrt(m2 * md2) + p.mandelbulb, 2.0);
 		z = quatSqr(z) + c;
 		m2 = dot(z, z);
 		trapR = min(trapR, length(z.xyz));

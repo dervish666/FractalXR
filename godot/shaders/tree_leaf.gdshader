@@ -28,6 +28,13 @@ uniform float leaf_gain = 0.25;
 varying vec2 v_uv;
 varying float v_hue;
 
+// The flutter phase comes from the point's place in the tree, not from its branch: with a
+// phase per branch, a parent's tip ring and its child's base ring fluttered apart by up to
+// 0.3 x amp. A smooth field of position gives both rings the same phase.
+float flutter_phase(vec3 w0) {
+	return dot(w0 - tree_origin, vec3(1.7, 0.9, 1.3)) / max(tree_scale, 1e-3);
+}
+
 vec3 sway(vec3 w, float phase) {
 	float h = clamp(dot(w - tree_origin, tree_up) / max(tree_height * tree_scale, 1e-3), 0.0, 1.5);
 	float g = sin(TIME * 0.7) * 0.6 + sin(TIME * 1.9 + h * 2.0) * 0.25 + sin(TIME * 3.1 + phase) * 0.15;
@@ -50,7 +57,7 @@ void vertex() {
 	vec3 up = INV_VIEW_MATRIX[1].xyz;
 	float a = sin(TIME * 2.7 + phase) * 0.4 * (0.3 + wind);
 	vec2 q = vec2(VERTEX.x * cos(a) - VERTEX.y * sin(a), VERTEX.x * sin(a) + VERTEX.y * cos(a));
-	vec3 w = sway(center, phase) + right * (q.x * size) + up * (q.y * size);
+	vec3 w = sway(center, flutter_phase(center)) + right * (q.x * size) + up * (q.y * size);
 	v_uv = VERTEX.xy;
 	POSITION = PROJECTION_MATRIX * (VIEW_MATRIX * vec4(w, 1.0));
 }

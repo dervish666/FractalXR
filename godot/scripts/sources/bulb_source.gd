@@ -157,7 +157,8 @@ func _de_bulb(q: Vector3, mp: Dictionary) -> float:
 		var rr := maxf(r, 1e-9)
 		var theta := acos(clampf(z.z / rr, -1.0, 1.0))
 		var phi := atan2(z.y, z.x)
-		dr = pow(rr, power - 1.0) * power * dr + 1.0
+		# dc/dp is 1 only when c is the point; a Julia constant adds nothing.
+		dr = pow(rr, power - 1.0) * power * dr + float(mp["mandelbulb"])
 		var zr := pow(rr, power)
 		theta *= power
 		phi *= power
@@ -186,7 +187,7 @@ func _de_box(q: Vector3, mp: Dictionary) -> float:
 			z *= t
 			dr *= t
 		z = scale * z + offset
-		dr = dr * absf(scale) + 1.0
+		dr = dr * absf(scale) + float(mp["mandelbulb"])
 		if z.dot(z) > 1e4:
 			break
 	return z.length() / maxf(absf(dr), 1e-6)
@@ -234,7 +235,8 @@ func _de_quat(pos: Vector3, mp: Dictionary) -> float:
 	var md2 := 1.0
 	var m2 := z.dot(z)
 	for i in 11:
-		md2 *= 4.0 * m2
+		# |dz'| <= 2|z||dz| + dc/dp; with a Julia constant this is the old 4 m2 md2.
+		md2 = pow(2.0 * sqrt(m2 * md2) + float(mp["mandelbulb"]), 2.0)
 		var yzw := Vector3(z.y, z.z, z.w)
 		var sq := Vector4(z.x * z.x - yzw.dot(yzw), 2.0 * z.x * z.y, 2.0 * z.x * z.z, 2.0 * z.x * z.w)
 		z = sq + c

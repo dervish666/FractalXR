@@ -261,6 +261,18 @@ void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
+// Lighting normal and Laplacian from the four neighbour heights of one level. The heights
+// are one texel apart along the FRACTAL's axes (e0 = M * w), so the gradient has to go back
+// through M's transpose to be a world-space slope; without it the hillshade turned with the
+// map under a twist while the light and the displaced mesh stayed put.
+void relief_normal(mat2 m, int level, float hx0, float hx1, float hz0, float hz1, float hc,
+		out vec3 n, out float lap) {
+	float tm = float(1 << level) * texel0 * wpu;   // one texel of that level, in metres
+	vec2 g = transpose(m) * vec2(hx1 - hx0, hz1 - hz0) * relief_contrast / (2.0 * tm);
+	n = normalize(vec3(-g.x, 1.0, -g.y));
+	lap = (hx1 + hx0 + hz1 + hz0 - 4.0 * hc) / tm;
+}
+
 void fragment() {
 	vec2 w = v_world.xz - head_xz;
 	// Offset from the viewer in level-0 texels. Small numbers by construction.
@@ -331,22 +343,35 @@ void fragment() {
 	// level actually sampled, so slopes carry per-texel detail up close and coarsen with
 	// distance the way terrain does. Lit by one fixed directional light.
 	if (relief_on) {
-		float step = float(1 << l0);              // one texel of that level, in level-0 texels
-		float tm = step * texel0 * wpu;           // and in metres
-		float hc = height_of(sa, l0, true);
-		vec3 n = normalize(vec3(-(hx1 - hx0) * relief_contrast / (2.0 * tm), 1.0,
-			-(hz1 - hz0) * relief_contrast / (2.0 * tm)));
+		mat2 m = mat2(rot.xy, rot.zw);
+		vec3 n;
+		float lap;
+		relief_normal(m, l0, hx0, hx1, hz0, hz1, height_of(sa, l0, true), n, lap);
+		// Colour cross-fades l0 -> l1 over the whole of fract(lod), but the relief is built
+		// from l0 alone, so where lod crossed a whole number the normal changed texel pattern
+		// in one step: a lighting ring at every level boundary. Fading to l1's normal over
+		// the last quarter before the switch removes the step for 16 more fetches on a
+		// quarter of the pixels, rather than 16 more everywhere.
+		float kn = smoothstep(0.75, 1.0, k);
+		if (kn > 0.0 && l1 != l0 && in1) {
+			vec4 c1;
+			float a0; float a1; float b0; float b1;
+			relief_heights(l1, e0, a0, a1, b0, b1, c1);
+			vec3 n1;
+			float lap1;
+			relief_normal(m, l1, a0, a1, b0, b1, height_of(c1, l1, true), n1, lap1);
+			n = normalize(mix(n, n1, kn));
+			lap = mix(lap, lap1, kn);
+		}
 		vec3 L = normalize(light_dir);
 		float diff = max(dot(n, L), 0.0);
 		vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
 		// 0.12, not 0.25: broad glossy patches were reading as wet rock. And no specular
-		// at all once the normal is noise, or the distance sparkles.
-		// 0.12, not 0.25: broad glossy patches read as wet rock. And no specular at
-		// all once the normal is built from texels finer than the pixel.
+		// at all once the normal is built from texels finer than the pixel, or the distance
+		// sparkles.
 		float spec = pow(max(dot(normalize(L + V), n), 0.0), 24.0) * 0.12 * sharp;
 		// Cavity: a positive Laplacian is a hollow, and hollows sit in shade. This is
 		// what stops a terrain read like a bas-relief with a torch on it.
-		float lap = (hx1 + hx0 + hz1 + hz0 - 4.0 * hc) / tm;
 		float cavity = 1.0 - 0.4 * clamp(lap * 0.6, 0.0, 1.0);
 		col = (col * (0.25 + 0.75 * diff) + spec * (1.0 - inside)) * cavity;
 	}
@@ -356,7 +381,7 @@ void fragment() {
 	// or the far distance would just go dark.
 	if (relief_mode == 3) {
 		float band = s.r;
-		float wd = fwidth(band);
+		float wd = wcount;   // fwidth(s.r), already taken above
 		float f = min(fract(band), 1.0 - fract(band));
 		float line = 1.0 - smoothstep(0.0, wd * 1.2 + 0.015, f);
 		float f4 = min(fract(band * 0.25), 1.0 - fract(band * 0.25)) * 4.0;
