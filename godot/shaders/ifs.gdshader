@@ -32,6 +32,11 @@ uniform float brightness = 1.0;
 // another rung, where they hold every frame's colour still while the normalisation catches up.
 uniform float level_gain = 1.0;
 uniform float radius_gain = 1.0;
+// Per echo, set on the node rather than the shared material, so forty copies of the sculpture
+// are forty different points on the palette and one material. The hero leaves both at their
+// defaults. Phase is in palette turns; gain dims a far echo so the hero stays the subject.
+instance uniform float echo_phase = 0.0;
+instance uniform float echo_gain = 1.0;
 
 varying float v_u;
 varying float v_shade;
@@ -53,8 +58,8 @@ void vertex() {
 	VERTEX = mix(parent, VERTEX, g);
 	// Level and radius together. Level alone bands the palette by generation with a hard
 	// line between bands, radius alone ignores the recursion that built the shape.
-	v_u = mix(level * level_gain, radius * radius_gain, radius_mix) + anim_t * scroll;
-	v_shade = UV.x;
+	v_u = mix(level * level_gain, radius * radius_gain, radius_mix) + anim_t * scroll + echo_phase;
+	v_shade = UV.x * echo_gain;
 }
 
 void fragment() {

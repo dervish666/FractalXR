@@ -243,7 +243,7 @@ class ControlsCard extends Control:
 			face = PackedStringArray(["A · B: previous,", "next sculpture"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
-			mode_note = "SHAPE morphs it; EDIT shows the mirrors; MOTION breathes; UNDO undoes an edit"
+			mode_note = "SHAPE morphs it; EDIT shows the mirrors; MOTION breathes; ECHOES fills the room"
 		_callout(left["trigger"], 310.0, true, left_trigger)
 		_callout(left["stick"], 450.0, true, left_stick)
 		_callout(left["grip"], 660.0, true, left_grip)

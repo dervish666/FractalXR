@@ -181,6 +181,9 @@ var ifs_mode := false
 ## The sculpting handles. A child of the IFS node, so its parameter space is the construction
 ## space whatever the grab has done to the cloud, and hiding the sculpture hides the guides.
 var ifs_edit := IfsEditor.new()
+## ECHOES: view-only copies of the sculpture scattered through the room at many sizes. Under
+## the IFS node so they hide with it, but anchored to the head at entry, not to the grab.
+var ifs_echoes := IfsEchoes.new()
 ## Tabletop framing. The IFS is real geometry in construction units, so its scale comes from
 ## its own published bounds rather than from the particle cloud's measured extent, which
 ## describes a flame that is not being drawn.
@@ -434,6 +437,8 @@ func _ready() -> void:
 	cloud.add_child(ifs)
 	ifs.add_child(ifs_edit)
 	ifs_edit.setup(ifs)
+	ifs.add_child(ifs_echoes)
+	ifs_echoes.setup(ifs)
 	add_child(ground)
 	add_child(orbit)
 	add_child(plant_marker)
@@ -732,6 +737,14 @@ func _build_menu() -> void:
 			func(): return "breathing" if ifs.ambient else "off",
 			func(): _toggle_ifs_motion(),
 			false, _vis_ifs),
+		# Copies of the sculpture through the room. The count is what the tile prints, because
+		# the count is what the GPU pays for; the headset's frame time decides whether MANY stays.
+		WristMenu.Item.new("look", "ECHOES",
+			func():
+				return "off" if ifs_echoes.count() == 0 else "%s · %d" % [
+					ifs_echoes.step_name(), ifs_echoes.count()],
+			func(): ifs_echoes.set_step(ifs_echoes.step + 1),
+			false, _vis_ifs).stepping(func(d: int): ifs_echoes.set_step(ifs_echoes.step + d)),
 		WristMenu.Item.new("look", "BAKE",
 			func():
 				if cloud.is_baking():
@@ -1261,12 +1274,13 @@ func _perf_tail() -> String:
 		# number that decides whether every frame can rebuild, and without this field there is
 		# no way to tell a drag frame from an idle one in the log.
 		return head + (" mode=ifs shape=%s detail=%d depth=%.2f instances=%d triangles=%d"
-			+ " build_ms=%.3f edit=%s motion=%s morph=%.2f") % [
+			+ " build_ms=%.3f edit=%s motion=%s morph=%.2f echoes=%d echo_instances=%d") % [
 			FractalIFS.preset_name(ifs_preset_idx),
 			IFS_DETAIL[ifs_detail_idx], ifs.depth, ifs.instance_count,
 			ifs.triangle_count, ifs.build_ms,
 			ifs_edit.handle_label().replace(" ", "_") if ifs_edit.is_editing() else "none",
-			"on" if ifs.ambient else "off", ifs.morph_t]
+			"on" if ifs.ambient else "off", ifs.morph_t, ifs_echoes.count(),
+			ifs_echoes.instance_total()]
 	if tree_mode:
 		return head + " mode=tree species=%s trees=%d branches=%d wind=%s leaves=%s" % [
 			FractalTree.SHAPE_NAMES[tree_shape_idx], _forest_tree_count(),
@@ -1989,6 +2003,11 @@ func _recenter() -> void:
 		var pos := cam.origin + fwd * IFS_DISTANCE
 		pos.y = cam.origin.y - IFS_DROP
 		t = Transform3D(Basis().scaled(Vector3.ONE * _ifs_scale()), pos)
+		# The echoes re-anchor with the hero, so a recentre after walking away brings the
+		# room back around you with the hero's line of sight still clear.
+		ifs_echoes.place(Transform3D(Basis.looking_at(fwd, Vector3.UP), cam.origin),
+			xr_origin.global_position.y - cam.origin.y, _ifs_scale(), IFS_WIDTH_M,
+			Vector3(0.0, -IFS_DROP, -IFS_DISTANCE))
 	if grab != null:
 		grab.reset(t)
 	else:

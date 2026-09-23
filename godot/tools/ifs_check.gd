@@ -64,6 +64,8 @@ func _init() -> void:
 	_morph(ifs)
 	_clearance(ifs)
 	_rejection(ifs)
+	_echoes(ifs)
+	_echo_layout()
 	await _grab_suspend()
 	_editor_setup()
 	await _editor_space()
@@ -754,6 +756,167 @@ func _clearance(ifs: FractalIFS) -> void:
 	var pass_ := absf(got - want) < 1e-3 and on_beam == 0.0 and far > 4.0 and shifted < got
 	_ok("clearance", pass_, "origin=%.4f (derived %.4f) on beam=%.4f far=%.3f offset plane=%.4f" % [
 		got, want, on_beam, far, shifted])
+
+
+## ECHOES draw views of the hero's build, never a copy of it. After a rebuild every tier has to
+## hold exactly the first generations of the hero's new buffer, draw the hero's own mesh and be
+## drawn with the hero's own material, with a custom AABB that is the bound of that prefix. The
+## control is a snapshot of a tier taken before the rebuild: a copy that does not follow edits
+## must fail the same test, or the test is not looking at following.
+func _echoes(ifs: FractalIFS) -> void:
+	_defaults(ifs)
+	var echoes := IfsEchoes.new()
+	ifs.add_child(echoes)
+	echoes.setup(ifs)
+	echoes.place(Transform3D(Basis(), Vector3(0.0, 1.6, 0.0)), -1.6, 0.3, 0.6,
+		Vector3(0.0, -0.28, -0.8))
+	ifs.build(false)
+	var stale: MultiMesh = ifs.echo_multimesh(1).duplicate()
+	var before := _echo_follows(ifs, echoes)
+	# An edit and a morph to another seed, both of which change the buffer and the mesh.
+	ifs.plane1_offset = 0.2
+	ifs.build(false)
+	var after_edit := _echo_follows(ifs, echoes)
+	var moved: bool = ifs.echo_multimesh(1).buffer != stale.buffer
+	ifs.begin_morph(2)
+	ifs.tick(0.5)
+	var mid_morph := _echo_follows(ifs, echoes)
+	var blended: bool = ifs.echo_multimesh(0).mesh == ifs.get_node("Frames").multimesh.mesh \
+		and ifs.echo_multimesh(0).mesh.get_faces().size() > stale.mesh.get_faces().size()
+	ifs.settle()
+	var landed := _echo_follows(ifs, echoes)
+	var ctl := _mm_follows(ifs, stale, 1)
+	# The prefix does not grow with the hero: detail 4 is 4681 frames and a tier still two
+	# generations.
+	ifs.set_preset(0)
+	_planes(ifs)
+	ifs.detail = 4
+	ifs.build(false)
+	var capped: bool = ifs.echo_multimesh(0).instance_count == 9 \
+		and ifs.echo_multimesh(1).instance_count == 73 and ifs.instance_count == 4681
+	var shared_mat := true
+	var shared_mm := true
+	for m in echoes.nodes():
+		shared_mat = shared_mat and m.material_override == ifs.material() \
+			and m.material_override == ifs.get_node("Frames").material_override
+	for i in echoes.placements.size():
+		shared_mm = shared_mm and echoes.nodes()[i].multimesh \
+			== ifs.echo_multimesh(int(echoes.placements[i]["tier"]))
+	echoes.set_step(0)
+	var few := echoes.count()
+	var few_total := echoes.instance_total()
+	echoes.set_step(1)
+	var many := echoes.count()
+	var many_total := echoes.instance_total()
+	echoes.set_step(2)
+	var off := echoes.count()
+	var drawn := 0
+	for m in echoes.nodes():
+		drawn += 1 if m.visible else 0
+	ifs.remove_child(echoes)
+	echoes.free()
+	_defaults(ifs)
+	ifs.build(false)
+	_ok("echoes follow", before == "" and after_edit == "" and mid_morph == "" and landed == ""
+			and moved and blended and ctl != "" and capped and shared_mat and shared_mm,
+		("built=%s edited=%s mid-morph=%s landed=%s buffer moved=%s blend mesh shared=%s "
+			+ "detail-4 tiers 9/73=%s material shared=%s tier mm shared=%s stale control='%s'") % [
+			_or_ok(before), _or_ok(after_edit), _or_ok(mid_morph), _or_ok(landed), str(moved),
+			str(blended), str(capped), str(shared_mat), str(shared_mm), ctl])
+	_ok("echoes ladder", few == 16 and many == 40 and off == 0 and drawn == 0,
+		"few=%d (%d frames) many=%d (%d frames) off=%d nodes drawn when off=%d" % [
+			few, few_total, many, many_total, off, drawn])
+
+
+static func _or_ok(s: String) -> String:
+	return "ok" if s == "" else s
+
+
+## Empty when every tier and every echo node agrees with the hero's current build, otherwise
+## the first disagreement.
+func _echo_follows(ifs: FractalIFS, echoes: IfsEchoes) -> String:
+	for e in FractalIFS.ECHO_LEVELS.size():
+		var why := _mm_follows(ifs, ifs.echo_multimesh(e), e)
+		if why != "":
+			return why
+	for i in echoes.placements.size():
+		var m: MultiMeshInstance3D = echoes.nodes()[i]
+		if m.multimesh != ifs.echo_multimesh(int(echoes.placements[i]["tier"])):
+			return "echo %d draws a MultiMesh of its own" % i
+		# The node's own box is left unset so the tier's custom AABB is what culls it. The
+		# node's get_aabb() cannot say so here: the headless server reports an empty box.
+		if m.custom_aabb.has_volume():
+			return "echo %d overrides its tier's aabb" % i
+	return ""
+
+
+func _mm_follows(ifs: FractalIFS, mm: MultiMesh, tier: int) -> String:
+	var hero: MultiMesh = ifs.get_node("Frames").multimesh
+	var lv := mini(int(FractalIFS.ECHO_LEVELS[tier]), ifs.levels_built)
+	var n := ifs.level_ends[lv]
+	if mm.mesh != hero.mesh:
+		return "tier %d mesh is not the hero's" % tier
+	if mm.instance_count != n:
+		return "tier %d has %d instances, prefix is %d" % [tier, mm.instance_count, n]
+	if mm.buffer != hero.buffer.slice(0, n * 20):
+		return "tier %d buffer is not the hero's prefix" % tier
+	var box: AABB = ifs.xforms[0] * ifs.seed_box
+	for i in n:
+		box = box.merge(ifs.xforms[i] * ifs.seed_box)
+	if not mm.custom_aabb.is_equal_approx(box):
+		return "tier %d aabb %s, prefix bound %s" % [tier, mm.custom_aabb, box]
+	return ""
+
+
+## The placement: seeded, every comfort rule held by every echo, FEW the leading part of MANY,
+## and the size spread a power law rather than a scatter of equals. The control hands the rule
+## predicate a placement at the eye, one on the floor and one on the sight line; each must be
+## refused.
+func _echo_layout() -> void:
+	var floor_y := -1.6
+	var hero := Vector3(0.0, -0.28, -0.8)
+	var a := IfsEchoes.layout(floor_y, 0.6, hero)
+	var b := IfsEchoes.layout(floor_y, 0.6, hero)
+	var same := a.size() == b.size()
+	for i in mini(a.size(), b.size()):
+		same = same and (a[i]["pos"] as Vector3) == (b[i]["pos"] as Vector3) \
+			and float(a[i]["s"]) == float(b[i]["s"])
+	var bad := 0
+	var near := INF
+	var low := INF
+	var cone := INF
+	for i in a.size():
+		var p: Dictionary = a[i]
+		var pos: Vector3 = p["pos"]
+		var r := float(p["r"])
+		if IfsEchoes.violates(pos, r, floor_y, hero.normalized(), a.slice(0, i)):
+			bad += 1
+		near = minf(near, pos.length() - r)
+		low = minf(low, pos.y - r - floor_y)
+		cone = minf(cone, rad_to_deg(pos.normalized().angle_to(hero.normalized())))
+	var bands := [0, 0, 0]
+	var tiers := [0, 0]
+	var smin := INF
+	var smax := 0.0
+	for p in a:
+		var sc := float(p["s"])
+		smin = minf(smin, sc)
+		smax = maxf(smax, sc)
+		bands[0 if sc < 0.4 else (1 if sc < 1.0 else 2)] += 1
+		tiers[int(p["tier"])] += 1
+	var ctl_eye := IfsEchoes.violates(Vector3(0.0, 0.0, -0.5), 0.05, floor_y, hero.normalized(), [])
+	var ctl_floor := IfsEchoes.violates(Vector3(3.0, -1.5, 0.0), 0.1, floor_y, hero.normalized(), [])
+	var ctl_sight := IfsEchoes.violates(hero.normalized() * 5.0, 0.1, floor_y, hero.normalized(), [])
+	var ctl_overlap := IfsEchoes.violates(a[0]["pos"] as Vector3, 0.1, floor_y, hero.normalized(), a)
+	var power: bool = bands[0] > bands[1] and bands[1] > bands[2] and bands[2] >= 1
+	_ok("echo layout", a.size() == IfsEchoes.MAX_ECHOES and same and bad == 0 and power
+			and ctl_eye and ctl_floor and ctl_sight and ctl_overlap,
+		("placed=%d/%d seeded=%s rule breaks=%d nearest surface %.2f m, lowest %.2f m off the floor, "
+			+ "closest to sight line %.1f deg, widths %.2f-%.2fx: <0.4x=%d 0.4-1x=%d >=1x=%d, "
+			+ "tiers 1-gen=%d 2-gen=%d, controls eye/floor/sight/overlap refused=%s/%s/%s/%s") % [
+			a.size(), IfsEchoes.MAX_ECHOES, str(same), bad, near, low, cone, smin, smax,
+			bands[0], bands[1], bands[2], tiers[0], tiers[1],
+			str(ctl_eye), str(ctl_floor), str(ctl_sight), str(ctl_overlap)])
 
 
 func _rejection(ifs: FractalIFS) -> void:

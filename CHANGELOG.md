@@ -6,6 +6,19 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **ECHOES fills the room with the sculpture.** A new tile in IFS mode (few, many, off; few
+  by default) scatters 16 or 40 view-only copies of the sculpture around and above you,
+  anchored where the mode opened or last recentred, so a grab moves the one on the table and
+  leaves the room put. Their widths follow a power law from 0.2x to 2x the sculpture, a few
+  large ones further out among many small ones nearer in, so the room reads as one more
+  generation of the same fractal. Each echo is a prefix of the sculpture's own instance
+  buffer, written by the same rebuild, drawn with the same seed mesh and the same material,
+  so every edit, breath, morph and palette change reaches all of them at no extra cost. An
+  echo draws at most two generations whatever DETAIL is at: 616 frames for all 40 on FRAMES,
+  1,096 on STAR, next to the 585 or more the sculpture draws itself. A per-echo palette
+  offset moves colour outward through the room and far echoes are dimmer. Nothing comes
+  within 1.2 m of your head or 0.3 m of the floor, and nothing sits in the line to the
+  sculpture.
 - **The IFS sculpture is alive.** It had five shapes and none of them did anything, which
   next to the tree's growth and the flame's drift made it read as a still life. Three things
   move now. The palette drifts through the whole sculpture, one full traverse every 50

@@ -70,6 +70,11 @@ const COLOUR_EASE_S := 0.5   # time constant of the palette settling after a cha
 ## The ramp texture the shader samples. 256 is more than a five-stop palette needs and still
 ## a rounding-free number of texels per stop for the sizes a palette actually comes in.
 const RAMP_W := 256
+## The deepest generation each echo tier draws. An echo is a prefix of the hero's own buffer,
+## so these are the only numbers that decide what an echo costs, whatever DETAIL the hero is
+## at. Deeper than 2 buys nothing: a third-generation beam on a room-sized echo is under a
+## pixel wide and, with MSAA off, would crawl rather than read.
+const ECHO_LEVELS := [1, 2]
 
 ## The three seed frames, as vertices in construction units and the edge pairs between them.
 ## All three sit in the same [-1, 1] box. The cube's edges are listed in long-axis order
@@ -186,6 +191,10 @@ var build_ms := 0.0
 var levels_built := 0
 var cap_note := ""
 var rejected := 0
+## Instances through the end of each generation, and the bound of those instances. Frames are
+## written level by level, so generation k's prefix is the first level_ends[k] of the buffer.
+var level_ends := PackedInt32Array()
+var level_bounds: Array[AABB] = []
 
 var seed_mesh: ArrayMesh
 var beams: Array = []
@@ -194,6 +203,10 @@ var beams: Array = []
 var seed_box := AABB()
 
 var _mmi: MultiMeshInstance3D
+## One MultiMesh per ECHO_LEVELS tier, holding a prefix of the hero's buffer. Written by the
+## same build() and pointed at the same seed mesh, so every edit, breath and morph reaches them
+## with no second rebuild path. See IfsEchoes for why this is not the hero's own MultiMesh.
+var _echo_mm: Array[MultiMesh] = []
 var _mat: ShaderMaterial
 var _shader: Shader
 var _shader_nocull: Shader
@@ -262,6 +275,12 @@ func _init() -> void:
 	mm.use_custom_data = true
 	_mmi.multimesh = mm
 	add_child(_mmi)
+	for i in ECHO_LEVELS.size():
+		var em := MultiMesh.new()
+		em.transform_format = MultiMesh.TRANSFORM_3D
+		em.use_colors = true
+		em.use_custom_data = true
+		_echo_mm.append(em)
 	set_preset(0)
 	visible = false
 
@@ -296,7 +315,7 @@ func _load_seed(kind: String) -> void:
 	seed_mesh = _build_seed(beams, [])
 	seed_tris = _triangles_of(seed_mesh)
 	seed_box = _box_of(beams)
-	_mmi.multimesh.mesh = seed_mesh
+	_set_mesh(seed_mesh)
 
 
 ## Both frames in one mesh for a morph between seeds. `beams` and `seed_box` become the union,
@@ -312,7 +331,26 @@ func _load_blend(out_kind: String, in_kind: String) -> void:
 	seed_mesh = _build_seed(a, b)
 	seed_tris = _triangles_of(seed_mesh)
 	seed_box = _box_of(a).merge(_box_of(b))
-	_mmi.multimesh.mesh = seed_mesh
+	_set_mesh(seed_mesh)
+
+
+## The hero and every echo tier draw the same seed mesh, the blended one included, so a seed
+## cross-fade reaches the echoes through the shared material's fade uniforms.
+func _set_mesh(m: ArrayMesh) -> void:
+	_mmi.multimesh.mesh = m
+	for em in _echo_mm:
+		em.mesh = m
+
+
+## The MultiMesh an echo of tier `tier` draws. Views only: nothing outside build() writes it.
+func echo_multimesh(tier: int) -> MultiMesh:
+	return _echo_mm[clampi(tier, 0, _echo_mm.size() - 1)]
+
+
+## The hero's material, which echoes share so the palette, the drift, the grow-in and the seed
+## fade are one set of uniforms for every copy in the room.
+func material() -> ShaderMaterial:
+	return _mat
 
 
 func _set_gains() -> void:
@@ -595,6 +633,7 @@ func build(grow := true) -> int:
 	# Which child map produced each instance, and so which entry of `back` its parent sits at.
 	# The root has no parent and grows out of its own centre.
 	var from_map := PackedInt32Array([-1])
+	level_ends = PackedInt32Array([1])
 	var start := 0
 	for k in range(1, fit + 1):
 		var stop := xforms.size()
@@ -604,6 +643,7 @@ func build(grow := true) -> int:
 				levels.append(k)
 				from_map.append(j)
 		start = stop
+		level_ends.append(xforms.size())
 	levels_built = fit
 	instance_count = xforms.size()
 	triangle_count = instance_count * seed_tris
@@ -622,9 +662,12 @@ func build(grow := true) -> int:
 	var buf := PackedFloat32Array()
 	buf.resize(instance_count * 20)
 	bounds = xforms[0] * seed_box
+	level_bounds = []
 	for i in instance_count:
 		var t: Transform3D = xforms[i]
 		bounds = bounds.merge(t * seed_box)
+		if i + 1 == level_ends[levels[i]]:
+			level_bounds.append(bounds)
 		var b := t.basis
 		var o := t.origin
 		var j := i * 20
@@ -654,6 +697,17 @@ func build(grow := true) -> int:
 	# from the parent origins, every instance stays inside its finished box, so the bound a
 	# still shape publishes covers the animation too.
 	_mmi.custom_aabb = bounds
+	# The echo tiers: the first generations of this same buffer. The AABB goes on the
+	# MultiMesh, not on a node, so every echo sharing a tier is culled against the right box
+	# through its own transform, and a custom AABB set first spares the buffer write a scan.
+	for e in _echo_mm.size():
+		var lv := mini(int(ECHO_LEVELS[e]), levels_built)
+		var n := level_ends[lv]
+		var em := _echo_mm[e]
+		em.custom_aabb = level_bounds[lv]
+		if em.instance_count != n:
+			em.instance_count = n
+		em.buffer = buf if n == instance_count else buf.slice(0, n * 20)
 	_mat.set_shader_parameter("origin_span", span)
 	# A full rebuild grows in from nothing and may recolour. Any other rebuild keeps each
 	# frame's colour where it was; see _gain_l.
