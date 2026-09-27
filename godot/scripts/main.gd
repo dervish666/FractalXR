@@ -802,7 +802,10 @@ func _build_menu() -> void:
 					ground.julia_here(),
 			false, func(): return ground_mode),
 		WristMenu.Item.new("look", "ITER",
-			func(): return str(GROUND_ITER[ground_iter_idx]),
+			# Past stage 10 the ground raises the count itself (FractalGround.iter_floor);
+			# say so, or the tile names a number the fill is not using.
+			func(): return str(GROUND_ITER[ground_iter_idx]) if ground.iter_floor() <= GROUND_ITER[ground_iter_idx] \
+				else "%d deep" % ground.effective_iter(),
 			func():
 				ground_iter_idx = (ground_iter_idx + 1) % GROUND_ITER.size()
 				ground.set_max_iter(GROUND_ITER[ground_iter_idx]),
@@ -1287,10 +1290,10 @@ func _perf_tail() -> String:
 			_forest_branch_count(), TREE_WIND_NAMES[tree_wind_idx],
 			"on" if tree.leaves_on else "off"]
 	if ground_mode:
-		return head + " mode=ground set=%s julia=%s zoom=%s fill=%.2f iter=%d relief=%s" % [
+		return head + " mode=ground set=%s julia=%s zoom=%s fill=%.2f iter=%d/%d relief=%s" % [
 			ground.formula_name().replace(" ", "_"), str(ground.julia),
 			_zoom_text(ground.zoom_factor()), ground.progress(),
-			GROUND_ITER[ground_iter_idx], GROUND_RELIEF[ground_relief_idx]]
+			GROUND_ITER[ground_iter_idx], ground.effective_iter(), GROUND_RELIEF[ground_relief_idx]]
 	if bulb_mode:
 		return head + " mode=bulb surface=%s marching=%s cover=%.2f" % [
 			SURFACE_NAMES[surface_idx].replace(" ", "_"), str(march.is_on()),

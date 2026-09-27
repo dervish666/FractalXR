@@ -35,7 +35,18 @@ const TEXEL_M := 0.0015
 ## World metres per fractal unit at stage 0: the whole Mandelbrot is ~90m across.
 const WPU_BASE := 30.0
 const STAGE_MIN := -4
-const STAGE_MAX := 13
+## 2^23, about 8e6x. Past this df32 itself runs out: tools/ground_check.sh measures its
+## error as a fraction of a texel, and at stage 22 every escape-time family is within 0.11
+## of a texel on four spots each, while at stage 23 Buffalo and Celtic are 0.6-0.9 out, as
+## wrong as sampling the neighbour. Julia is the weak one, 0.23-0.38 at stage 22: those
+## texels change count when the point moves by df32's own rounding, so they read as grain
+## rather than blocks. Going further needs perturbation or more than two floats.
+const STAGE_MAX := 22
+## Anchor granularity: n_tex (2048 at most) times 2^(LEVELS-1), doubled for headroom.
+const ANCHOR_Q := 1048576
+## Re-anchor on the viewer once its level-0 index from the anchor passes this. Well inside
+## int32, with room for a window of n_tex either side and the shader's arithmetic.
+const ANCHOR_REBASE := 268435456
 const BUDGET_MIN := 20000.0
 const BUDGET_MAX := 2000000.0
 const TARGET_US := 3500.0
@@ -64,9 +75,19 @@ const DF_COST_MAX := 64.0
 const REF_HOLD_M := 0.3
 const REF_SETTLE_M := 0.01
 
-## Fractal coordinate under world (0, 0). GDScript floats are 64-bit, so this and the
-## texel arithmetic below keep precision the shaders cannot; only small offsets cross.
-var centre := Vector2(-0.6, 0.0)
+## Fractal coordinate under world (0, 0), held as two 64-bit floats. It used to be a
+## Vector2, which in a standard Godot build is float32: at 0.7 its step is 6e-8, a metre
+## and a half of floor at stage 18 and seven at stage 22, so walking would have moved in
+## jumps and then not at all. The Vector2 property is for callers that only need a rough
+## position (tools, the orbit trace); everything here reads _cx and _cy.
+var _cx := -0.6
+var _cy := 0.0
+var centre: Vector2:
+	get:
+		return Vector2(_cx, _cy)
+	set(v):
+		_cx = v.x
+		_cy = v.y
 var wpu := WPU_BASE
 var julia := false
 var julia_c := Vector2(-0.8, 0.156)
@@ -76,6 +97,10 @@ const FORMULA_NAMES := ["mandelbrot", "burning ship", "tricorn", "celtic",
 	"perpendicular", "buffalo", "cubic", "quartic"]
 var formula := 0
 var max_iter := 256
+## Raise the iteration count with depth (iter_floor). tools/ground_check.gd turns it off to
+## pin the count its CPU reference runs to.
+var auto_iter := true
+var _iter_used := 256       # the effective count the stored levels were filled with
 var texture_on := true
 var stalk := 0.0
 var stalk_width := 0.05
@@ -98,7 +123,7 @@ var _rot := 0
 var _win_lo: Array[Vector2i] = []
 var _have: Array[bool] = []
 var _full: Array[bool] = []
-var _dirty: Array = []            # per level: Array[Rect2i], absolute texels of that level
+var _dirty: Array = []            # per level: Array[Rect2i], texels of that level from the anchor
 var _budget := 150000.0
 var _head_xz := Vector2.ZERO
 var _ready_ok := false
@@ -111,7 +136,16 @@ var _timed := false         # a GPU timestamp pair has been read at least once
 ## fractal = centre + M * world_xz / wpu.
 var _m := Transform2D.IDENTITY
 var _glide := Vector2.ZERO        # world metres still to travel toward a trigger target
-var _level_f := Vector2.ZERO      # fractal point the floor is levelled to; lags the viewer
+var _lfx := 0.0                   # fractal point the floor is levelled to; lags the viewer
+var _lfy := 0.0
+## Level-0 texel index of the anchor, in 64-bit ints. Every texel index this node stores or
+## hands a shader counts from it (level i from _ax >> i), because absolute indices pass
+## int32 around stage 16 and Vector2i, Rect2i and GLSL ivec2 are all int32. It is kept a
+## multiple of ANCHOR_Q, so _ax >> i is a multiple of the level size at every level and a
+## texel's torus slot, index mod n_tex, is the same counted either way: re-anchoring
+## re-labels the stored windows and never moves or recomputes a texel.
+var _ax := 0
+var _ay := 0
 var _level_set := false
 var _level_chasing := false
 var _pending_peak := 0
@@ -268,19 +302,32 @@ func _texel(level: int) -> float:
 	return _texel0() * pow(2.0, float(level))
 
 
-## Fractal coordinate under the viewer's head.
+## Fractal coordinate under the viewer's head, rounded to a Vector2. viewer_fx/fy are the
+## full 64-bit coordinate.
 func viewer_fractal() -> Vector2:
-	return centre + _m.basis_xform(_head_xz) / wpu
+	return Vector2(viewer_fx(), viewer_fy())
+
+
+## The head's offset is a few metres over wpu, small enough that its float32 rounding is
+## far under a texel; it is the sum with the centre that needs the 64 bits.
+func viewer_fx() -> float:
+	return _cx + _m.basis_xform(_head_xz).x / wpu
+
+
+func viewer_fy() -> float:
+	return _cy + _m.basis_xform(_head_xz).y / wpu
 
 
 ## World xz (metres) to the fractal point under it, and back. The mapping is
-## fractal = centre + M w / wpu with M a rotation, so the inverse is its transpose.
+## fractal = centre + M w / wpu with M a rotation, so the inverse is its transpose. Both
+## pass through a float32 Vector2, so they are for the orbit trace and tools, not texels.
 func world_to_fractal(w: Vector2) -> Vector2:
-	return centre + _m.basis_xform(w) / wpu
+	var o := _m.basis_xform(w) / wpu
+	return Vector2(_cx + o.x, _cy + o.y)
 
 
 func fractal_to_world(f: Vector2) -> Vector2:
-	return _m.basis_xform_inv((f - centre) * wpu)
+	return _m.basis_xform_inv(Vector2((f.x - _cx) * wpu, (f.y - _cy) * wpu))
 
 
 ## A fractal-space direction turned into a world direction, without the zoom: the orbit
@@ -291,7 +338,9 @@ func fractal_dir_to_world(v: Vector2) -> Vector2:
 
 ## Walk: move the viewer over the fractal by a world-space distance (metres, xz).
 func pan(delta_m: Vector2) -> void:
-	centre += _m.basis_xform(delta_m) / wpu
+	var d := _m.basis_xform(delta_m) / wpu
+	_cx += d.x
+	_cy += d.y
 
 
 ## Turn the world by `a` radians about the viewer. The mapping is fractal = centre +
@@ -299,24 +348,29 @@ func pan(delta_m: Vector2) -> void:
 ## and centre moves so the head stays on the same fractal point.
 func rotate_about_head(a: float) -> void:
 	var m2 := _m * Transform2D(-a, Vector2.ZERO)
-	centre += (_m.basis_xform(_head_xz) - m2.basis_xform(_head_xz)) / wpu
+	var d := (_m.basis_xform(_head_xz) - m2.basis_xform(_head_xz)) / wpu
+	_cx += d.x
+	_cy += d.y
 	_m = m2
 
 
 ## Scale about the point under the viewer, so the ground at your feet stays put.
 func zoom(factor: float) -> void:
-	var vf := viewer_fractal()
+	var vx := viewer_fx()
+	var vy := viewer_fy()
 	var lo := WPU_BASE * pow(2.0, float(STAGE_MIN))
 	var hi := WPU_BASE * pow(2.0, float(STAGE_MAX + 1)) * 0.999
 	wpu = clampf(wpu * factor, lo, hi)
-	centre = vf - _m.basis_xform(_head_xz) / wpu
+	set_viewer_fractal(vx, vy)
 	_sync_stage()
 
 
 ## Put the fractal point (x, y) under the viewer's head. Takes two floats rather than a
 ## Vector2 so a caller holding 64-bit coordinates keeps them.
 func set_viewer_fractal(x: float, y: float) -> void:
-	centre = Vector2(x, y) - _m.basis_xform(_head_xz) / wpu
+	var o := _m.basis_xform(_head_xz) / wpu
+	_cx = x - o.x
+	_cy = y - o.y
 
 
 ## Zoom factor relative to the home view, for the status line.
@@ -328,7 +382,8 @@ func home() -> void:
 	wpu = WPU_BASE
 	_m = Transform2D.IDENTITY
 	_glide = Vector2.ZERO
-	centre = Vector2(-0.6, 0.0) - _head_xz / wpu
+	_cx = -0.6 - _head_xz.x / wpu
+	_cy = -_head_xz.y / wpu
 	_level_set = false
 	_sync_stage()
 
@@ -400,7 +455,27 @@ func set_max_iter(n: int) -> void:
 	if n == max_iter:
 		return
 	max_iter = n
-	invalidate()
+	if effective_iter() != _iter_used:
+		_iter_used = effective_iter()
+		invalidate()
+
+
+## The fewest iterations the fill runs at this depth, whatever ITER says. Deep spots need
+## more: measured with a 64-bit escape count at 48x48 texels around four classic spots,
+## the seahorse valley needs 2048 or more past stage 11 before 95% of what escapes by
+## 16384 is shown escaping, and at 256 the whole floor there is "inside" and black from
+## stage 16. Other spots need 256-512 at any depth, so this is a floor and not a rule:
+## one doubling every three stages from stage 10, capped at ITER's top rung. Stepping
+## across one rebuilds the stack, as changing ITER does; shallower than stage 10 nothing
+## changes.
+func iter_floor() -> int:
+	if not auto_iter or _stage < 10:
+		return 0
+	return mini(4096, 512 << ((_stage - 10) / 3))
+
+
+func effective_iter() -> int:
+	return maxi(max_iter, iter_floor())
 
 
 func set_texture_on(on: bool) -> void:
@@ -429,6 +504,9 @@ func _sync_stage() -> void:
 ## its data is still right), the old coarsest layer is reused for a new finest level.
 func _shift_in() -> void:
 	_stage += 1
+	# The anchor is the same fractal point, and a level-0 texel just halved.
+	_ax *= 2
+	_ay *= 2
 	_rot = (_rot - 1 + LEVELS) % LEVELS
 	for i in range(LEVELS - 1, 0, -1):
 		_win_lo[i] = _win_lo[i - 1]
@@ -451,6 +529,13 @@ func _shift_out() -> void:
 	_have[LEVELS - 1] = false
 	_full[LEVELS - 1] = true
 	_dirty[LEVELS - 1] = [] as Array[Rect2i]
+	# Halving keeps the anchor on the same point but only a multiple of ANCHOR_Q / 2, so
+	# snap it back, after the levels have moved: _set_anchor shifts level i by the new
+	# stage's texels. Done before the move, it shifted each window by half what it should,
+	# and every zoom-out step rebuilt the whole stack (tools/orbit_check.sh DEEPCHECK).
+	_ax /= 2
+	_ay /= 2
+	_set_anchor(_ax - posmod(_ax, ANCHOR_Q), _ay - posmod(_ay, ANCHOR_Q))
 
 
 # --- per frame --------------------------------------------------------------------
@@ -471,30 +556,35 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 		_glide *= 1.0 - f
 	else:
 		_glide = Vector2.ZERO
-	var vf := viewer_fractal()
-	for i in LEVELS:
-		_track_window(i, vf)
+	if effective_iter() != _iter_used:
+		_iter_used = effective_iter()
+		invalidate()
+	var vx := viewer_fx()
+	var vy := viewer_fy()
+	var t0 := _texel0()
+	var vt0 := track_windows()
 
 	# The floor reference drifts after the viewer with a two-second time constant, so
 	# stepping over a terrace eases the ground down instead of dropping it, and it ignores
 	# the small circles a turning head draws; see REF_HOLD_M. Fractal units times wpu is
 	# metres, because _m is a pure rotation.
 	if not _level_set or delta <= 0.0:
-		_level_f = vf
+		_lfx = vx
+		_lfy = vy
 		_level_set = true
 		_level_chasing = false
 	else:
-		var gap_m := (vf - _level_f).length() * wpu
+		var gap_m := Vector2(vx - _lfx, vy - _lfy).length() * wpu
 		if gap_m > REF_HOLD_M:
 			_level_chasing = true
 		if _level_chasing:
-			_level_f = _level_f.lerp(vf, 1.0 - exp(-delta / 2.0))
-			if (vf - _level_f).length() * wpu < REF_SETTLE_M:
+			var k := 1.0 - exp(-delta / 2.0)
+			_lfx += (vx - _lfx) * k
+			_lfy += (vy - _lfy) * k
+			if Vector2(vx - _lfx, vy - _lfy).length() * wpu < REF_SETTLE_M:
 				_level_chasing = false
 
-	var t0 := _texel0()
-	var vt0 := Vector2i(int(floor(vf.x / t0)), int(floor(vf.y / t0)))
-	var frac := Vector2(vf.x / t0 - float(vt0.x), vf.y / t0 - float(vt0.y))
+	var frac := Vector2(vx / t0 - float(vt0.x + _ax), vy / t0 - float(vt0.y + _ay))
 	var min_level := LEVELS - 1
 	for i in LEVELS:
 		if not _full[i]:
@@ -511,7 +601,7 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_material.set_shader_parameter("rot", Vector4(_m.x.x, _m.x.y, _m.y.x, _m.y.y))
 	_material.set_shader_parameter("view_texel0", vt0)
 	_material.set_shader_parameter("view_frac0", frac)
-	_material.set_shader_parameter("level_e0", (_level_f - vf) / t0)
+	_material.set_shader_parameter("level_e0", Vector2((_lfx - vx) / t0, (_lfy - vy) / t0))
 	_material.set_shader_parameter("ref_hold", REF_HOLD_M)
 	_material.set_shader_parameter("level_rot", _rot)
 	_material.set_shader_parameter("min_level", min_level)
@@ -521,11 +611,46 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	RenderingServer.call_on_render_thread(_flush)
 
 
+## Re-anchor if the viewer has wandered far enough, then keep every level's window on the
+## viewer. Returns the viewer's level-0 texel from the anchor. The viewer's absolute
+## index is worked out once, in 64-bit ints, and every level's follows from it by a
+## shift, so the levels agree about where the viewer is to the texel.
+func track_windows() -> Vector2i:
+	var t0 := _texel0()
+	var ix := int(floor(viewer_fx() / t0))
+	var iy := int(floor(viewer_fy() / t0))
+	if absi(ix - _ax) > ANCHOR_REBASE or absi(iy - _ay) > ANCHOR_REBASE:
+		_set_anchor(ix - posmod(ix, ANCHOR_Q), iy - posmod(iy, ANCHOR_Q))
+	var vt0 := Vector2i(ix - _ax, iy - _ay)
+	for i in LEVELS:
+		_track_window(i, vt0)
+	return vt0
+
+
+## Move the anchor to level-0 index (nx, ny), both multiples of ANCHOR_Q (or of half of
+## it, in _shift_out's case), and re-label every stored window and queued rect to count
+## from it. The move is a multiple of n_tex at every level, so no texel changes slot.
+func _set_anchor(nx: int, ny: int) -> void:
+	var dx := nx - _ax
+	var dy := ny - _ay
+	if dx == 0 and dy == 0:
+		return
+	for i in LEVELS:
+		var sh := Vector2i(dx / (1 << i), dy / (1 << i))
+		_win_lo[i] -= sh
+		var rects: Array[Rect2i] = _dirty[i]
+		for k in rects.size():
+			rects[k] = Rect2i(rects[k].position - sh, rects[k].size)
+		_dirty[i] = rects
+	_ax = nx
+	_ay = ny
+
+
 ## Keep level i's window centred within SLACK texels of the viewer and queue whatever
-## strip the move uncovered. A window that does not exist yet is queued whole.
-func _track_window(i: int, vf: Vector2) -> void:
-	var t := _texel(i)
-	var vt := Vector2i(int(floor(vf.x / t)), int(floor(vf.y / t)))
+## strip the move uncovered. A window that does not exist yet is queued whole. vt0 is
+## the viewer's level-0 texel from the anchor.
+func _track_window(i: int, vt0: Vector2i) -> void:
+	var vt := Vector2i(vt0.x >> i, vt0.y >> i)
 	var want := vt - Vector2i(n_tex / 2, n_tex / 2)
 	if not _have[i]:
 		_win_lo[i] = want
@@ -560,10 +685,12 @@ const PC_SIZE := 96
 
 
 ## Fractal coordinate of a level's texel centre, in 64-bit floats. The texel grid is
-## anchored at the fractal origin, so this is just index times texel.
+## anchored at the fractal origin; `a` counts from the anchor, which sits on that grid at
+## every level.
 func _texel_centre(level: int, a: Vector2i) -> Array[float]:
 	var t := _texel(level)
-	return [(float(a.x) + 0.5) * t, (float(a.y) + 0.5) * t]
+	var t0 := _texel0()
+	return [float(_ax) * t0 + (float(a.x) + 0.5) * t, float(_ay) * t0 + (float(a.y) + 0.5) * t]
 
 
 ## Whether a rect's coordinates need df32: the largest coordinate magnitude it touches
@@ -604,7 +731,7 @@ func push_constant_at(level: int, r: Rect2i, ox: float, oy: float) -> PackedByte
 	_encode_df(pc, 24, 60, _texel(level))
 	pc.encode_s32(28, (level + _rot) % LEVELS)
 	pc.encode_s32(32, n_tex)
-	pc.encode_s32(36, max_iter)
+	pc.encode_s32(36, effective_iter())
 	pc.encode_s32(40, 1 if julia else 0)
 	pc.encode_float(44, 1.0 if texture_on else 0.0)
 	pc.encode_float(48, stalk)
@@ -642,7 +769,7 @@ func _flush() -> void:
 	var any_df := false
 	# The budget is in texels at 256 iterations; deeper counts get proportionally fewer
 	# texels a frame, so ITER 4096 sharpens over more frames rather than stalling one.
-	var left := _budget * 256.0 / float(maxi(1, max_iter))
+	var left := _budget * 256.0 / float(maxi(1, effective_iter()))
 	var cl := -1
 	var bound := -1   # 0 f32, 1 df: which pipeline the list has bound
 	for i in range(LEVELS - 1, -1, -1):

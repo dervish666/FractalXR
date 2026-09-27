@@ -12,7 +12,7 @@ extends SceneTree
 ## what proves the check can see the block collapse at all. A SWEEP line per stage shows
 ## where float32 gives out (DF_RATIO's evidence), and BENCH lines time 1024x1024 fills.
 ##
-##   tools/ground_check.sh [stage]      (default 17, about 1.3e5x)
+##   tools/ground_check.sh [stage] [seed=N]      (default 17, about 1.3e5x)
 ##
 ## No shared code with the shader, deliberately: the CPU side is written from the maths.
 
@@ -35,6 +35,7 @@ var uset_base: RID
 var ground: FractalGround
 var _slot0 := Vector2i.ZERO    # where the last dispatch's first texel landed in the texture
 var _iter := ITER               # the cap the CPU truth runs to; the fraction case raises it
+var _seed := 0                  # seed=N on the command line: other spots, same checks
 
 
 func _init() -> void:
@@ -42,6 +43,8 @@ func _init() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.is_valid_int():
 			stage = int(a)
+		elif a.begins_with("seed="):
+			_seed = int(a.substr(5))
 	rd = RenderingServer.create_local_rendering_device()
 	if rd == null:
 		print("GROUNDCHECK FAIL no local RenderingDevice (run windowed, not --headless)")
@@ -84,6 +87,7 @@ func _init() -> void:
 	img.add_id(tex)
 	uset = rd.uniform_set_create([img], shaders["f32"], 0)
 	ground = FractalGround.new()
+	ground.auto_iter = false   # the CPU reference runs to max_iter and nothing else
 	ground.n_tex = TEX
 	ground.max_iter = ITER
 
@@ -364,7 +368,7 @@ static func _same_pairs(a: PackedFloat32Array) -> float:
 
 func _case(f: int, julia: bool, jc: Vector2, stage: int, rng: RandomNumberGenerator,
 		shallow := false) -> bool:
-	rng.seed = 1000 + f * 17 + (7 if julia else 0) + stage
+	rng.seed = 1000 + f * 17 + (7 if julia else 0) + stage + 7919 * _seed
 	var texel := _texel(stage)
 	var name: String = ("julia" if julia else FractalGround.FORMULA_NAMES[f].replace(" ", "_"))
 	var spot := _find_spot(f, julia, jc, texel, rng)

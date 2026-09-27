@@ -6,6 +6,25 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **The ground zooms 512 times deeper: 8.4e6x, up from 16,384x.** `STAGE_MAX` goes from
+  13 to 22, which is where df32 itself runs out: at stage 22 every escape-time family stays
+  within 0.11 of a texel of a 64-bit reference on four spots each, and at stage 23 Buffalo
+  and Celtic are 0.6-0.9 out. Julia is the soft spot, 0.23-0.38 of a texel at stage 22,
+  on texels whose count changes when the point moves by df32's own rounding, so it reads
+  as grain rather than blocks. Getting there took two fixes the old range never needed.
+  The viewer's position was a `Vector2`, which in Godot is float32: at stage 22 its step
+  is seven metres of floor and a centimetre's walk did not move it at all, so it is now two
+  64-bit floats. And absolute texel indices pass int32 around stage 16, so every stored
+  window and queued tile now counts from an anchor near the viewer, placed on a grid that
+  keeps each texel's torus slot, so re-anchoring re-labels the stack and never recomputes
+  it. `tools/orbit_check.sh` gains DEEPCHECK for all of this, with controls: a metre's
+  walk at stage 22 moves a metre (float32: 0 m), and zooming the whole range out and back
+  keeps every stored window on its fractal point to 2e-8 of a texel.
+- **Iterations rise with depth.** Deep spots need far more than the default 256: at the
+  seahorse valley the whole floor is "inside" and black from stage 16. From stage 10 the
+  fill runs at least 512, doubling every three stages to 4096 at stage 19; ITER still
+  raises it further, and the tile reads "2048 deep" when the floor is what is running.
+  Shallower than stage 10 nothing changes.
 - **ITER 4096 keeps its fractions.** The ground's level textures stored the smooth
   iteration count as a half float, which past 2048 is two counts apart, so every count
   above 2048 lost the fraction that the terraces, contour lines and grain are drawn from.
