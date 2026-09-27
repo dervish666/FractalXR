@@ -11,12 +11,18 @@ VERSION_DEFINES
 
 // The ground viewer's fractal fill: escape-time Mandelbrot / Julia into one rectangle of
 // one clipmap level. Ported from the web zoomer's escape() (src/zoom/shaders.ts), which
-// already returns the four channels the ground shader colours from:
+// already returns the four values the ground shader colours from:
 //
 //   r  smooth iteration count (max_iter inside the set)
-//   g  log2 of the distance estimate to the set (Milnor/Koebe); log so half floats keep it
+//   g  log2 of the distance estimate to the set (Milnor/Koebe); log so a half float keeps it
 //   b  inside flag
 //   a  texture: triangle-inequality average outside, orbit-trap radius inside
+//
+// Stored packed in four 16-bit uints (encode() below): the count as a whole float32, the
+// distance as a half, the texture as 15 bits and the flag as one. The count used to be a
+// half float too, and above 2048 a half is two counts apart: ITER 4096 lost every
+// fraction, and with it the terraces, contours and grain that read fract(count). Same 8
+// bytes a texel as before, so the stack costs no more memory.
 //
 // Each level is a torus: absolute texel (i, j) of that level lives at slot (i mod N, j mod N),
 // so panning only ever computes the strip that just came into the window. The texel grid is
@@ -26,7 +32,7 @@ VERSION_DEFINES
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, rgba16f) uniform restrict writeonly image2DArray levels;
+layout(set = 0, binding = 0, rgba16ui) uniform restrict writeonly uimage2DArray levels;
 
 layout(push_constant, std430) uniform PC {
 	ivec2 rect_origin;    // absolute texel index of the rectangle's first texel, this level
@@ -339,6 +345,14 @@ vec4 escape_df(vec2 cx, vec2 cy, vec2 x0, vec2 y0) {
 }
 #endif
 
+// The packing ground.gdshader's fetch() undoes. Keep the two in step.
+uvec4 encode(vec4 r) {
+	uint c = floatBitsToUint(r.x);
+	uint de = packHalf2x16(vec2(r.y, 0.0)) & 0xFFFFu;
+	uint tf = (uint(clamp(r.w, 0.0, 1.0) * 32767.0 + 0.5) << 1) | (r.z > 0.5 ? 1u : 0u);
+	return uvec4(c & 0xFFFFu, c >> 16, de, tf);
+}
+
 void main() {
 	ivec2 g = ivec2(gl_GlobalInvocationID.xy);
 	if (g.x >= p.rect_size.x || g.y >= p.rect_size.y) return;
@@ -358,5 +372,5 @@ void main() {
 	vec4 r = (p.julia != 0) ? escape(p.julia_c, pt) : escape(pt, vec2(0.0));
 #endif
 	ivec2 slot = ((a % p.tex_size) + p.tex_size) % p.tex_size;
-	imageStore(levels, ivec3(slot, p.layer), r);
+	imageStore(levels, ivec3(slot, p.layer), encode(r));
 }

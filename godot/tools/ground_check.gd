@@ -30,8 +30,11 @@ var shaders := {}
 var pipes := {}
 var tex: RID
 var uset: RID
+var tex_base: RID     # the pre-df32 fill writes RGBA16F, so it gets a texture of its own
+var uset_base: RID
 var ground: FractalGround
 var _slot0 := Vector2i.ZERO    # where the last dispatch's first texel landed in the texture
+var _iter := ITER               # the cap the CPU truth runs to; the fraction case raises it
 
 
 func _init() -> void:
@@ -64,6 +67,14 @@ func _init() -> void:
 		if sp.compile_error_compute == "":
 			shaders["base"] = rd.shader_create_from_spirv(sp)
 			pipes["base"] = rd.compute_pipeline_create(shaders["base"])
+			var fb := FractalGround.level_format(TEX, 1)
+			fb.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
+			tex_base = rd.texture_create(fb, RDTextureView.new(), [])
+			var ub := RDUniform.new()
+			ub.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+			ub.binding = 0
+			ub.add_id(tex_base)
+			uset_base = rd.uniform_set_create([ub], shaders["base"], 0)
 		else:
 			print("GROUNDCHECK note: base shader did not compile: %s" % sp.compile_error_compute)
 	tex = rd.texture_create(FractalGround.level_format(TEX, 1), RDTextureView.new(), [])
@@ -85,11 +96,14 @@ func _init() -> void:
 	# Shallow sanity: at stage 3 both variants must match the CPU. If the f32 variant
 	# fails here the new origin arithmetic broke the common case.
 	ok = _case(0, false, Vector2.ZERO, 3, rng, true) and ok
+	ok = _fraction_case(rng) and ok
 	_sweep(rng)
 	_bench(rng)
 	print("GROUNDCHECK %s stage=%d" % ["PASS" if ok else "FAIL", stage])
 	ground.free()
 	rd.free_rid(tex)
+	if tex_base.is_valid():
+		rd.free_rid(tex_base)
 	for v: String in shaders:
 		rd.free_rid(shaders[v])
 	rd.free()
@@ -213,12 +227,13 @@ func _find_spot(f: int, julia: bool, jc: Vector2, texel: float, rng: RandomNumbe
 	return bestspot
 
 
-func _truth(f: int, julia: bool, jc: Vector2, ox: float, oy: float, texel: float) -> PackedFloat32Array:
+func _truth(f: int, julia: bool, jc: Vector2, ox: float, oy: float, texel: float, raw := false) -> PackedFloat32Array:
 	var t := PackedFloat32Array()
 	t.resize(N * N)
 	for j in N:
 		for i in N:
-			t[j * N + i] = _half(_cpu_at(f, julia, jc, ox + float(i) * texel, oy + float(j) * texel, ITER))
+			var v := _cpu_at(f, julia, jc, ox + float(i) * texel, oy + float(j) * texel, _iter)
+			t[j * N + i] = v if raw else _stored(v)
 	return t
 
 
@@ -227,12 +242,14 @@ func _truth(f: int, julia: bool, jc: Vector2, ox: float, oy: float, texel: float
 ## Fill the rect at slot (0, 0) with one variant and read the counts back.
 func _gpu(variant: String, f: int, julia: bool, jc: Vector2, stage: int, ox: float, oy: float) -> PackedFloat32Array:
 	_dispatch(variant, f, julia, jc, stage, ox, oy, N)
-	var data := rd.texture_get_data(tex, 0)
+	var base := variant == "base"
+	var data := rd.texture_get_data(tex_base if base else tex, 0)
 	var out := PackedFloat32Array()
 	out.resize(N * N)
 	for j in N:
 		for i in N:
-			out[j * N + i] = count_at(data, posmod(_slot0.y + j, TEX) * TEX + posmod(_slot0.x + i, TEX))
+			var k := posmod(_slot0.y + j, TEX) * TEX + posmod(_slot0.x + i, TEX)
+			out[j * N + i] = data.decode_half(k * 8) if base else count_at(data, k)
 	return out
 
 
@@ -252,7 +269,7 @@ func _dispatch(variant: String, f: int, julia: bool, jc: Vector2, stage: int, ox
 		pc = pc.slice(0, 64)
 	var cl := rd.compute_list_begin()
 	rd.compute_list_bind_compute_pipeline(cl, pipes[variant])
-	rd.compute_list_bind_uniform_set(cl, uset, 0)
+	rd.compute_list_bind_uniform_set(cl, uset_base if variant == "base" else uset, 0)
 	rd.compute_list_set_push_constant(cl, pc, pc.size())
 	rd.compute_list_dispatch(cl, int(ceil(float(size) / 16.0)), int(ceil(float(size) / 16.0)), 1)
 	rd.compute_list_end()
@@ -262,10 +279,17 @@ func _dispatch(variant: String, f: int, julia: bool, jc: Vector2, stage: int, ox
 
 ## The smooth count of texel k in the level texture's bytes. Follows level_format().
 static func count_at(data: PackedByteArray, k: int) -> float:
-	return data.decode_half(k * 8)
+	# The first two uint16s are the count's float32 bits, low half first, which is the
+	# float's own little-endian layout.
+	return data.decode_float(k * 8)
 
 
-## What storing a CPU count in the level texture would leave of it.
+## What storing a CPU count in the level texture would leave of it. Follows level_format().
+static func _stored(v: float) -> float:
+	return v   # float32; the PackedFloat32Array it lands in does the rounding
+
+
+## A value through a half float, the old storage.
 static func _half(v: float) -> float:
 	var b := PackedByteArray()
 	b.resize(2)
@@ -288,10 +312,10 @@ static func _distinct(t: PackedFloat32Array) -> int:
 	return seen.size()
 
 
-static func _inside(t: PackedFloat32Array) -> float:
+func _inside(t: PackedFloat32Array) -> float:
 	var n := 0
 	for v in t:
-		if v >= float(ITER):
+		if v >= float(_iter):
 			n += 1
 	return float(n) / float(t.size())
 
@@ -416,6 +440,88 @@ func _sweep(rng: RandomNumberGenerator) -> void:
 		print("SWEEP stage=%d ratio=%s gate=%s f32 match=%.3f near=%.3f df match=%.3f same-pairs truth/f32=%.2f/%.2f" % [
 			stage, String.num_scientific(snappedf(m / texel, 1000.0)), "df" if m / texel > FractalGround.DF_RATIO else "f32",
 			_match(s, t), _near(s, t), _match(d, t), _same_pairs(t), _same_pairs(s)])
+
+
+## ITER 4096: the stored count must keep its fraction above 2048, where half floats are
+## two counts apart and the terraces, contours and grain that read fract(count) die. A
+## patch where a quarter of the texels count between 2048 and 4096, filled with df32 (it
+## is right there, see above), compared with the unrounded 64-bit count. The control is
+## the same truth pushed through a half float, which must fail the same bar.
+func _fraction_case(rng: RandomNumberGenerator) -> bool:
+	var stage := 12
+	var texel := _texel(stage)
+	_iter = 4096
+	ground.max_iter = 4096
+	rng.seed = 4096
+	var spot: Array = []
+	for attempt in 16:
+		var cx := -0.4
+		var cy := 0.0
+		var r := 2.0
+		var iters := 256
+		while r > float(N) * texel:
+			var best: Array = []
+			for j in 7:
+				for i in 7:
+					var x := cx + r * (2.0 * (float(i) + rng.randf()) / 7.0 - 1.0)
+					var y := cy + r * (2.0 * (float(j) + rng.randf()) / 7.0 - 1.0)
+					var sc := cpu_count(0, x, y, 0.0, 0.0, iters)
+					if sc < float(iters) * 0.97:
+						best.append([sc, x, y])
+			if best.is_empty():
+				break
+			best.sort_custom(func(a, b): return a[0] > b[0])
+			var pick: Array = best[rng.randi_range(0, mini(1, best.size() - 1))]
+			cx = pick[1]
+			cy = pick[2]
+			r *= 0.25
+			iters = mini(4096, iters + 384)
+		var ox := (roundf((cx - float(N) * 0.5 * texel) / texel) + 0.5) * texel
+		var oy := (roundf((cy - float(N) * 0.5 * texel) / texel) + 0.5) * texel
+		var t := _truth(0, false, Vector2.ZERO, ox, oy, texel, true)
+		var high := 0
+		for v in t:
+			if v > 2048.0 and v < 4096.0:
+				high += 1
+		if float(high) / float(t.size()) >= 0.25:
+			spot = [ox, oy, t, high]
+			break
+	if spot.is_empty():
+		print("GROUNDCHECK fraction FAIL no patch counting past 2048 found")
+		_iter = ITER
+		ground.max_iter = ITER
+		return false
+	var t: PackedFloat32Array = spot[2]
+	var d := _gpu("df", 0, false, Vector2.ZERO, stage, spot[0], spot[1])
+	# Only texels whose count HAS a definite fraction: counts past 2048 sit right on the
+	# boundary, and there a third of them change by more than 0.05 when the point moves by
+	# one df32 step (5e-7 of a texel here). Nothing can store a fraction the maths does not
+	# pin down, so those are left out and counted.
+	var tj := _truth(0, false, Vector2.ZERO, spot[0] + pow(2.0, -47.0) * 0.8, spot[1], texel, true)
+	var n := 0
+	var loose := 0
+	var good := 0
+	var good_half := 0
+	for k in t.size():
+		if t[k] <= 2048.0 or t[k] >= 4096.0:
+			continue
+		if absf(tj[k] - t[k]) > 0.01:
+			loose += 1
+			continue
+		n += 1
+		if absf(d[k] - t[k]) <= 0.05:
+			good += 1
+		if absf(_half(t[k]) - t[k]) <= 0.05:
+			good_half += 1
+	var fg := float(good) / float(maxi(1, n))
+	var fh := float(good_half) / float(maxi(1, n))
+	var ok := n >= 50 and fg >= 0.9 and fh < 0.5
+	print("  fraction patch at (%.17f, %.17f)" % [spot[0], spot[1]])
+	print("GROUNDCHECK fraction %s iter=4096 stage=%d texels 2048..4096: %d well-conditioned (%d left out), within 0.05 of the 64-bit count: stored %.3f, half-float control %.3f %s" % [
+		"PASS" if ok else "FAIL", stage, n, loose, fg, fh, "FAIL(control)" if fh < 0.5 else "PASS(control, so the check is blind)"])
+	_iter = ITER
+	ground.max_iter = ITER
+	return ok
 
 
 ## Wall time of a 1024x1024 fill (slots wrap in the small texture, which only costs

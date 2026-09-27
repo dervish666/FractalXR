@@ -6,6 +6,15 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **ITER 4096 keeps its fractions.** The ground's level textures stored the smooth
+  iteration count as a half float, which past 2048 is two counts apart, so every count
+  above 2048 lost the fraction that the terraces, contour lines and grain are drawn from.
+  Each texel is now four packed 16-bit uints, the count as a whole float32, the distance
+  as a half, the texture as 15 bits and the inside flag as one. Still 8 bytes a texel, so
+  the stack is the same 72 MiB (288 MiB on RENDER) where RGBA32F would have doubled it.
+  `tools/ground_check.sh` measures it: of the texels counting between 2048 and 4096 whose
+  fraction is well defined, 99.6% now store within 0.05 of the 64-bit count, against 2.2%
+  through a half float.
 - **Deep zoom on the ground stays sharp past 1000x.** Each texel's fractal coordinate used
   to be its absolute texel index times the texel size in float32, and past about 1000x
   neighbouring texels landed on the same number: 2x2 blocks at 2048x, and at 8192x
@@ -134,6 +143,11 @@ All notable changes to FractalXR are documented here. Format based on
   reached the headset unchecked.
 
 ### Fixed
+- **The ground fill no longer runs away on a Mac.** Metal hands back GPU timestamps that
+  are all zero, the fill read that as free and grew its budget to 2M texels a frame, and
+  deep df32 fills at ITER 4096 stalled the GPU long enough to drop fences and leave garbage
+  tiles. A zero-width timestamp is now no reading, and without one the budget holds where
+  it starts. The Quest returns real timestamps and is unaffected.
 - **Ground lighting follows the map through a twist.** The relief normal was built along the
   fractal's axes and never turned back to the world's, so after a rotation the hillshade and
   highlights turned with the terrain against a fixed light. It also no longer jumps in a

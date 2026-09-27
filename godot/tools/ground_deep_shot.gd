@@ -5,7 +5,7 @@ extends SceneTree
 ## cost. ground_us is the GPU time of each frame's fill (timestamps), so the sum over the
 ## fill is the whole bill and frames-to-fill is how long the picture takes to sharpen.
 ##
-##   tools/ground_deep_shot.sh [stage ...]      (default 3 11 13)
+##   tools/ground_deep_shot.sh [stage ...] [iter=N] [at=x,y] [pitch=deg]   (default 3 11 13)
 ##
 ## A picture shows blocks; it cannot show a df32 path that is subtly wrong. That is
 ## tools/ground_check.sh's job. This one answers "does it look like zooming in" and "what
@@ -18,9 +18,23 @@ const SPOT := [-0.743643887037158704752191506114774, 0.1318259042053119704931320
 
 func _init() -> void:
 	var stages: Array[int] = []
+	var spot: Array = SPOT.duplicate()
+	var iter := 0
+	var tag := ""
+	var main_pitch := -50.0
 	for a in OS.get_cmdline_user_args():
 		if a.is_valid_int():
 			stages.append(int(a))
+		elif a.begins_with("iter="):
+			iter = int(a.substr(5))
+			tag += "_i%d" % iter
+		elif a.begins_with("pitch="):   # degrees; -90 looks straight down at the spot
+			main_pitch = float(a.substr(6))
+			tag += "_p%d" % int(-main_pitch)
+		elif a.begins_with("at="):   # at=x,y: somewhere other than the seahorse valley
+			var xy := a.substr(3).split(",")
+			spot = [float(xy[0]), float(xy[1])]
+			tag += "_at"
 	if stages.is_empty():
 		stages = [3, 11, 13]
 	var main = (load("res://main.tscn") as PackedScene).instantiate()
@@ -32,19 +46,21 @@ func _init() -> void:
 	main.orbit_on = false
 	main.orbit.visible = false
 	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
-	main.xr_camera.rotation_degrees = Vector3(-50.0, 0.0, 0.0)
+	main.xr_camera.rotation_degrees = Vector3(main_pitch, 0.0, 0.0)
 	main.left_hand.position = Vector3(-0.3, 1.0, -0.2)
 	main.left_hand.rotation_degrees = Vector3(0.0, 0.0, 180.0)
 	var g: FractalGround = main.ground
+	if iter > 0:
+		g.set_max_iter(iter)
 	var ok := true
 	for st in stages:
 		# A shade over the stage boundary, so level 0 is that stage's texel.
 		g.home()
 		g.zoom(pow(2.0, float(st)) * 1.05)
 		if g.has_method("set_viewer_fractal"):
-			g.set_viewer_fractal(SPOT[0], SPOT[1])
+			g.set_viewer_fractal(spot[0], spot[1])
 		else:   # the pre-df32 build, for a before/after
-			g.centre = Vector2(SPOT[0], SPOT[1]) - g._m.basis_xform(g._head_xz) / g.wpu
+			g.centre = Vector2(spot[0], spot[1]) - g._m.basis_xform(g._head_xz) / g.wpu
 		await process_frame
 		var frames := 0
 		var sum_us := 0.0
@@ -54,12 +70,14 @@ func _init() -> void:
 			frames += 1
 			sum_us += g.ground_us
 			max_us = maxf(max_us, g.ground_us)
+			if OS.get_environment("GROUND_TRACE") != "" and i % 20 == 0:
+				print("  trace frame=%d pending=%d budget=%.0f df_cost=%.1f" % [i, g.pending_texels(), g._budget, g._df_cost])
 			if i > 5 and g.pending_texels() == 0:
 				break
 		for i in 10:
 			await process_frame
 		var img := root.get_viewport().get_texture().get_image()
-		var path := "res://.spike-out/ground_deep_s%d.png" % st
+		var path := "res://.spike-out/ground_deep_s%d%s.png" % [st, tag]
 		var err := img.save_png(path)
 		var filled := g.pending_texels() == 0
 		ok = ok and err == OK and filled

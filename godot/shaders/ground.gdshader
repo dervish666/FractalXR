@@ -9,7 +9,8 @@
 shader_type spatial;
 render_mode unshaded, cull_back, fog_disabled, shadows_disabled;
 
-uniform sampler2DArray levels : filter_nearest, repeat_disable;
+// Four packed 16-bit uints a texel (see encode() in ground.glsl); fetch() unpacks them.
+uniform usampler2DArray levels : filter_nearest, repeat_disable;
 uniform int tex_size = 1024;
 uniform int num_levels = 9;
 uniform int level_rot = 0;      // layer of level i is (i + level_rot) % num_levels
@@ -91,9 +92,13 @@ int layer_of(int level) {
 	return (level + level_rot) % num_levels;
 }
 
+// Unpacks ground.glsl's encode(): count as float32, distance as half, texture as 15-bit
+// unorm, inside flag as the low bit. Keep the two in step.
 vec4 fetch(int level, ivec2 a) {
 	ivec2 slot = ((a % tex_size) + tex_size) % tex_size;
-	return texelFetch(levels, ivec3(slot, layer_of(level)), 0);
+	uvec4 u = texelFetch(levels, ivec3(slot, layer_of(level)), 0);
+	return vec4(uintBitsToFloat(u.x | (u.y << 16u)), unpackHalf2x16(u.z).x,
+		float(u.w & 1u), float(u.w >> 1u) / 32767.0);
 }
 
 // Bilinear sample of a level at a level-0 texel coordinate (already relative to the

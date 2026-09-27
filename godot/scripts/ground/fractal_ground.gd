@@ -20,8 +20,8 @@ class_name FractalGround
 
 ## Level size. A level is only usable out to about (n/2 - SLACK) of its texels from the
 ## viewer, and on a ground plane seen at grazing angles that window radius, not the texel
-## size, is what limits sharpness in the middle distance. 1024 at half float is 72MB for
-## the stack and a full rebuild of ~9M texels; RENDER doubles it to 2048 (288MB, 36M
+## size, is what limits sharpness in the middle distance. 1024 at 8 bytes a texel is 72MB
+## for the stack and a full rebuild of ~9M texels; RENDER doubles it to 2048 (288MB, 36M
 ## texels) for a still worth waiting for.
 var n_tex := 1024
 ## Nine, because the finest texel is 1.5mm and the horizon still wants ~180m of window.
@@ -106,6 +106,7 @@ var _error := ""
 var _worked := false
 var _df_cost := DF_COST
 var _df_run := 0            # consecutive fills that ran nothing but df32 dispatches
+var _timed := false         # a GPU timestamp pair has been read at least once
 ## World -> fractal rotation about the viewer (the basis only; translation is `centre`).
 ## fractal = centre + M * world_xz / wpu.
 var _m := Transform2D.IDENTITY
@@ -241,9 +242,12 @@ static func level_format(n: int, layers: int) -> RDTextureFormat:
 	fmt.width = n
 	fmt.height = n
 	fmt.array_layers = layers
-	# RGBA16F: smooth count to 1024 with 0.5 resolution (invisible through the log
-	# palette), distance stored as its log2 so it never underflows, flag and texture 0..1.
-	fmt.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
+	# Four 16-bit uints, packed by ground.glsl's encode(): the count as a full float32 so
+	# its fraction survives past 2048 (RGBA16F lost it there, and ITER goes to 4096), the
+	# distance as a half of its log2, texture and inside flag in the last. Still 8 bytes a
+	# texel: RGBA32F would have doubled the stack, to 604MB on RENDER. Integer formats
+	# cannot be filtered, which costs nothing because ground.gdshader only texelFetches.
+	fmt.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_UINT
 	fmt.usage_bits = (RenderingDevice.TEXTURE_USAGE_STORAGE_BIT
 		| RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
 		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
@@ -615,8 +619,12 @@ func push_constant_at(level: int, r: Rect2i, ox: float, oy: float) -> PackedByte
 ## rebuild shows a blurry whole before a sharp corner. Render thread only.
 func _flush() -> void:
 	_read_timestamp()
-	# Adapt the budget to what the last fill actually cost.
-	if _worked:
+	# Adapt the budget to what the last fill actually cost. Only once a timestamp has ever
+	# come back: Metal returns none, ground_us sat at 0, and "cost nothing" grew the budget
+	# to BUDGET_MAX, 2M texels a frame. With df32 at 37x that stalled the desktop GPU long
+	# enough to drop fences and fill tiles with garbage. No reading holds the budget where
+	# it started instead.
+	if _worked and _timed:
 		# Timestamps lag the dispatch by a frame or two, so the df charge only moves once
 		# several fills in a row were pure df and the measurement must be one of them.
 		var df_only := _df_run >= 3
@@ -697,8 +705,11 @@ func _read_timestamp() -> void:
 		match _rd.get_captured_timestamp_name(i):
 			"ground_begin": b = float(_rd.get_captured_timestamp_gpu_time(i)) / 1000.0
 			"ground_end": e = float(_rd.get_captured_timestamp_gpu_time(i)) / 1000.0
-	if b >= 0.0 and e >= b:
+	# e == b is what Metal hands back: the names arrive but every GPU time is zero. A fill
+	# that ran cannot take no time, so that is no reading, not a free frame.
+	if b >= 0.0 and e > b:
 		ground_us = e - b
+		_timed = true
 
 
 # --- look ---------------------------------------------------------------------------
