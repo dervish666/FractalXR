@@ -6,6 +6,22 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **Deep zoom on the ground stays sharp past 1000x.** Each texel's fractal coordinate used
+  to be its absolute texel index times the texel size in float32, and past about 1000x
+  neighbouring texels landed on the same number: 2x2 blocks at 2048x, and at 8192x
+  float32 got between 3% and 53% of a boundary patch's texels right, by family. Deep levels now iterate in two-float
+  (df32) arithmetic, about 46 bits against 24, with the fractal origin handed over as
+  hi/lo pairs worked out in 64-bit GDScript. The df32 variant is a separate compiled
+  version of `ground.glsl`, chosen per dispatch only when a rect's coordinate over its
+  texel size passes 2^22, one zoom stage before float32 starts pairing neighbours, so the
+  float32 fill at shallow zoom is the same shader and measured the same (4.7 ms against
+  4.9 ms for a 1024x1024 fill on the desktop). All eight families and Julia are checked
+  against a 64-bit CPU port by the new `tools/ground_check.sh`: at 1.3e5x df32 is within
+  0.05 of a texel on every family (0.14 on the Julia patch), where float32 is 1.4 to 34
+  texels out. The fill charges a df32 texel as three float32 ones against its per-frame
+  budget, raises that charge if a deep fill still overruns with the budget at its floor,
+  and fills thin df32 strips as 16-row blocks so a workgroup is not mostly idle.
+  `tools/ground_deep_shot.sh` captures a boundary spot at any stage for a before and after.
 - **ECHOES reaches further.** MANY (40) now opens by default, a new LOTS rung places 96, and
   the largest echoes grow to about nine times the sculpture, 25 to 40 metres out, so the far
   room reads as scenery rather than more of the same small copies. Each rung still adds

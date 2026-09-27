@@ -14,8 +14,9 @@ class_name FractalGround
 ## adapts to the measured GPU time, so a big jump sharpens over a few frames rather than
 ## dropping any.
 ##
-## Float32 throughout, so useful zoom ends around 1e5. Perturbation is the next step and
-## replaces escape() in ground.glsl and nothing else.
+## Deep levels iterate in two-float (df32) arithmetic, gated per dispatch on DF_RATIO so a
+## shallow fill costs what it always did. docs/deep-zoom/README.md has why df32 and not
+## perturbation.
 
 ## Level size. A level is only usable out to about (n/2 - SLACK) of its texels from the
 ## viewer, and on a ground plane seen at grazing angles that window radius, not the texel
@@ -38,6 +39,23 @@ const STAGE_MAX := 13
 const BUDGET_MIN := 20000.0
 const BUDGET_MAX := 2000000.0
 const TARGET_US := 3500.0
+## Past this many texels per fractal unit of coordinate, float32 stops telling neighbouring
+## texels apart and a dispatch switches to the df32 variant of ground.glsl. A float32 near
+## a coordinate of magnitude m is spaced m * 2^-24 to m * 2^-23 apart, so at 2^22 the
+## spacing is a quarter to a half of a texel. Measured (tools/ground_check.sh, SWEEP):
+## float32 starts pairing identical neighbours at a ratio of about 1.4e7 (stage 9 at a
+## coordinate near 1), none at 5e6, so this switches one stage before the blocks. The
+## orbit's own rounding is the same size at |z| ~ 1, which is why m is never below 1.
+const DF_RATIO := 4194304.0
+## What a df32 texel is charged against the per-frame budget, in float32 texels, so a deep
+## fill sharpens over more frames instead of spiking one. 3 is the plan's estimate for a
+## GPU that runs the Dekker arithmetic natively (docs/deep-zoom/README.md); Apple M1 with
+## fast math off measured 1.5-1.7x, and with `precise` about 37x (see ground.glsl). The
+## Quest's figure is unmeasured, so this is only the starting point: _flush() raises the
+## charge when a deep fill still runs over TARGET_US with the budget already at its floor,
+## which is the one case the budget loop alone cannot fix.
+const DF_COST := 3.0
+const DF_COST_MAX := 64.0
 ## The floor reference holds still while the eye stays within this many metres of it, and
 ## once it has to move it follows until it is back within REF_SETTLE_M. Turning your head
 ## swings the eye 8-10 cm round the neck, and a reference that followed every centimetre
@@ -67,6 +85,8 @@ var ground_us := 0.0
 var _rd: RenderingDevice
 var _shader: RID
 var _pipeline: RID
+var _shader_df: RID
+var _pipeline_df: RID
 var _set: RID
 var _tex: RID
 var _texture := Texture2DArrayRD.new()
@@ -84,6 +104,8 @@ var _head_xz := Vector2.ZERO
 var _ready_ok := false
 var _error := ""
 var _worked := false
+var _df_cost := DF_COST
+var _df_run := 0            # consecutive fills that ran nothing but df32 dispatches
 ## World -> fractal rotation about the viewer (the basis only; translation is `centre`).
 ## fractal = centre + M * world_xz / wpu.
 var _m := Transform2D.IDENTITY
@@ -182,25 +204,23 @@ func setup() -> bool:
 	if file == null:
 		_error = "ground.glsl missing"
 		return false
-	var spirv := file.get_spirv()
-	if spirv.compile_error_compute != "":
-		_error = "ground.glsl: %s" % spirv.compile_error_compute
+	# Two variants of one file: f32 is the original fill, df the two-float one. Separate
+	# pipelines rather than a branch, so the shallow variant carries none of the df code's
+	# registers and costs exactly what it did.
+	var spirv := file.get_spirv(&"f32")
+	var spirv_df := file.get_spirv(&"df")
+	if spirv == null or spirv_df == null:
+		_error = "ground.glsl: missing f32/df versions"
+		return false
+	if spirv.compile_error_compute != "" or spirv_df.compile_error_compute != "":
+		_error = "ground.glsl: %s%s" % [spirv.compile_error_compute, spirv_df.compile_error_compute]
 		return false
 	_shader = _rd.shader_create_from_spirv(spirv)
 	_pipeline = _rd.compute_pipeline_create(_shader)
+	_shader_df = _rd.shader_create_from_spirv(spirv_df)
+	_pipeline_df = _rd.compute_pipeline_create(_shader_df)
 
-	var fmt := RDTextureFormat.new()
-	fmt.texture_type = RenderingDevice.TEXTURE_TYPE_2D_ARRAY
-	fmt.width = n_tex
-	fmt.height = n_tex
-	fmt.array_layers = LEVELS
-	# RGBA16F: smooth count to 1024 with 0.5 resolution (invisible through the log
-	# palette), distance stored as its log2 so it never underflows, flag and texture 0..1.
-	fmt.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
-	fmt.usage_bits = (RenderingDevice.TEXTURE_USAGE_STORAGE_BIT
-		| RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
-		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
-	_tex = _rd.texture_create(fmt, RDTextureView.new(), [])
+	_tex = _rd.texture_create(level_format(n_tex, LEVELS), RDTextureView.new(), [])
 	_texture.texture_rd_rid = _tex
 	_material.set_shader_parameter("levels", _texture)
 
@@ -211,6 +231,23 @@ func setup() -> bool:
 	_set = _rd.uniform_set_create([img], _shader, 0)
 	_ready_ok = true
 	return true
+
+
+## The clipmap stack's format, in one place because setup(), set_quality() and
+## tools/ground_check.gd must agree with ground.glsl's image declaration.
+static func level_format(n: int, layers: int) -> RDTextureFormat:
+	var fmt := RDTextureFormat.new()
+	fmt.texture_type = RenderingDevice.TEXTURE_TYPE_2D_ARRAY
+	fmt.width = n
+	fmt.height = n
+	fmt.array_layers = layers
+	# RGBA16F: smooth count to 1024 with 0.5 resolution (invisible through the log
+	# palette), distance stored as its log2 so it never underflows, flag and texture 0..1.
+	fmt.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
+	fmt.usage_bits = (RenderingDevice.TEXTURE_USAGE_STORAGE_BIT
+		| RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
+		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
+	return fmt
 
 
 func is_ready() -> bool:
@@ -272,6 +309,12 @@ func zoom(factor: float) -> void:
 	_sync_stage()
 
 
+## Put the fractal point (x, y) under the viewer's head. Takes two floats rather than a
+## Vector2 so a caller holding 64-bit coordinates keeps them.
+func set_viewer_fractal(x: float, y: float) -> void:
+	centre = Vector2(x, y) - _m.basis_xform(_head_xz) / wpu
+
+
 ## Zoom factor relative to the home view, for the status line.
 func zoom_factor() -> float:
 	return wpu / WPU_BASE
@@ -310,16 +353,7 @@ func set_quality(n: int) -> void:
 	_texture.texture_rd_rid = RID()
 	if _tex.is_valid():
 		_rd.free_rid(_tex)   # the uniform set is its dependent
-	var fmt := RDTextureFormat.new()
-	fmt.texture_type = RenderingDevice.TEXTURE_TYPE_2D_ARRAY
-	fmt.width = n_tex
-	fmt.height = n_tex
-	fmt.array_layers = LEVELS
-	fmt.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
-	fmt.usage_bits = (RenderingDevice.TEXTURE_USAGE_STORAGE_BIT
-		| RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
-		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT)
-	_tex = _rd.texture_create(fmt, RDTextureView.new(), [])
+	_tex = _rd.texture_create(level_format(n_tex, LEVELS), RDTextureView.new(), [])
 	_texture.texture_rd_rid = _tex
 	_material.set_shader_parameter("levels", _texture)
 	_material.set_shader_parameter("tex_size", n_tex)
@@ -518,16 +552,52 @@ func _track_window(i: int, vf: Vector2) -> void:
 	_win_lo[i] = want
 
 
+const PC_SIZE := 96
+
+
+## Fractal coordinate of a level's texel centre, in 64-bit floats. The texel grid is
+## anchored at the fractal origin, so this is just index times texel.
+func _texel_centre(level: int, a: Vector2i) -> Array[float]:
+	var t := _texel(level)
+	return [(float(a.x) + 0.5) * t, (float(a.y) + 0.5) * t]
+
+
+## Whether a rect's coordinates need df32: the largest coordinate magnitude it touches
+## (never below 1, see DF_RATIO) over its texel size.
+func _is_deep(level: int, r: Rect2i) -> bool:
+	var t := _texel(level)
+	var o := _texel_centre(level, r.position)
+	var m := maxf(1.0, maxf(maxf(absf(o[0]), absf(o[0] + float(r.size.x) * t)),
+		maxf(absf(o[1]), absf(o[1] + float(r.size.y) * t))))
+	if julia:
+		m = maxf(m, julia_c.length())
+	return m / t > DF_RATIO
+
+
+## Write x as a float32 pair hi + lo at two offsets: hi is x rounded to float32, lo the
+## rest rounded again, which keeps about 48 of the double's 53 bits.
+static func _encode_df(pc: PackedByteArray, off_hi: int, off_lo: int, x: float) -> void:
+	pc.encode_float(off_hi, x)
+	pc.encode_float(off_lo, x - pc.decode_float(off_hi))
+
+
 func _push_constant(level: int, r: Rect2i) -> PackedByteArray:
+	var o := _texel_centre(level, r.position)
+	return push_constant_at(level, r, o[0], o[1])
+
+
+## The dispatch push constant with the fractal origin given directly. tools/ground_check.gd
+## uses this to fill a rect anywhere at any depth through the real encoding.
+func push_constant_at(level: int, r: Rect2i, ox: float, oy: float) -> PackedByteArray:
 	var pc := PackedByteArray()
-	pc.resize(64)
+	pc.resize(PC_SIZE)
 	pc.encode_s32(0, r.position.x)
 	pc.encode_s32(4, r.position.y)
 	pc.encode_s32(8, r.size.x)
 	pc.encode_s32(12, r.size.y)
-	pc.encode_float(16, julia_c.x)
-	pc.encode_float(20, julia_c.y)
-	pc.encode_float(24, _texel(level))
+	_encode_df(pc, 16, 80, julia_c.x)
+	_encode_df(pc, 20, 84, julia_c.y)
+	_encode_df(pc, 24, 60, _texel(level))
 	pc.encode_s32(28, (level + _rot) % LEVELS)
 	pc.encode_s32(32, n_tex)
 	pc.encode_s32(36, max_iter)
@@ -536,7 +606,8 @@ func _push_constant(level: int, r: Rect2i) -> PackedByteArray:
 	pc.encode_float(48, stalk)
 	pc.encode_float(52, stalk_width)
 	pc.encode_s32(56, formula)
-	pc.encode_float(60, 0.0)
+	_encode_df(pc, 64, 68, ox)
+	_encode_df(pc, 72, 76, oy)
 	return pc
 
 
@@ -546,31 +617,63 @@ func _flush() -> void:
 	_read_timestamp()
 	# Adapt the budget to what the last fill actually cost.
 	if _worked:
+		# Timestamps lag the dispatch by a frame or two, so the df charge only moves once
+		# several fills in a row were pure df and the measurement must be one of them.
+		var df_only := _df_run >= 3
 		if ground_us > TARGET_US * 1.3:
+			if df_only and _budget <= BUDGET_MIN:
+				_df_cost = minf(DF_COST_MAX, _df_cost * 1.33)
 			_budget = maxf(BUDGET_MIN, _budget * 0.75)
 		elif ground_us < TARGET_US * 0.6:
-			_budget = minf(BUDGET_MAX, _budget * 1.15)
+			if df_only and _df_cost > DF_COST:
+				_df_cost = maxf(DF_COST, _df_cost * 0.87)
+			else:
+				_budget = minf(BUDGET_MAX, _budget * 1.15)
 	_worked = false
+	var any_f32 := false
+	var any_df := false
 	# The budget is in texels at 256 iterations; deeper counts get proportionally fewer
 	# texels a frame, so ITER 4096 sharpens over more frames rather than stalling one.
 	var left := _budget * 256.0 / float(maxi(1, max_iter))
 	var cl := -1
+	var bound := -1   # 0 f32, 1 df: which pipeline the list has bound
 	for i in range(LEVELS - 1, -1, -1):
 		var rects: Array[Rect2i] = _dirty[i]
 		while not rects.is_empty() and left > 0.0:
 			var r: Rect2i = rects[0]
-			var rows := mini(r.size.y, maxi(1, int(left / float(maxi(1, r.size.x)))))
+			var deep := _is_deep(i, r)
+			var cost := _df_cost if deep else 1.0
+			any_df = any_df or deep
+			any_f32 = any_f32 or not deep
+			var rows := mini(r.size.y, maxi(1, int(left / (cost * float(maxi(1, r.size.x))))))
 			var sub := Rect2i(r.position, Vector2i(r.size.x, rows))
+			var split_x := false
+			if deep and rows < 16 and r.size.y >= 16:
+				# A thin strip wastes most of every 16x16 workgroup, and a df32 budget is
+				# often only a few rows of a 1024-wide rect: one row ran a sixteenth of the
+				# lanes and measured 5 ms for 1024 texels. Take a 16-row block of the width
+				# the budget allows instead, and leave the rest of that strip queued.
+				var w := int(left / (cost * 16.0)) / 16 * 16
+				sub = Rect2i(r.position, Vector2i(clampi(w, 16, r.size.x), 16))
+				split_x = sub.size.x < r.size.x
+				rows = 16
 			if cl < 0:
 				cl = _rd.compute_list_begin()
-				_rd.compute_list_bind_compute_pipeline(cl, _pipeline)
-				_rd.compute_list_bind_uniform_set(cl, _set, 0)
 				_rd.capture_timestamp("ground_begin")
-			_rd.compute_list_set_push_constant(cl, _push_constant(i, sub), 64)
+			var want := 1 if deep else 0
+			if want != bound:
+				_rd.compute_list_bind_compute_pipeline(cl, _pipeline_df if deep else _pipeline)
+				_rd.compute_list_bind_uniform_set(cl, _set, 0)
+				bound = want
+			_rd.compute_list_set_push_constant(cl, _push_constant(i, sub), PC_SIZE)
 			_rd.compute_list_dispatch(cl, int(ceil(float(sub.size.x) / 16.0)),
 				int(ceil(float(sub.size.y) / 16.0)), 1)
-			left -= float(sub.size.x * sub.size.y)
-			if rows >= r.size.y:
+			left -= cost * float(sub.size.x * sub.size.y)
+			if split_x:
+				rects[0] = Rect2i(r.position + Vector2i(sub.size.x, 0), Vector2i(r.size.x - sub.size.x, 16))
+				if r.size.y > 16:
+					rects.insert(1, Rect2i(r.position + Vector2i(0, 16), Vector2i(r.size.x, r.size.y - 16)))
+			elif rows >= r.size.y:
 				rects.pop_front()
 			else:
 				rects[0] = Rect2i(r.position + Vector2i(0, rows), Vector2i(r.size.x, r.size.y - rows))
@@ -581,6 +684,7 @@ func _flush() -> void:
 		_rd.compute_list_end()
 		_rd.capture_timestamp("ground_end")
 		_worked = true
+	_df_run = _df_run + 1 if (any_df and not any_f32) else 0
 
 
 func _read_timestamp() -> void:
@@ -644,7 +748,7 @@ func cleanup() -> void:
 	if _rd == null:
 		return
 	_texture.texture_rd_rid = RID()
-	for rid: RID in [_tex, _shader]:
+	for rid: RID in [_tex, _shader, _shader_df]:
 		if rid.is_valid():
 			_rd.free_rid(rid)
 	_ready_ok = false
