@@ -9,6 +9,9 @@ extends SceneTree
 ##
 ##   red    a pixel built from a slot still waiting for its refill: the artifact
 ##   green  a pixel built from filled texels
+##   cyan   the same, from a coarser level than the fragment wanted because the one it
+##          wanted is still queued there: the price of never showing red, counted as
+##          "fallback" so a fix that trades stale texels for blur has to say how much
 ##   blue   fog, where no level was usable
 ##
 ## Poison is a value no fill writes (a negative count), and the probe reads the raw bits,
@@ -25,8 +28,10 @@ extends SceneTree
 ## frame, the loop's own starting point and the order of what a Quest affords: an emulation
 ## of the headset's fill rate, not a measurement of it (PIN=0 lets it adapt).
 ##
-##   tools/ground_fill.sh            CONTROL=1 swaps the probe for one that never looks:
-##                                   it must report zero red, and the real probe must not.
+##   tools/ground_fill.sh
+##
+## The control is the code before the fix (commit eb003e0): the same probe, same scenarios,
+## red in five of six. A pass here means something only because that run failed.
 
 const SPOT := [-0.743643887037158704752191506114774, 0.131825904205311970493132056385139]
 const POISON := "uvec4(0xBEEFu, 0xDEADu, 0xBEEFu, 0xDEADu)"
@@ -66,7 +71,6 @@ func _init() -> void:
 		return
 	g.on_queue = _poison
 
-	var control := OS.get_environment("CONTROL") != ""
 	# Walk at the stick's speed, shallow and deep. Deep is where the fill is slowest: df32
 	# and a raised iteration floor both cut the texels a frame.
 	await _walk("walk stage 4", 4, 1.4, 216, 0)
@@ -78,8 +82,12 @@ func _init() -> void:
 	await _zoom("zoom in 4 -> 13", 4, 13, true)
 	await _zoom("zoom out 13 -> 4", 13, 4, false)
 	await _walk("walk stage 17", 17, 1.4, 216, 0, 1500)
-	print("GROUNDFILL %s failures=%d queued=%d%s" % ["PASS" if _fails == 0 else "FAIL", _fails,
-		_queued, " (CONTROL: the probe never looks, red must be 0)" if control else ""])
+	# queued counts poisoned rects: zero would mean the hook went quiet and a pass proves nothing.
+	if _queued == 0:
+		_fails += 1
+	print("GROUNDFILL %s failures=%d queued=%d" % ["PASS" if _fails == 0 else "FAIL", _fails, _queued])
+	g.on_queue = Callable()
+	_rd.free_rid(_shader)
 	quit(0 if _fails == 0 else 1)
 
 
@@ -164,8 +172,12 @@ class _Stats:
 	var red_sum := 0.0
 	var fog_max := 0.0
 	var fog_base := -1.0
+	var fb_max := 0.0
+	var fb_sum := 0.0
 
-	func add(c: Vector2) -> void:
+	func add(c: Vector3) -> void:
+		fb_max = maxf(fb_max, c.z)
+		fb_sum += c.z
 		if fog_base < 0.0:
 			fog_base = c.y
 		frames += 1
@@ -180,18 +192,21 @@ func _report(name: String, st: _Stats) -> void:
 	var ok := st.red_frames == 0
 	if not ok:
 		_fails += 1
-	print("  %-22s %s  red in %d/%d frames, worst %.2f%% of the ground, mean %.3f%%; fog %.1f%% at start, worst %.1f%%" % [
+	print("  %-22s %s  red in %d/%d frames, worst %.2f%% of the ground, mean %.3f%%; fog %.1f%% at start, worst %.1f%%; fallback worst %.2f%%, mean %.3f%%" % [
 		name, "PASS" if ok else "FAIL", st.red_frames, st.frames, st.red_max * 100.0,
-		st.red_sum / float(maxi(1, st.frames)) * 100.0, st.fog_base * 100.0, st.fog_max * 100.0])
+		st.red_sum / float(maxi(1, st.frames)) * 100.0, st.fog_base * 100.0, st.fog_max * 100.0,
+		st.fb_max * 100.0, st.fb_sum / float(maxi(1, st.frames)) * 100.0])
 
 
-## Fraction of ground pixels that are red, and of all pixels that are fog.
-func _count() -> Vector2:
+## Fraction of ground pixels that are red, of all pixels that are fog, and of ground pixels
+## that fell back to a coarser level.
+func _count() -> Vector3:
 	RenderingServer.force_draw(false, 0.0)
 	var img := root.get_viewport().get_texture().get_image()
 	var red := 0
 	var green := 0
 	var fog := 0
+	var fb := 0
 	var n := 0
 	for y in range(0, img.get_height(), STRIDE):
 		for x in range(0, img.get_width(), STRIDE):
@@ -201,9 +216,12 @@ func _count() -> Vector2:
 				red += 1
 			elif c.g > 0.5:
 				green += 1
+				if c.b > 0.5:
+					fb += 1
 			elif c.b > 0.5:
 				fog += 1
-	return Vector2(float(red) / float(maxi(1, red + green)), float(fog) / float(maxi(1, n)))
+	var ground := float(maxi(1, red + green))
+	return Vector3(float(red) / ground, float(fog) / float(maxi(1, n)), float(fb) / ground)
 
 
 ## Swap the ground's last line for the probe. Uses the fragment's own level choice.
@@ -226,14 +244,14 @@ bool probe_poison(int level, vec2 e0p) {
 }
 
 void fragment() {""" % POISON
-	var look := "true" if OS.get_environment("CONTROL") == "" else "false"
 	var tail := """bool shown = valid && fog < 0.999;
 	bool bad = false;
-	if (shown && %s) {
+	if (shown) {
 		if (k < 0.999) bad = bad || probe_poison(l0, e0);
 		if (k > 0.001 && l1 != l0) bad = bad || probe_poison(l1, e0);
 	}
-	ALBEDO = bad ? vec3(1.0, 0.0, 0.0) : (shown ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));""" % look
+	float fell = int(floor(lod)) != l0 ? 1.0 : 0.0;
+	ALBEDO = bad ? vec3(1.0, 0.0, 0.0) : (shown ? vec3(0.0, 1.0, fell) : vec3(0.0, 0.0, 1.0));"""
 	var painted := code.replace("void fragment() {", probe).replace(
 		"ALBEDO = mix(col, fog_colour, fog);", tail)
 	if painted == code or not painted.contains("probe_poison(l0"):

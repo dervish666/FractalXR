@@ -162,6 +162,32 @@ All notable changes to FractalXR are documented here. Format based on
   reached the headset unchecked.
 
 ### Fixed
+- **No more flashes of the wrong terrain while zooming or walking on the ground.** The
+  shader trusted every level's whole window, but a pan strip or a level a zoom step had
+  just made sat queued for the fill with its slots still holding texels from the far side
+  of the window or another scale, and the finest levels, the ones at your feet, were
+  filled last. Worst of all, crossing one of the iteration floor's steps (stages 10, 13,
+  16, 19, 22) rebuilt every level, and with nothing marked complete the floor drew the
+  coarsest level mid-fill. The host now hands the shader each level's filled rectangle and
+  the shader steps up to the next coarser filled level where the one it wants is still
+  queued: a patch a level blurrier for a moment, never one of somewhere else. Windows
+  re-centre at half the old slack, so a new strip starts 24 texels beyond reach instead of
+  at it. An iteration step refills in place behind the old picture instead of rebuilding.
+  `tools/ground_fill.sh` poisons every queued slot and paints any pixel that reads one:
+  at a Quest-like fill rate the old code showed them in 168 of 216 frames of a walk at
+  ITER 4096 and on the whole floor across a zoom's iteration step; now in none.
+- **The fill aims for 2 ms of GPU a frame, down from 3.5.** Ground mode drew in 12.4-12.8
+  ms of a 13.9 ms frame with the fill idle, so 3.5 ms more had nowhere to go.
+- **The orbit trace follows the hand anywhere and at any depth.** Its culling box sat
+  round the room's origin, so pointing more than a metre or so away hid it, and the point
+  under the hand went through a float32 `Vector2`, a metre and a half of floor a step at
+  stage 18.
+- **Julia seeds keep 64 bits**, so "Julia here" at depth seeds from where you stand
+  rather than from the nearest float32. Leaving ground mode with a grip held no longer
+  drags the next visit's fresh ground by the hand's travel in between.
+- **The selftest's ground check reads the packed level format.** It still decoded four
+  half floats after the stack moved to packed 16-bit uints, and failed on an inside
+  texel's distance sentinel (-40) as if it were the inside flag. The fill was right.
 - **The ground fill no longer runs away on a Mac.** Metal hands back GPU timestamps that
   are all zero, the fill read that as free and grew its budget to 2M texels a frame, and
   deep df32 fills at ITER 4096 stalled the GPU long enough to drop fences and leave garbage

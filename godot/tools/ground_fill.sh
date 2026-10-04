@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Stale texels on screen while the clipmap refills: tools/ground_fill.gd through the real
-# main scene. CONTROL=1 runs the probe blind and must report no red.
+# main scene. PIN=<texels> sets the per-frame budget the scenarios run at (0: adapt).
 # Nonzero exit on a failed check, a parse or shader error, or the watchdog firing.
 set -uo pipefail
 source "$(dirname "$0")/env.sh"
 mkdir -p "$PROJ/.spike-out"
-LOG="$PROJ/.spike-out/ground_fill${CONTROL:+_control}.log"
+LOG="$PROJ/.spike-out/ground_fill.log"
 "$GODOT" $GODOT_FLAGS --headless --import >/dev/null 2>&1 || true
 # Vulkan (MoltenVK) for real GPU timestamps, so the fill budget adapts as on the Quest.
 # Fixed 72 fps, the Quest's rate, so motion per frame matches the headset.
