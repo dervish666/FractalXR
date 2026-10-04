@@ -90,7 +90,17 @@ var centre: Vector2:
 		_cy = v.y
 var wpu := WPU_BASE
 var julia := false
-var julia_c := Vector2(-0.8, 0.156)
+## The Julia seed, 64-bit like the centre: julia_here() takes it from the viewer's position,
+## and a float32 Vector2 rounded that to the same c for every point within 6e-8, a seed
+## a metre and a half wide at stage 18. julia_c is the rough view for the orbit trace.
+var _jx := -0.8
+var _jy := 0.156
+var julia_c: Vector2:
+	get:
+		return Vector2(_jx, _jy)
+	set(v):
+		_jx = v.x
+		_jy = v.y
 ## Which escape-time family the tiles are filled with. ORDER IS LOAD-BEARING: it indexes
 ## the switch in ground.glsl's iterate(). Append only, and keep the shader in step.
 const FORMULA_NAMES := ["mandelbrot", "burning ship", "tricorn", "celtic",
@@ -446,7 +456,8 @@ func formula_name() -> String:
 
 ## Julia set seeded from the point you are standing on: the classic pairing.
 func julia_here() -> void:
-	julia_c = viewer_fractal()
+	_jx = viewer_fx()
+	_jy = viewer_fy()
 	julia = true
 	invalidate()
 
@@ -701,7 +712,7 @@ func _is_deep(level: int, r: Rect2i) -> bool:
 	var m := maxf(1.0, maxf(maxf(absf(o[0]), absf(o[0] + float(r.size.x) * t)),
 		maxf(absf(o[1]), absf(o[1] + float(r.size.y) * t))))
 	if julia:
-		m = maxf(m, julia_c.length())
+		m = maxf(m, sqrt(_jx * _jx + _jy * _jy))
 	return m / t > DF_RATIO
 
 
@@ -726,8 +737,8 @@ func push_constant_at(level: int, r: Rect2i, ox: float, oy: float) -> PackedByte
 	pc.encode_s32(4, r.position.y)
 	pc.encode_s32(8, r.size.x)
 	pc.encode_s32(12, r.size.y)
-	_encode_df(pc, 16, 80, julia_c.x)
-	_encode_df(pc, 20, 84, julia_c.y)
+	_encode_df(pc, 16, 80, _jx)
+	_encode_df(pc, 20, 84, _jy)
 	_encode_df(pc, 24, 60, _texel(level))
 	pc.encode_s32(28, (level + _rot) % LEVELS)
 	pc.encode_s32(32, n_tex)

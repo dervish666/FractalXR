@@ -1408,6 +1408,9 @@ func _set_ground_mode(on: bool) -> void:
 	ground_mode = on
 	ground.visible = on
 	orbit.visible = false
+	# _ground_grab() only clears its grip history while ground mode runs it, so a grip held
+	# across leaving and coming back applied the hand's travel in between to the fresh ground.
+	_gg_hands = []
 	cloud.set_visible_cloud(not on)
 	if on:
 		_render_idx_saved = render_idx
