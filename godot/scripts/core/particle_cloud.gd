@@ -62,6 +62,15 @@ var _measure_pending := false
 ## An async readback is in flight. Requests are not queued behind it: a second
 ## measure before the first lands would only re-read the same settled cloud.
 var _measure_in_flight := false
+## Bumped by set_source and reload_source. A measurement is tagged with the generation it
+## was dispatched under and dropped if the source changed before it landed.
+var _source_gen := 0
+## False from a source change until the first step under it. The state texture still
+## holds the previous shape until then, so a measure dispatched earlier framed the old one.
+var _source_stepped := true
+## bake() was asked for while a measurement was pending or in flight. The bake sizes its
+## grid from the framing, so it starts once that measurement has landed.
+var _bake_requested := false
 # Local density, for sizing splats the way bulbSplat.ts does from kNN covariance.
 # 64 rather than 48: particles lie on a SURFACE, so they only occupy the cells the shell
 # passes through — roughly grid^2 of them, not grid^3. A finer grid is what makes a cell
@@ -404,6 +413,10 @@ func bake() -> void:
 		return
 	if not _ensure_sorted(_count):
 		return
+	if _measure_in_flight or (_measure_pending and _source_stepped):
+		_bake_requested = true   # iterate() starts it once the framing is current
+		return
+	_bake_requested = false
 	_baking = true
 	_bake_gen += 1
 	_bake_first = 0
@@ -414,8 +427,11 @@ func bake() -> void:
 	# back for the handful of frames a bake takes.
 	# Roomier than the density grid's box. A particle that falls outside gets a fallback
 	# size rather than a real neighbourhood, so the box wants to contain the spikes too.
-	_bake_extent = maxf(0.2, 2.6 / maxf(0.05, fit))
-	_bake_centre = center
+	# The measured target, not the eased framing: four frames after a bulb switch the
+	# eased fit had moved ~10% of the way, and a small-to-large switch binned most of the
+	# new shell outside the grid.
+	_bake_extent = maxf(0.2, 2.6 / maxf(0.05, target_fit))
+	_bake_centre = target_center
 	_build_index()
 
 
@@ -562,7 +578,7 @@ func _apply_bake_scale() -> void:
 
 
 func is_baking() -> bool:
-	return _baking
+	return _baking or _bake_requested
 
 
 ## Drop back to the grid-histogram sizing. The bake stays in its texture; only the switch
@@ -620,8 +636,11 @@ func set_source(s: FractalSource) -> bool:
 	# A bake in flight belongs to the old source; left running it kept stepping over the
 	# new one and switched use_bake back on when it finished.
 	_baking = false
+	_bake_requested = false
 	_bake_first = _count
 	_bake_gen += 1
+	_source_gen += 1
+	_source_stepped = false
 	if not s.setup(_rd, _state_tex, tex_size, _normal_tex):
 		_error = s.get_error()
 		return false
@@ -643,6 +662,14 @@ func reload_source() -> void:
 	if not _ready_ok or source == null:
 		return
 	source.update_params()
+	# A bake in flight was reading the old shape; the settle re-bakes the new one. The
+	# previous finished bake stays live (see above), so this only cancels, never clears.
+	_baking = false
+	_bake_requested = false
+	_bake_first = _count
+	_bake_gen += 1
+	_source_gen += 1
+	_source_stepped = false
 	apply_look()
 
 
@@ -789,7 +816,9 @@ func iterate() -> void:
 	_read_timestamp()
 	_rd.capture_timestamp("cloud_begin")
 
-	if _measure_pending and not _measure_in_flight and _measure_pipeline.is_valid():
+	# Held until the current source has stepped once: before that the state is the old shape.
+	if _measure_pending and _source_stepped and not _measure_in_flight \
+			and _measure_pipeline.is_valid():
 		_measure_pending = false
 		_dispatch_measure()
 		# Density rides along with the measure: same cadence, same reason. A finished
@@ -799,6 +828,8 @@ func iterate() -> void:
 		if _splat and not bake_ready and not _baking:
 			_run_density()
 
+	if _bake_requested and not _measure_pending and not _measure_in_flight:
+		bake()
 	if _baking and _bake_first < _count:
 		_bake_step()
 
@@ -815,6 +846,7 @@ func iterate() -> void:
 			_needs_seed = false
 		source.encode(cl, _count, _frame, false)
 		_rd.compute_list_end()
+		_source_stepped = true
 	# Sort after the step so the order matches positions that did move.  A baked bulb
 	# normally freezes its state, though, and headset micro-jitter is far smaller than
 	# a depth bucket.  Reusing the last permutation until the view-model transform
@@ -848,13 +880,15 @@ func _dispatch_measure() -> void:
 	_rd.compute_list_dispatch(cl, groups, 1, 1)
 	_rd.compute_list_end()
 	_measure_in_flight = true
-	_rd.buffer_get_data_async(_stats_buf, _on_measure, 0, _STATS_BYTES)
+	_rd.buffer_get_data_async(_stats_buf, _on_measure.bind(_source_gen), 0, _STATS_BYTES)
 
 
-func _on_measure(raw: PackedByteArray) -> void:
+func _on_measure(raw: PackedByteArray, gen: int) -> void:
 	_measure_in_flight = false
 	if not _ready_ok or raw.size() < 20:
 		return
+	if gen != _source_gen:
+		return   # measured a source that has since been replaced
 	var n := raw.decode_u32(12)
 	if n < 64:
 		return   # too few survivors to trust; leave the previous framing alone
