@@ -976,9 +976,14 @@ func _build_menu() -> void:
 			# Breathing and a morph rebuild on every frame, so they run at the rung a drag runs
 			# at. Naming it keeps the frame count below from reading as the wrong number for
 			# the rung on the DETAIL tile.
+			# Instance and triangle counts are instruments: debug builds only, so they stay
+			# out of a release build's menu shots.
+			var dbg := OS.is_debug_build()
 			if ifs.levels_built < IFS_DETAIL[ifs_detail_idx]:
-				return "moving at level %d · %d frames" % [ifs.levels_built, ifs.instance_count]
-			return "%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]
+				return ("moving at level %d · %d frames" % [ifs.levels_built, ifs.instance_count]) \
+						if dbg else "moving at level %d" % ifs.levels_built
+			return ("%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]) \
+					if dbg else ""
 		if tree_mode:
 			# At capacity the trigger stops doing anything and the marker goes away, so
 			# say why here rather than leaving the floor silently dead.
@@ -1007,6 +1012,9 @@ func _build_menu() -> void:
 		return "drifting" if _drift else ""
 
 	menu.status_main = func():
+		# The footer is a perf readout. A release build shows nothing there.
+		if not OS.is_debug_build():
+			return ""
 		if ifs_mode:
 			# Build time, not draw time: the sculpture is static, so what a rung costs to
 			# generate is the number that decides whether a drag can rebuild every frame.
