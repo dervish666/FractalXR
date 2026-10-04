@@ -42,17 +42,36 @@ func update_stride() -> int:
 
 func set_preset(p: Dictionary) -> void:
 	_preset = p
+	_live.clear()
+	_live_pal = []
 	display_name = str(p.get("name", "Flame"))
 	_num_t = clampi(p.get("transforms", []).size(), 1, MAX_T)
 	# No GPU work here. The genome buffer is a fixed 224 floats, created once in setup()
-	# and rewritten in place by update_params(). A morph calls this every frame, and the
-	# old rebuild_params() here freed and recreated the SSBO and uniform set each time.
+	# and rewritten in place by update_params().
+
+
+## One frame of a morph: the genome already in flat form (STRIDE floats per transform, from
+## Morph.Plan.sample) and its palette. Encoded here once, into a buffer that is reused, so
+## update_params() uploads it without walking a Dictionary. set_preset() ends it.
+func set_frame(flat: PackedFloat32Array, n: int, pal: Array, label: String) -> void:
+	_num_t = clampi(n, 1, MAX_T)
+	_live_pal = pal
+	display_name = label
+	encode_into(_live, flat, n, pal)
 
 
 const MAX_T := 8
+## Floats per transform in the flat form: rowX, rowY, rowZ, translate (3 each), weight,
+## colorIndex, then NVAR variation weights.
+const STRIDE := 14 + NVAR
+
+var _live := PackedFloat32Array()   # the encoded genome while a morph is driving it
+var _live_pal: Array = []
 
 
 func palette() -> Array:
+	if not _live.is_empty():
+		return _live_pal
 	return PresetLibrary.palette_of(_preset)
 
 
@@ -60,34 +79,64 @@ func tone_settings() -> Dictionary:
 	return PresetLibrary.tone_of(_preset)
 
 
-## Mirrors encodeFlame() in src/flame/encode.ts, cdf drift guard included.
+## A genome's transforms in the flat form Morph.Plan writes, so both paths share one encoder.
+static func flatten(tf: Array, n: int) -> PackedFloat32Array:
+	var flat := PackedFloat32Array()
+	flat.resize(n * STRIDE)
+	for i in mini(n, tf.size()):
+		var t: Dictionary = tf[i]
+		var o := i * STRIDE
+		for k in 3:
+			flat[o + k] = float(t["rowX"][k])
+			flat[o + 3 + k] = float(t["rowY"][k])
+			flat[o + 6 + k] = float(t["rowZ"][k])
+			flat[o + 9 + k] = float(t["translate"][k])
+		flat[o + 12] = float(t.get("weight", 0.0))
+		flat[o + 13] = float(t.get("colorIndex", 0.0))
+		var vars: Array = t.get("variations", [])
+		for v in mini(NVAR, vars.size()):
+			flat[o + 14 + v] = float(vars[v])
+	return flat
+
+
 func param_buffer_floats() -> PackedFloat32Array:
-	var f := PackedFloat32Array()
-	f.resize(FLOATS)
+	if not _live.is_empty():
+		return _live
 	var tf: Array = _preset.get("transforms", [])
 	var n := clampi(tf.size(), 1, MAX_T)
+	var f := PackedFloat32Array()
+	encode_into(f, flatten(tf, n), n, palette())
+	return f
+
+
+## Mirrors encodeFlame() in src/flame/encode.ts, cdf drift guard included.
+static func encode_into(f: PackedFloat32Array, flat: PackedFloat32Array, n: int, pal: Array) -> void:
+	f.resize(FLOATS)
+	f.fill(0.0)
+	n = clampi(mini(n, flat.size() / STRIDE), 1, MAX_T) if flat.size() >= STRIDE else 1
+	var have := flat.size() >= STRIDE
 
 	var total := 0.0
-	for i in n:
-		total += maxf(0.0, float(tf[i].get("weight", 0.0)))
+	if have:
+		for i in n:
+			total += maxf(0.0, flat[i * STRIDE + 12])
 	if total <= 0.0:
 		total = 1.0
 
 	var acc := 0.0
 	for i in MAX_T:
-		if i < n:
-			var t: Dictionary = tf[i]
+		if have and i < n:
+			var o := i * STRIDE
 			for k in 3:
-				f[i * 3 + k] = float(t["rowX"][k])
-				f[24 + i * 3 + k] = float(t["rowY"][k])
-				f[48 + i * 3 + k] = float(t["rowZ"][k])
-				f[72 + i * 3 + k] = float(t["translate"][k])
-			acc += maxf(0.0, float(t.get("weight", 0.0))) / total
+				f[i * 3 + k] = flat[o + k]
+				f[24 + i * 3 + k] = flat[o + 3 + k]
+				f[48 + i * 3 + k] = flat[o + 6 + k]
+				f[72 + i * 3 + k] = flat[o + 9 + k]
+			acc += maxf(0.0, flat[o + 12]) / total
 			f[96 + i] = acc
-			f[104 + i] = float(t.get("colorIndex", 0.0))
-			var vars: Array = t.get("variations", [])
-			for v in mini(NVAR, vars.size()):
-				f[112 + i * NVAR + v] = float(vars[v])
+			f[104 + i] = flat[o + 13]
+			for v in NVAR:
+				f[112 + i * NVAR + v] = flat[o + 14 + v]
 		else:
 			# padding rows are never selected, but must still be valid uniforms
 			f[i * 3 + 0] = 1.0
@@ -96,12 +145,11 @@ func param_buffer_floats() -> PackedFloat32Array:
 			f[96 + i] = 1.0
 	f[96 + n - 1] = 1.0 # guard the last bucket against float drift
 
-	var pal := palette()
 	for i in 5:
-		f[208 + i * 3 + 0] = pal[i].x
-		f[208 + i * 3 + 1] = pal[i].y
-		f[208 + i * 3 + 2] = pal[i].z
-	return f
+		var c: Vector3 = pal[i] if i < pal.size() else Vector3.ONE
+		f[208 + i * 3 + 0] = c.x
+		f[208 + i * 3 + 1] = c.y
+		f[208 + i * 3 + 2] = c.z
 
 
 func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
