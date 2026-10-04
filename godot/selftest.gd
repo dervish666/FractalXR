@@ -203,9 +203,16 @@ func _ground_texel(data: PackedByteArray, n: int, c: Vector2, texel: float) -> V
 	var ay := int(floor(c.y / texel))
 	var sx := ((ax % n) + n) % n
 	var sy := ((ay % n) + n) % n
-	var o := (sy * n + sx) * 8   # RGBA16F
-	return Vector4(_half(data.decode_u16(o)), _half(data.decode_u16(o + 2)),
-		_half(data.decode_u16(o + 4)), _half(data.decode_u16(o + 6)))
+	# RGBA16UI packed by ground.glsl's encode() since 3ab529e (count as a float32 over the
+	# first two, distance as a half, texture and inside flag in the last). Read as four
+	# halves, an inside texel's distance sentinel (-40) came back as its flag.
+	var o := (sy * n + sx) * 8
+	var bits := PackedByteArray()
+	bits.resize(4)
+	bits.encode_u32(0, data.decode_u16(o) | (data.decode_u16(o + 2) << 16))
+	var tf := data.decode_u16(o + 6)
+	return Vector4(bits.decode_float(0), _half(data.decode_u16(o + 4)),
+		float(tf & 1), float(tf >> 1) / 32767.0)
 
 
 func _check_perm(rd: RenderingDevice, cloud: ParticleCloud) -> String:
