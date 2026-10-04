@@ -579,22 +579,19 @@ func _build_menu() -> void:
 			func(): return "all trees",
 			func(): _regrow_forest(),
 			false, _vis_tree),
-		# The forest's own actions (forest branch, 2026-10-04). Called by name so this spec
-		# parses before and after the merge; the merge may make these direct calls.
+		# The forest's own actions: a mixed grove, what a pull plants, and the slow turnover.
 		WristMenu.Item.new("make", "SOW",
 			func(): return "mixed grove",
-			func(): call("_sow_grove"),
-			false, func(): return tree_mode and has_method("_sow_grove")),
+			func(): _sow_grove(),
+			false, _vis_tree),
 		WristMenu.Item.new("make", "MIX",
-			func(): return "species" if _forest_flag("plant_mix") else "one kind",
-			func(): call("_toggle_plant_mix"),
-			false, func(): return tree_mode and has_method("_toggle_plant_mix")).toggle(
-			func(): return _forest_flag("plant_mix")),
+			func(): return "species" if forest.plant_mix else "one kind",
+			func(): _toggle_plant_mix(),
+			false, _vis_tree).toggle(func(): return forest.plant_mix),
 		WristMenu.Item.new("make", "SUCCESSION",
-			func(): return "wither + regrow" if _forest_flag("succession") else "off",
-			func(): call("_toggle_succession"),
-			false, func(): return tree_mode and has_method("_toggle_succession")).toggle(
-			func(): return _forest_flag("succession")),
+			func(): return "wither + regrow" if forest.succession else "off",
+			func(): _toggle_succession(),
+			false, _vis_tree).toggle(func(): return forest.succession),
 		WristMenu.Item.new("make", "CLEAR",
 			func(): return "%d trees" % forest.tree_count(),
 			func(): _clear_forest(),
@@ -1370,12 +1367,6 @@ func _theme_swatch(i: int) -> Array:
 	for c in library.themes[wrapi(i - 1, 0, library.themes.size())]:
 		out.append(Vector3(float(c[0]), float(c[1]), float(c[2])))
 	return out
-
-
-## A forest flag by name, false until the forest branch's `forest` exists here.
-func _forest_flag(flag: String) -> bool:
-	var f = get("forest")
-	return f != null and bool(f.get(flag))
 
 
 func _step_specimen(d: int) -> void:
