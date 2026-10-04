@@ -1758,6 +1758,13 @@ func _sync_iteration() -> void:
 			_bulb.update_mod = 0
 		else:
 			_bulb.update_mod = want
+		# The flame's reseed-free tail, for the frames that end in a freeze or a bake. A
+		# reseed gets only proj_steps of projection, and a Mandelbox point that fails to
+		# escape is stored raw and reprojected next frame, so both leave unprojected seeds
+		# in the last frame stepped. With no reseeding the raw share decays geometrically.
+		var fusing := (_bulb_settle > 0 and _bulb_settle <= FUSE_FRAMES) \
+				or _bake_wait > 0 or cloud.is_baking()
+		_bulb.reseed_prob = 0.0 if fusing else BulbSource.RESEED_PROB
 		return
 	var src := cloud.source as FlameSource
 	if src == null:

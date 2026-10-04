@@ -257,6 +257,9 @@ void main() {
 	// here is the unsquashed value with the range merely bounded.
 	col = clamp((d.y * 0.7 + d.z * 0.5) * 0.45, 0.0, 1.0);
 
+	// A Mandelbox point that did not escape sits on a spurious interior zero. It is stored
+	// as a raw seed and projected from there next frame, like any reseed; the host's
+	// reseed-free tail (main.gd _sync_iteration) is what keeps these out of a freeze.
 	if (abs(p.formula - 1.0) < 0.5 && d.w < 0.5) pos = randBall(seed, p.bound);
 	if (dot(pos, pos) > bsq) pos = randBall(seed, p.bound);
 	imageStore(state_img, ip, vec4(pos, col));

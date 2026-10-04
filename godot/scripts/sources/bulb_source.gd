@@ -15,7 +15,8 @@ const FORMULA_IDS := {
 	"mandelbulb": 0.0, "mandelbox": 1.0, "kifs": 2.0, "quat": 3.0, "sierpinski": 4.0,
 }
 
-var reseed_prob := 0.02
+const RESEED_PROB := 0.02
+var reseed_prob := RESEED_PROB
 var proj_steps := 3.0
 var jitter := 0.0022
 var update_mod := 1
