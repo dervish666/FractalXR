@@ -43,6 +43,20 @@ func _init() -> void:
 		await process_frame
 
 	var failures: Array[String] = []
+	# The device path: open through update(), no debug_level/debug_force. Every shot below
+	# goes through debug_level(""), which once hid a fresh panel opening with no cards.
+	var m = main.menu
+	m._pinned = true
+	for i in 60:
+		await process_frame
+	var cold_ok: bool = m.visible and m._level == "" and m._top.visible and m._top.modulate.a > 0.99
+	print("MENUSHOT cold_open %s top=%s/%.2f" % ["PASS" if cold_ok else "FAIL", m._top.visible, m._top.modulate.a])
+	if not cold_ok:
+		failures.append("cold_open: the top level is hidden on a natural open")
+	m._pinned = false
+	m._shown = 0.0
+	for i in 5:
+		await process_frame
 	var shots := 0
 	var real_title: Callable = main.menu.title
 	var anim := OS.get_environment("ANIM") == "1"

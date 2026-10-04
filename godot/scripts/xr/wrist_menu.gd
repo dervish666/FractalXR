@@ -601,8 +601,11 @@ var _shown_drawn := -1.0
 var _level := ""               # "" = top
 var _more := false
 var _zoom_t := 1.0
-var _zoom_in := true
-var _zoom_at := Vector2.ZERO
+# Must start false: at the top level a settled zoom with _zoom_in true reads as "fully
+# zoomed into a card", which hides the cards, and _go_level("") early-outs on a settled
+# top level so nothing ever corrects it. The shot tool masked this via debug_level("").
+var _zoom_in := false
+var _zoom_at := Vector2(VIEW_SIZE) * 0.5
 var _drag := -1
 var _hold_i := -1
 var _hold_t := 0.0
@@ -1335,11 +1338,14 @@ func update(delta: float) -> bool:
 	if not _debug_hold:   # the shot tool parks _shown where it wants a frame
 		_shown = clampf(_shown + (REVEAL_SPEED * delta if open else -HIDE_SPEED * delta), 0.0, 1.0)
 	_shown_e = _shown * _shown * (3.0 - 2.0 * _shown)
+	var was_visible := visible
 	visible = _shown > 0.01
 	_set_live(visible)
 	if _layer != null:
 		_layer.quad_size = PANEL_METRES if visible else Vector2(0.001, 0.001)
 		_blayer.quad_size = _layer.quad_size
+	if visible and not was_visible and OS.is_debug_build():
+		_log_layers()
 	if not visible:
 		_hovered = -1
 		_drag = -1
@@ -1392,6 +1398,22 @@ func update(delta: float) -> bool:
 		_refresh_accum = 0.0
 		_refresh()
 	return on_panel
+
+
+## One line per open in debug builds, so a device log proves what the compositor was given.
+func _log_layers() -> void:
+	var s := "[menu] open level='%s' zoom_in=%s top=%s/%.2f pinned=%s" % [
+		_level, _zoom_in, _top.visible, _top.modulate.a, _pinned]
+	for pair in [["back", _blayer, _bvp], ["front", _layer, _vp]]:
+		var l := pair[1] as OpenXRCompositionLayerQuad
+		var v := pair[2] as SubViewport
+		if l == null:
+			s += " %s=mesh vp=%s mode=%d" % [pair[0], v.size, v.render_target_update_mode]
+		else:
+			s += " %s: vis=%s quad=%s sort=%d vp=%s mode=%d at=%s" % [pair[0],
+				l.is_visible_in_tree(), l.quad_size, l.sort_order, v.size,
+				v.render_target_update_mode, l.global_position.snapped(Vector3.ONE * 0.001)]
+	print(s)
 
 
 func _hits_panel(c: XRController3D) -> bool:
@@ -1582,7 +1604,7 @@ func back() -> void:
 ## Move between levels. The zoom pivots on `at`: into a card, the cards grow around it
 ## and the box unfolds where the card was; back, the reverse.
 func _go_level(key: String, at: Vector2, zoom_in: bool) -> void:
-	if key == _level and _zoom_t >= 1.0:
+	if key == _level and _zoom_t >= 1.0 and _zoom_in == (key != ""):
 		return
 	_level = key
 	_more = false
