@@ -1485,7 +1485,7 @@ func _tick_orbit() -> void:
 		orbit.visible = false
 		return
 	orbit.visible = true
-	orbit.update(ground.world_to_fractal(hit), ground.julia, ground.julia_c, ground.formula,
+	orbit.update(ground.world_to_fractal64(hit), ground.julia, ground._jx, ground._jy, ground.formula,
 		ground.fractal_dir_to_world, hit)
 
 

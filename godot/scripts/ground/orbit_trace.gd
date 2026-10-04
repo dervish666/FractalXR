@@ -18,7 +18,8 @@ const SCALE_M := 0.22           # metres per fractal unit; |z| <= 4 keeps it wit
 const RISE_M := 0.004           # height gained per step
 const BASE_M := 0.75            # the constellation's floor, above the map
 const TOP_M := 1.5              # never higher than this
-const REACH_M := 1.2            # world radius around the spot, for the culling bounds
+const REACH_M := 1.2            # radius around the spot, for the culling bounds. The node
+                                # sits on the spot, so the bounds travel with it.
 
 var point_count := 0
 var _beads: MultiMeshInstance3D
@@ -100,10 +101,18 @@ func _colour(t: float) -> Color:
 ## `formula` indexes FractalGround.FORMULA_NAMES and mirrors iterate() in ground.glsl;
 ## keep the two in step.
 static func iterate(p: Vector2, julia: bool, julia_c: Vector2, formula := 0) -> PackedVector2Array:
-	var zx: float = p.x if julia else 0.0
-	var zy: float = p.y if julia else 0.0
-	var cx: float = julia_c.x if julia else p.x
-	var cy: float = julia_c.y if julia else p.y
+	return iterate64(p.x, p.y, julia, julia_c.x, julia_c.y, formula)
+
+
+## iterate() with the start point and Julia constant as 64-bit floats. A Vector2 is
+## float32: past stage 18 its step is a metre and a half of floor, so the orbit drawn was
+## the one of a point up to that far from the hand, and hopped rather than followed it.
+## The points come back as float32, which is fine: they are drawn at SCALE_M a unit.
+static func iterate64(px: float, py: float, julia: bool, jx: float, jy: float, formula := 0) -> PackedVector2Array:
+	var zx: float = px if julia else 0.0
+	var zy: float = py if julia else 0.0
+	var cx: float = jx if julia else px
+	var cy: float = jy if julia else py
 	var out := PackedVector2Array()
 	for k in MAX_POINTS:
 		var nx: float
@@ -141,10 +150,15 @@ static func iterate(p: Vector2, julia: bool, julia_c: Vector2, formula := 0) -> 
 	return out
 
 
-## Draw the orbit of the fractal point `p` over the world spot `hand_xz`. `dir_to_world`
-## turns a fractal-space offset into a world direction (the map's rotation, no zoom).
-func update(p: Vector2, julia: bool, julia_c: Vector2, formula: int, dir_to_world: Callable, hand_xz: Vector2) -> void:
-	var orbit := iterate(p, julia, julia_c, formula)
+## Draw the orbit of the fractal point `pf` (x, y as 64-bit floats) over the world spot
+## `hand_xz`. `dir_to_world` turns a fractal-space offset into a world direction (the map's
+## rotation, no zoom). The node moves to the spot and the beads are placed relative to it:
+## with the node at the origin, the fixed culling box sat round the middle of the room and
+## the trace vanished whenever you pointed more than a metre or so away.
+func update(pf: PackedFloat64Array, julia: bool, jx: float, jy: float, formula: int, dir_to_world: Callable, hand_xz: Vector2) -> void:
+	var orbit := iterate64(pf[0], pf[1], julia, jx, jy, formula)
+	var p := Vector2(pf[0], pf[1])
+	position = Vector3(hand_xz.x, 0.0, hand_xz.y)
 	var n := orbit.size()
 	point_count = n
 	var mm := _beads.multimesh
@@ -155,10 +169,9 @@ func update(p: Vector2, julia: bool, julia_c: Vector2, formula: int, dir_to_worl
 		return
 	var escaped := n < MAX_POINTS
 	# The first link rises from the spot itself, on the floor, to the constellation.
-	var prev := Vector3(hand_xz.x, 0.03, hand_xz.y)
+	var prev := Vector3(0.0, 0.03, 0.0)
 	for k in n:
-		var d: Vector2 = dir_to_world.call((orbit[k] - p) * SCALE_M)
-		var w := hand_xz + d
+		var w: Vector2 = dir_to_world.call((orbit[k] - p) * SCALE_M)
 		var t := float(k) / float(maxi(n - 1, 1))
 		var y := minf(BASE_M + RISE_M * float(k), TOP_M)
 		var pos := Vector3(w.x, y, w.y)

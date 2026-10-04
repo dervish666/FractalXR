@@ -339,6 +339,13 @@ func world_to_fractal(w: Vector2) -> Vector2:
 	return Vector2(_cx + o.x, _cy + o.y)
 
 
+## world_to_fractal() without the float32 round trip: [x, y] in 64-bit floats, for the
+## orbit trace, which iterates the point under the hand and at depth needs it to the texel.
+func world_to_fractal64(w: Vector2) -> PackedFloat64Array:
+	var o := _m.basis_xform(w) / wpu
+	return PackedFloat64Array([_cx + o.x, _cy + o.y])
+
+
 func fractal_to_world(f: Vector2) -> Vector2:
 	return _m.basis_xform_inv(Vector2((f.x - _cx) * wpu, (f.y - _cy) * wpu))
 
