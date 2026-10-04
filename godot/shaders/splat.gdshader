@@ -169,7 +169,11 @@ void vertex() {
 
 	vec3 vc = (MODELVIEW_MATRIX * vec4(p, 1.0)).xyz;
 	float mscale = length(MODELVIEW_MATRIX[0].xyz);   // carry the cloud's own scale
-	float r = splat_radius * perf_scale * mscale;
+	// Local (model-space) radius for the surface axes, which MODELVIEW scales on the way to
+	// view space; the isotropic axes are written in view space, so they take mscale here.
+	// Multiplying mscale into both applied the cloud's scale twice to a bulb's splats.
+	float r_local = splat_radius * perf_scale;
+	float r = r_local * mscale;
 
 	// --- the splat's three axes, in VIEW space -----------------------------------
 	// Together they are the RS matrix of 3D Gaussian splatting: cov3D = RS * RS^T.
@@ -184,8 +188,8 @@ void vertex() {
 		vec3 t1 = normalize(cross(nl, abs(nl.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
 		vec3 t2 = cross(nl, t1);
 
-		float l1 = r;
-		float l2 = r;
+		float l1 = r_local;
+		float l2 = r_local;
 		if (use_bake) {
 			vec4 bk = texelFetch(bake_tex, ivec2(pid % tex_size, pid / tex_size), 0);
 			// Rotate the frame into the neighbourhood's own principal axes.
@@ -193,7 +197,7 @@ void vertex() {
 			vec3 e2 = t2 * bk.x - t1 * bk.y;
 			t1 = e1;
 			t2 = e2;
-			float bs = bake_scale * mscale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
+			float bs = bake_scale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
 			l1 = bk.z * bs;
 			l2 = bk.w * bs;
 		} else if (density_strength > 0.01) {

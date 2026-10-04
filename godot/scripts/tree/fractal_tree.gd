@@ -4,35 +4,121 @@ class_name FractalTree
 ## A fractal tree as real geometry: a MultiMesh of tapered cylinders grown by recursive
 ## branching, and a second MultiMesh of glowing leaf discs at the tips. Everything that
 ## moves is in the shaders (tree.gdshader, tree_leaf.gdshader): growth from the base up
-## over GROW_S seconds, and a wind field that bends the whole tree coherently by height,
+## over grow_s seconds, and a wind field that bends the whole tree coherently by height,
 ## so the script builds once per (shape, depth, seed) and then only feeds time and wind.
 ##
-## Sits as a child of the ParticleCloud so grab, scale and spin apply unchanged.
+## The hero tree sits as a child of the ParticleCloud so grab, scale and spin apply
+## unchanged. Forest trees (forest.gd) are the same class with variety, a size and a
+## branch cap set before build().
 
-const GROW_S := 6.0            # seconds from seed to full canopy
-const MAX_BRANCHES := 80000     # a Quest draws this many 6-sided cylinders comfortably
+const GROW_S := 6.0            # seconds from seed to full canopy (oak; species may differ)
+const MAX_BRANCHES := 80000     # the hero's safety cap: a Quest draws this many cylinders
 
 ## Shape presets. `branches` children per node, `angle` tilt from the parent in radians,
 ## `ratio` length per level, `radius_ratio` thickness per level, `twist` azimuth step
 ## between siblings, `jitter` randomness 0..1, `droop` bends children toward the ground
 ## (negative reaches up), `apical` keeps a leader growing straight up the trunk with a
 ## whorl of `branches` side branches at every level, each of which then splits
-## `side_branches` ways (conifers), `height_m` the finished tree's height.
+## `side_branches` ways (conifers), `height_m` the finished hero tree's height.
+##
+## Optional keys, all off by default so the first four species build exactly what they
+## always did:
+##   angle_end   tilt at the outermost level; the tilt runs from `angle` to this (acacia)
+##   gnarl       random kink added to every child's direction (thorn, sakura)
+##   phyllo      fixed azimuth step per level instead of a random start (spiral, crystal)
+##   monopodial  every branch keeps a leader, not just the trunk (spiral)
+##   bare        trunk segments with no side branches before the crown (palm, baobab)
+##   bare_ratio, bare_rr, lean   length and radius per bare segment, curve of the trunk
+##   pinnate     past the crown, each node is a continuation plus two short leaflets (palm)
+##   leaf_shape  0 disc, 1 blossom, 2 needle star, 3 sparkle (tree_leaf.gdshader)
+##   leaf_tint, leaf_mix, leaf_hue   pull the theme colour toward a species colour, or turn
+##               its hue (radians); bark_tint, bark_mix, bark_hue the same for wood
+##   leaf_gain   additive brightness (the shader default is 0.25)
+##   grow_s      seconds to full canopy
 const SHAPES := {
 	"oak": {"branches": 3, "depth": 9, "angle": 0.55, "ratio": 0.74, "radius_ratio": 0.68,
 		"twist": 0.9, "jitter": 0.5, "droop": -0.15, "apical": false, "height_m": 4.8,
-		"trunk_r": 0.10, "leaf_size": 0.09},
+		"trunk_r": 0.10, "leaf_size": 0.09,
+		"leaf_tint": Color(0.55, 0.85, 0.35), "leaf_mix": 0.0},
 	"pine": {"branches": 5, "side_branches": 3, "depth": 9, "angle": 1.15, "ratio": 0.5,
 		"radius_ratio": 0.5, "twist": 0.6, "jitter": 0.3, "droop": 0.35, "apical": true,
-		"height_m": 6.0, "trunk_r": 0.09, "leaf_size": 0.05},
+		"height_m": 6.0, "trunk_r": 0.09, "leaf_size": 0.05,
+		"leaf_shape": 2, "leaf_gain": 0.3,
+		"leaf_tint": Color(0.25, 0.7, 0.5), "leaf_mix": 0.55, "grow_s": 7.0},
 	"willow": {"branches": 3, "depth": 9, "angle": 0.7, "ratio": 0.78, "radius_ratio": 0.66,
 		"twist": 1.2, "jitter": 0.6, "droop": 0.55, "apical": false, "height_m": 4.2,
-		"trunk_r": 0.11, "leaf_size": 0.06},
+		"trunk_r": 0.11, "leaf_size": 0.06,
+		"leaf_tint": Color(0.75, 0.9, 0.45), "leaf_mix": 0.5},
 	"coral": {"branches": 4, "depth": 8, "angle": 0.9, "ratio": 0.66, "radius_ratio": 0.62,
 		"twist": 0.5, "jitter": 0.7, "droop": -0.3, "apical": false, "height_m": 3.2,
-		"trunk_r": 0.13, "leaf_size": 0.12},
+		"trunk_r": 0.13, "leaf_size": 0.12,
+		"leaf_tint": Color(1.0, 0.45, 0.4), "leaf_mix": 0.55, "bark_hue": 0.5},
+	# Silver birch: slender, a golden-angle twist, fine twigs that hang at the ends.
+	"birch": {"branches": 2, "depth": 13, "angle": 0.42, "ratio": 0.8, "radius_ratio": 0.7,
+		"twist": 2.4, "jitter": 0.35, "droop": 0.45, "apical": false, "height_m": 5.4,
+		"trunk_r": 0.06, "leaf_size": 0.045,
+		"leaf_tint": Color(0.95, 0.85, 0.35), "leaf_mix": 0.65,
+		"bark_tint": Color(0.95, 0.93, 0.88), "bark_mix": 0.6, "grow_s": 5.5},
+	# Lombardy poplar: every fork narrow and pulled hard upward. A green flame.
+	"poplar": {"branches": 2, "depth": 12, "angle": 0.26, "ratio": 0.82, "radius_ratio": 0.7,
+		"twist": 2.4, "jitter": 0.35, "droop": -0.55, "apical": false, "height_m": 6.5,
+		"trunk_r": 0.07, "leaf_size": 0.045,
+		"leaf_tint": Color(0.5, 0.95, 0.3), "leaf_mix": 0.6, "grow_s": 5.0},
+	# Palm: a curved bare trunk, then a crown of pinnate fronds that arc over and droop.
+	"palm": {"branches": 14, "depth": 16, "angle": 0.55, "ratio": 0.86, "radius_ratio": 0.45,
+		"twist": 0.0, "jitter": 0.25, "droop": 1.0, "apical": false, "height_m": 5.0,
+		"trunk_r": 0.07, "leaf_size": 0.12,
+		"bare": 6, "bare_ratio": 0.92, "bare_rr": 0.94, "lean": 0.07, "pinnate": true,
+		"leaf_tint": Color(0.55, 0.9, 0.35), "leaf_mix": 0.6,
+		"bark_tint": Color(0.7, 0.55, 0.35), "bark_mix": 0.45, "grow_s": 7.0},
+	# Acacia: steep forks low, wide flat spread high. An umbrella on a savanna.
+	"acacia": {"branches": 2, "depth": 12, "angle": 0.28, "angle_end": 1.6, "ratio": 0.82,
+		"radius_ratio": 0.7, "twist": 1.6, "jitter": 0.35, "droop": -0.05, "apical": false,
+		"height_m": 4.0, "trunk_r": 0.09, "leaf_size": 0.06, "gnarl": 0.15,
+		"leaf_tint": Color(0.75, 0.8, 0.3), "leaf_mix": 0.55, "grow_s": 6.5},
+	# Cherry blossom: gnarled and spreading, pink five-petal flowers.
+	"sakura": {"branches": 3, "depth": 9, "angle": 0.8, "ratio": 0.71, "radius_ratio": 0.64,
+		"twist": 1.1, "jitter": 0.55, "droop": 0.08, "apical": false, "height_m": 3.8,
+		"trunk_r": 0.12, "leaf_size": 0.1, "gnarl": 0.3,
+		"leaf_shape": 1, "leaf_gain": 0.32,
+		"leaf_tint": Color(1.0, 0.62, 0.8), "leaf_mix": 0.85,
+		"bark_tint": Color(0.35, 0.2, 0.22), "bark_mix": 0.35},
+	# Baobab: a barrel trunk, then a short stubby crown.
+	"baobab": {"branches": 5, "depth": 7, "angle": 0.8, "ratio": 0.5, "radius_ratio": 0.5,
+		"twist": 0.9, "jitter": 0.5, "droop": -0.2, "apical": false, "height_m": 3.6,
+		"trunk_r": 0.34, "leaf_size": 0.08,
+		"bare": 2, "bare_ratio": 0.9, "bare_rr": 0.82,
+		"leaf_tint": Color(0.6, 0.8, 0.3), "leaf_mix": 0.5,
+		"bark_tint": Color(0.75, 0.65, 0.6), "bark_mix": 0.4, "grow_s": 8.5},
+	# Spiral: every branch keeps a leader and throws one side shoot per level at the golden
+	# angle. A fern-like, very regular fractal.
+	"spiral": {"branches": 2, "depth": 12, "angle": 0.95, "ratio": 0.62, "radius_ratio": 0.6,
+		"twist": 0.0, "jitter": 0.0, "droop": 0.1, "apical": false, "monopodial": true,
+		"leader_ratio": 0.86, "phyllo": 2.39996, "height_m": 3.4,
+		"trunk_r": 0.07, "leaf_size": 0.05,
+		"leaf_hue": 2.1, "leaf_mix": 0.0, "bark_hue": 1.2, "grow_s": 7.5},
+	# Crystal: three-fold, no randomness, sixty degrees of turn per level. Frost on glass.
+	"crystal": {"branches": 3, "depth": 9, "angle": 0.62, "ratio": 0.64, "radius_ratio": 0.6,
+		"twist": 0.0, "jitter": 0.0, "droop": 0.0, "apical": false, "phyllo": 1.0472,
+		"height_m": 3.0, "trunk_r": 0.08, "leaf_size": 0.06,
+		"leaf_shape": 3, "leaf_gain": 0.34,
+		"leaf_tint": Color(0.65, 0.9, 1.0), "leaf_mix": 0.75,
+		"bark_tint": Color(0.7, 0.85, 1.0), "bark_mix": 0.5, "grow_s": 5.0},
+	# Thorn: crooked, kinked, dark red berries.
+	"thorn": {"branches": 2, "depth": 12, "angle": 0.85, "ratio": 0.8, "radius_ratio": 0.7,
+		"twist": 1.7, "jitter": 0.8, "droop": 0.05, "apical": false, "height_m": 3.4,
+		"trunk_r": 0.08, "leaf_size": 0.04, "gnarl": 0.6,
+		"leaf_tint": Color(0.95, 0.25, 0.3), "leaf_mix": 0.75,
+		"bark_tint": Color(0.3, 0.22, 0.25), "bark_mix": 0.4},
 }
-const SHAPE_NAMES := ["oak", "pine", "willow", "coral"]
+## Append only: the SPECIES tile and the forest index species by position.
+const SHAPE_NAMES := ["oak", "pine", "willow", "coral", "birch", "poplar", "palm", "acacia",
+	"sakura", "baobab", "spiral", "crystal", "thorn"]
+
+## Leaves shown per LOD step. A forest tree's leaves are shuffled at build, so any prefix
+## of the buffer is a fair sample of the whole canopy.
+const LEAF_LOD := [1.0, 0.7, 0.45, 0.25]
+const LOD_MAX := 3
 
 var shape := "oak"
 var depth_delta := 0
@@ -43,12 +129,35 @@ var branch_count := 0
 var leaf_count := 0
 var height_m := 0.0
 var grow_t := 0.0
+## Seconds to full canopy, and the clock's direction: negative withers the tree back
+## into the ground (leaves close first, then twigs retract toward the trunk).
+var grow_s := GROW_S
+var grow_rate := 1.0
+
+## Forest controls, set before build(). The hero leaves all of these at their defaults.
+var variety := 0.0              # 0 = the species exactly; 1 = per-seed shape and colour
+var target_height := 0.0        # metres; 0 = the species height
+var branch_cap := MAX_BRANCHES
+var whole_levels := false       # cap by thinning the outermost level, not a BFS prefix
+var lod_ready := false          # shuffle leaves so a buffer prefix is a fair sample
+var hand_planted := false
+var sprout_delay := 0.0       # seconds after a regrow before this tree starts
+var built := false
+var wind_ref: Node3D = null     # whose x axis is the wind; null = the tree's own (hero)
+
+## Instance index where each recursion level ends; level_ends[i] = branches in levels 0..i.
+var level_ends := PackedInt32Array()
+var lod := 0
 
 var _branches: MultiMeshInstance3D
 var _leaves: MultiMeshInstance3D
 var _branch_mat: ShaderMaterial
 var _leaf_mat: ShaderMaterial
 var _rng := RandomNumberGenerator.new()
+var _sway_gain := 1.0
+
+static var _cyl: CylinderMesh
+static var _quad: QuadMesh
 
 
 func _init() -> void:
@@ -57,6 +166,21 @@ func _init() -> void:
 	_branch_mat.shader = load("res://shaders/tree.gdshader")
 	_leaf_mat = ShaderMaterial.new()
 	_leaf_mat.shader = load("res://shaders/tree_leaf.gdshader")
+	# One cylinder and one quad for every tree. rings = 0: a branch is two vertex rings
+	# and 12 triangles. A middle ring (the old rings = 1) doubled the triangles to bend a
+	# segment under wind, but the sway is quadratic in height over a whole tree, and across
+	# one segment the chord misses the curve by well under a millimetre.
+	if _cyl == null:
+		_cyl = CylinderMesh.new()
+		_cyl.radial_segments = 6
+		_cyl.rings = 0
+		_cyl.top_radius = 1.0
+		_cyl.bottom_radius = 1.0
+		_cyl.height = 1.0
+		_cyl.cap_top = false
+		_cyl.cap_bottom = false
+		_quad = QuadMesh.new()
+		_quad.size = Vector2(1.0, 1.0)
 	_branches = MultiMeshInstance3D.new()
 	_branches.name = "Branches"
 	_branches.material_override = _branch_mat
@@ -65,15 +189,7 @@ func _init() -> void:
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
 	mm.use_custom_data = true
-	var cyl := CylinderMesh.new()
-	cyl.radial_segments = 6
-	cyl.rings = 1
-	cyl.top_radius = 1.0
-	cyl.bottom_radius = 1.0
-	cyl.height = 1.0
-	cyl.cap_top = false
-	cyl.cap_bottom = false
-	mm.mesh = cyl
+	mm.mesh = _cyl
 	_branches.multimesh = mm
 	add_child(_branches)
 
@@ -85,12 +201,11 @@ func _init() -> void:
 	lm.transform_format = MultiMesh.TRANSFORM_3D
 	lm.use_colors = true
 	lm.use_custom_data = true
-	var quad := QuadMesh.new()
-	quad.size = Vector2(1.0, 1.0)
-	lm.mesh = quad
+	lm.mesh = _quad
 	_leaves.multimesh = lm
 	add_child(_leaves)
 	# Displaced and grown in the shader; the flat bounds would cull a swaying canopy.
+	# build() replaces this with the tree's own extent plus the sway.
 	var aabb := AABB(Vector3(-8.0, -0.5, -8.0), Vector3(16.0, 10.0, 16.0))
 	_branches.custom_aabb = aabb
 	_leaves.custom_aabb = aabb
@@ -98,89 +213,188 @@ func _init() -> void:
 
 
 func effective_depth() -> int:
-	return clampi(int(SHAPES[shape]["depth"]) + depth_delta, 0, 12)
+	return clampi(int(SHAPES[shape]["depth"]) + depth_delta, 0, 16)
+
+
+## The species table entry with every optional key filled, and this seed's variety
+## applied. Variety draws from its own generator, so the hero (variety 0) consumes
+## exactly the random numbers it always did and a seed still names the same tree.
+func _params() -> Dictionary:
+	var p: Dictionary = (SHAPES[shape] as Dictionary).duplicate()
+	var defaults := {"side_branches": p["branches"], "angle_end": p["angle"], "gnarl": 0.0,
+		"phyllo": 0.0, "monopodial": false, "leader_ratio": 0.82, "leader_rr": 0.85,
+		"bare": 0, "bare_ratio": 1.0, "bare_rr": 0.92, "lean": 0.0, "pinnate": false,
+		"leaf_shape": 0, "leaf_gain": 0.25, "leaf_tint": Color(1, 1, 1), "leaf_mix": 0.0,
+		"leaf_hue": 0.0, "bark_tint": Color(1, 1, 1), "bark_mix": 0.0, "bark_hue": 0.0,
+		"grow_s": GROW_S}
+	for key in defaults:
+		if not p.has(key):
+			p[key] = defaults[key]
+	p["lean_az"] = 0.0
+	if variety > 0.0:
+		var v := RandomNumberGenerator.new()
+		v.seed = seed_value * 31337 + SHAPE_NAMES.find(shape) * 17 + 5
+		var s := func(amount: float) -> float: return variety * amount * (v.randf() * 2.0 - 1.0)
+		var a_scale: float = 1.0 + s.call(0.18)
+		p["angle"] = float(p["angle"]) * a_scale
+		p["angle_end"] = float(p["angle_end"]) * a_scale
+		p["ratio"] = clampf(float(p["ratio"]) * (1.0 + s.call(0.05)), 0.3, 0.9)
+		p["droop"] = float(p["droop"]) + s.call(0.15)
+		p["twist"] = float(p["twist"]) + s.call(0.4)
+		p["jitter"] = clampf(float(p["jitter"]) + s.call(0.1), 0.0, 1.0)
+		p["height_m"] = float(p["height_m"]) * (1.0 + s.call(0.15))
+		p["leaf_size"] = float(p["leaf_size"]) * (1.0 + s.call(0.15))
+		p["leaf_hue"] = float(p["leaf_hue"]) + s.call(0.3)
+		p["bark_hue"] = float(p["bark_hue"]) + s.call(0.15)
+		p["grow_s"] = float(p["grow_s"]) * (1.0 + s.call(0.2))
+		p["lean_az"] = v.randf() * TAU
+		# One more or one fewer limb per fork changes a species' density, never its kind:
+		# a three-way oak never drops to a two-way fork.
+		var nb := int(p["branches"])
+		if v.randf() < 0.25 * variety and nb >= 3 and not bool(p["pinnate"]):
+			p["branches"] = nb + (1 if nb == 3 or v.randf() < 0.5 else -1)
+	return p
 
 
 ## Build the geometry for the current shape, depth and seed. Returns the branch count.
 ## Pure: the same inputs give the same tree, so a seed is a name for a tree.
 func build() -> int:
-	var sp: Dictionary = SHAPES[shape]
+	var sp := _params()
 	var depth := effective_depth()
 	_rng.seed = seed_value * 7919 + depth * 131 + SHAPE_NAMES.find(shape)
 	var branches: int = sp["branches"]
 	var angle: float = sp["angle"]
+	var angle_end: float = sp["angle_end"]
 	var ratio: float = sp["ratio"]
 	var rr: float = sp["radius_ratio"]
 	var twist: float = sp["twist"]
 	var jitter: float = sp["jitter"]
 	var droop: float = sp["droop"]
 	var apical: bool = sp["apical"]
-	var side_branches: int = int(sp.get("side_branches", branches))
+	var side_branches: int = int(sp["side_branches"])
 	var trunk_r: float = sp["trunk_r"]
+	var gnarl: float = sp["gnarl"]
+	var phyllo: float = sp["phyllo"]
+	var monopodial: bool = sp["monopodial"]
+	var leader_ratio: float = sp["leader_ratio"]
+	var leader_rr: float = sp["leader_rr"]
+	var bare: int = sp["bare"]
+	var bare_ratio: float = sp["bare_ratio"]
+	var bare_rr: float = sp["bare_rr"]
+	var pinnate: bool = sp["pinnate"]
+	var lean_axis := Vector3.RIGHT.rotated(Vector3.UP, float(sp["lean_az"]))
+	var lean: float = sp["lean"]
+	grow_s = float(sp["grow_s"])
+	built = true
+	lod = 0
 	if depth <= 0:
 		_branches.multimesh.instance_count = 0
 		_leaves.multimesh.instance_count = 0
 		branch_count = 0
 		leaf_count = 0
+		level_ends = PackedInt32Array()
 		return 0
 
-	# Segments: [pos, dir, len, r, level, dist, on_trunk]. Breadth-first with a cursor
-	# (pop_front is O(n) per call), so when the cap bites it drops the deepest level
-	# evenly across the tree instead of keeping one fully explored strand.
+	# Segments: [pos, dir, len, r, level, dist, leader, terminal]. Breadth-first with a
+	# cursor (pop_front is O(n) per call), so the hero's cap drops the deepest level evenly
+	# across the tree instead of keeping one fully explored strand. A forest tree caps
+	# by whole levels instead: at each level boundary the queue holds exactly the next
+	# level, and if it does not fit, a uniform sample of it becomes the outermost twigs.
 	var segs: Array = []
-	var queue: Array = [[Vector3.ZERO, Vector3.UP, 1.0, trunk_r, 0, 0.0, true]]
+	var queue: Array = [[Vector3.ZERO, Vector3.UP, 1.0, trunk_r, 0, 0.0, true, false]]
 	var head := 0
+	var cur_level := 0
 	while head < queue.size():
+		if whole_levels and int(queue[head][4]) != cur_level:
+			cur_level = int(queue[head][4])
+			var remaining := queue.size() - head
+			if segs.size() + remaining > branch_cap:
+				var room := branch_cap - segs.size()
+				if room <= 0:
+					depth = cur_level
+				else:
+					segs.append_array(_sample_level(queue, head, room))
+					depth = cur_level + 1
+				break
 		var s: Array = queue[head]
 		head += 1
 		segs.append(s)
-		if segs.size() >= MAX_BRANCHES:
+		if segs.size() >= branch_cap:
 			break
 		var level: int = s[4]
-		if level + 1 >= depth:
+		if level + 1 >= depth or bool(s[7]):
 			continue
 		var tip: Vector3 = s[0] + s[1] * s[2]
 		var pdir: Vector3 = s[1]
 		var on_trunk: bool = s[6]
+		# A bare trunk: one segment per level, curving gently, no side branches.
+		if level + 1 < bare:
+			var bd := pdir.rotated(lean_axis, lean) if lean != 0.0 else pdir
+			queue.append([tip, bd, s[2] * bare_ratio, s[3] * bare_rr, level + 1,
+				s[5] + s[2], true, false])
+			continue
 		var side := pdir.cross(Vector3.RIGHT if absf(pdir.x) < 0.9 else Vector3.FORWARD).normalized()
+		# A frond: the continuation droops on, two short leaflets fan out flat to each side.
+		if pinnate and bare > 0 and level >= bare:
+			var flat := pdir.cross(Vector3.UP)
+			if flat.length_squared() < 1e-4:
+				flat = side
+			flat = flat.normalized()
+			var cd := (pdir + Vector3.DOWN * droop * 0.12).normalized()
+			var cl: float = s[2] * ratio * (1.0 + jitter * 0.3 * (_rng.randf() - 0.5))
+			queue.append([tip, cd, cl, s[3] * 0.8, level + 1, s[5] + s[2], false, false])
+			for sgn: float in [-1.0, 1.0]:
+				var ld := (pdir * 0.45 + flat * sgn + Vector3.DOWN * 0.25).normalized()
+				queue.append([tip, ld, s[2] * 1.6 * (1.0 + jitter * 0.4 * (_rng.randf() - 0.5)),
+					s[3] * 0.5, level + 1, s[5] + s[2], false, true])
+			continue
 		# A conifer's whorl only happens on the trunk; its side branches split modestly.
 		var n := branches if (not apical or on_trunk) else side_branches
 		if jitter > 0.0 and _rng.randf() < jitter * 0.3:
 			n += 1 if _rng.randf() < 0.5 else -1
 		n = maxi(n, 1)
-		var az0 := _rng.randf() * TAU
+		var az0 := float(level) * phyllo if phyllo != 0.0 else _rng.randf() * TAU
 		var level_frac := float(level + 1) / float(depth)
+		var base_angle := lerpf(angle, angle_end, level_frac)
 		for k in n:
-			var leader := apical and on_trunk and k == 0
-			var tilt := angle * (1.0 + jitter * (_rng.randf() - 0.5))
+			var leader := (monopodial or (apical and on_trunk)) and k == 0
+			var tilt := base_angle * (1.0 + jitter * (_rng.randf() - 0.5))
 			var lr := ratio
 			if leader:
-				tilt = angle * 0.12 * jitter * (_rng.randf() - 0.5)
-				lr = 0.82
+				tilt = base_angle * 0.12 * jitter * (_rng.randf() - 0.5)
+				lr = leader_ratio
 			var az := az0 + twist * float(k) + float(k) * TAU / float(n) + jitter * 0.4 * (_rng.randf() - 0.5)
 			var d := pdir.rotated(side, tilt).rotated(pdir, az)
 			# Droop: pull toward the ground more at the outer levels (willow), or lift.
 			d = (d + Vector3.DOWN * droop * level_frac * (0.4 if leader else 1.0)).normalized()
+			if gnarl > 0.0:
+				d = (d + Vector3(_rng.randf() - 0.5, _rng.randf() - 0.5, _rng.randf() - 0.5) * gnarl).normalized()
 			var ln: float = s[2] * lr * (1.0 + jitter * 0.4 * (_rng.randf() - 0.5))
-			var r: float = s[3] * (0.85 if leader else rr)
-			queue.append([tip, d, ln, r, level + 1, s[5] + s[2], leader])
+			var r: float = s[3] * (leader_rr if leader else rr)
+			queue.append([tip, d, ln, r, level + 1, s[5] + s[2], leader, false])
 
-	# Normalise so the tallest point sits at height_m, radii and lengths together.
+	# Normalise so the tallest point sits at the target height, radii and lengths together.
 	var top := 0.0
 	for s in segs:
 		top = maxf(top, (s[0] + s[1] * s[2]).y)
-	var k := float(sp["height_m"]) / maxf(top, 1e-3)
-	height_m = float(sp["height_m"])
+	var species_h: float = sp["height_m"]
+	height_m = target_height if target_height > 0.0 else species_h
+	var k := height_m / maxf(top, 1e-3)
 	var total_dist := 0.0
 	for s in segs:
 		total_dist = maxf(total_dist, s[5] + s[2])
+	# A small tree keeps leaves that read at its size without turning into confetti.
+	var leaf_scale := 1.0 if is_equal_approx(height_m, species_h) else pow(height_m / species_h, 0.6)
 
 	# Branch buffer: 12 transform floats, 4 colour, 4 custom per instance.
 	var n_b := segs.size()
 	var buf := PackedFloat32Array()
 	buf.resize(n_b * 20)
 	var tips: Array = []
-	var leaf_size: float = sp["leaf_size"]
+	var leaf_size: float = float(sp["leaf_size"]) * leaf_scale
+	var lo := Vector3.ZERO
+	var hi := Vector3.ZERO
+	level_ends = PackedInt32Array()
 	for i in n_b:
 		var s: Array = segs[i]
 		var pos: Vector3 = s[0] * k
@@ -188,6 +402,13 @@ func build() -> int:
 		var ln: float = s[2] * k
 		var r: float = s[3] * k
 		var level: int = s[4]
+		var terminal: bool = s[7]
+		while level_ends.size() <= level:
+			level_ends.append(i)
+		level_ends[level] = i + 1
+		var end := pos + dir * ln
+		lo = lo.min(end)
+		hi = hi.max(end)
 		# Basis: y along the branch, scaled to (r, len, r); the cylinder is centred so
 		# the origin moves half a length up the branch.
 		var yv := dir
@@ -208,18 +429,31 @@ func build() -> int:
 		# tapering a trunk segment to rr instead ended it at half the leader's base, and the
 		# pine read as stacked cones.
 		var taper: float = 0.35
-		if level + 1 < depth:
-			taper = 0.85 if apical and bool(s[6]) else rr
+		if level + 1 < depth and not terminal:
+			if level + 1 < bare:
+				taper = bare_rr
+			elif pinnate and bare > 0 and level >= bare:
+				taper = 0.8
+			else:
+				taper = leader_rr if (apical or monopodial) and bool(s[6]) else rr
 		buf[o + 16] = birth; buf[o + 17] = taper; buf[o + 18] = level_frac
 		buf[o + 19] = _rng.randf() * TAU
-		if level + 1 >= depth or (level + 2 >= depth and _rng.randf() < 0.5):
-			tips.append([pos + dir * ln, birth, level_frac, r])
+		if terminal or level + 1 >= depth or (level + 2 >= depth and _rng.randf() < 0.5):
+			tips.append([end, birth, level_frac, r])
 	var mm := _branches.multimesh
 	mm.instance_count = 0
 	mm.instance_count = n_b
 	if n_b > 0:
 		mm.buffer = buf
+	mm.visible_instance_count = -1
 	branch_count = n_b
+
+	if lod_ready:
+		for i in range(tips.size() - 1, 0, -1):
+			var j := _rng.randi_range(0, i)
+			var t: Variant = tips[i]
+			tips[i] = tips[j]
+			tips[j] = t
 
 	# Leaves: a disc at every tip, a couple more scattered along the outermost branches.
 	var n_l := tips.size()
@@ -241,17 +475,100 @@ func build() -> int:
 	lm.instance_count = n_l
 	if n_l > 0:
 		lm.buffer = lbuf
+	lm.visible_instance_count = -1
 	leaf_count = n_l
 	_leaves.visible = leaves_on
+
+	# Bounds: the built extent, plus the sway (at most 0.12 m x wind at the top) and a leaf.
+	var pad := 0.25 + leaf_size * 1.3 + trunk_r * k
+	var box := AABB(lo, hi - lo).grow(pad)
+	_branches.custom_aabb = box
+	_leaves.custom_aabb = box
+
+	# Wind sway is in metres at the top, so a knee-high tree would whip about at the same
+	# amplitude as a 5 m one. The hero (full species height) keeps exactly 1.0.
+	_sway_gain = 1.0 if is_equal_approx(height_m, species_h) else clampf(sqrt(height_m / species_h), 0.3, 1.0)
 	for m in [_branch_mat, _leaf_mat]:
 		m.set_shader_parameter("tree_height", height_m)
-		m.set_shader_parameter("grow_s", GROW_S)
+		m.set_shader_parameter("grow_s", grow_s)
+		m.set_shader_parameter("sway_gain", _sway_gain)
+	_branch_mat.set_shader_parameter("bark_tint", _rgb(sp["bark_tint"]))
+	_branch_mat.set_shader_parameter("bark_mix", float(sp["bark_mix"]))
+	_branch_mat.set_shader_parameter("bark_hue", float(sp["bark_hue"]))
+	_leaf_mat.set_shader_parameter("leaf_tint", _rgb(sp["leaf_tint"]))
+	_leaf_mat.set_shader_parameter("leaf_mix", float(sp["leaf_mix"]))
+	_leaf_mat.set_shader_parameter("leaf_hue", float(sp["leaf_hue"]))
+	_leaf_mat.set_shader_parameter("leaf_shape", float(sp["leaf_shape"]))
+	_leaf_mat.set_shader_parameter("leaf_gain", float(sp["leaf_gain"]))
 	grow_t = 0.0
 	return n_b
 
 
+## A uniform sample of `room` segments from the level waiting in queue[head..], kept in
+## queue order so the levels stay contiguous for LOD. Every kept segment is a tip.
+func _sample_level(queue: Array, head: int, room: int) -> Array:
+	var n := queue.size() - head
+	var idx: Array[int] = []
+	idx.resize(n)
+	for i in n:
+		idx[i] = i
+	for i in room:
+		var j := _rng.randi_range(i, n - 1)
+		var t := idx[i]
+		idx[i] = idx[j]
+		idx[j] = t
+	var pick := idx.slice(0, room)
+	pick.sort()
+	var out: Array = []
+	for i in pick:
+		var s: Array = (queue[head + i] as Array).duplicate()
+		s[7] = true
+		out.append(s)
+	return out
+
+
+static func _rgb(c: Color) -> Vector3:
+	return Vector3(c.r, c.g, c.b)
+
+
+## The colour a species announces itself with (the planting ring uses it): its tint if
+## it has one, otherwise null and the caller keeps the theme colour.
+static func species_tint(s: String) -> Variant:
+	var p: Dictionary = SHAPES.get(s, {})
+	if float(p.get("leaf_mix", 0.0)) > 0.0:
+		return p["leaf_tint"]
+	return null
+
+
+## Instances drawn at LOD k: whole outer levels of twigs dropped, and a fair share of the
+## leaves. Never below the trunk and its first two levels.
+func lod_branches(k: int) -> int:
+	if level_ends.is_empty():
+		return 0
+	var keep := maxi(level_ends.size() - k, mini(3, level_ends.size()))
+	return level_ends[keep - 1]
+
+
+func lod_leaves(k: int) -> int:
+	return int(ceil(float(leaf_count) * LEAF_LOD[clampi(k, 0, LOD_MAX)]))
+
+
+func lod_cost(k: int) -> int:
+	return lod_branches(k) + (lod_leaves(k) if leaves_on else 0)
+
+
+func set_lod(k: int) -> void:
+	k = clampi(k, 0, LOD_MAX)
+	if k == lod or not built:
+		return
+	lod = k
+	_branches.multimesh.visible_instance_count = -1 if k == 0 else lod_branches(k)
+	_leaves.multimesh.visible_instance_count = -1 if k == 0 else lod_leaves(k)
+
+
 func regrow() -> void:
 	grow_t = 0.0
+	grow_rate = 1.0
 
 
 func reseed() -> void:
@@ -284,20 +601,33 @@ func set_palette(pal: Array) -> void:
 
 
 ## Per frame while showing: growth clock and the wind field, in the tree's own frame so
-## grabbing and tilting the cloud carry the sway with it.
+## grabbing and tilting the cloud carry the sway with it. A tree still waiting to sprout
+## (negative clock) is hidden and costs one add.
 func tick(delta: float) -> void:
-	grow_t += delta
+	grow_t += delta * grow_rate
+	if grow_t <= 0.0:
+		_branches.visible = false
+		_leaves.visible = false
+		return
+	if not _branches.visible:
+		_branches.visible = true
+		_leaves.visible = leaves_on
 	var xf := global_transform
 	var up := xf.basis.y.normalized()
 	var scale := xf.basis.get_scale().y
+	# One wind for a whole forest: a planted tree's random yaw used to give it a private
+	# wind direction. The gust reaches a tree later the further downwind it stands.
+	var wdir := (wind_ref.global_transform.basis.x if wind_ref != null else xf.basis.x).normalized()
+	var phase := -wdir.dot(xf.origin) * 0.9 if wind_ref != null else 0.0
 	for m in [_branch_mat, _leaf_mat]:
 		m.set_shader_parameter("grow_t", grow_t)
 		m.set_shader_parameter("wind", wind)
 		m.set_shader_parameter("tree_origin", xf.origin)
 		m.set_shader_parameter("tree_up", up)
 		m.set_shader_parameter("tree_scale", scale)
-		m.set_shader_parameter("wind_dir", xf.basis.x.normalized())
+		m.set_shader_parameter("wind_dir", wdir)
+		m.set_shader_parameter("sway_phase", phase)
 
 
 func grow_progress() -> float:
-	return clampf(grow_t / (GROW_S + 1.0), 0.0, 1.0)
+	return clampf(grow_t / (grow_s + 1.0), 0.0, 1.0)

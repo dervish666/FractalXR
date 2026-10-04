@@ -49,6 +49,54 @@ All notable changes to FractalXR are documented here. Format based on
   than stepping the gallery behind the panel.
 
 ### Added
+- **TREE grows a forest.** Entering TREE sows a grove of 16 trees around the hero's trunk,
+  0.75-1.6 m out, tall inside and knee-high at the rim, sprouting one after another from
+  the hero outward over about 15 s. Thirteen species now, on the SHAPE tile and in the
+  grove: oak, pine, willow, coral, birch, poplar, palm, acacia, sakura, baobab, spiral,
+  crystal, thorn. The generator learned a curving bare trunk (palm, baobab), pinnate
+  fronds (palm), a tilt that widens toward the crown (acacia), kinks (thorn, sakura), a
+  fixed per-level turn (spiral at the golden angle, crystal at sixty degrees) and a leader
+  on every branch (spiral). Each species has its own leaf outline (disc, five-petal
+  blossom, needle star, sparkle), colour pulled from the theme toward its own, bark tint
+  and growth time, and every forest tree varies its angles, height, twist and colour by
+  seed. Every 45 s or so one grove tree withers back into the ground and a seedling of
+  another species takes root elsewhere in the ring. The planting ring names the species
+  the trigger will grow, in its colour, and each pull draws the next from a shuffled bag
+  (`_toggle_plant_mix()` plants the SHAPE species instead). CLEAR empties the forest;
+  REGROW, or entering TREE, sows a new grove into an empty one. The four original
+  species build the same geometry byte for byte; oak keeps its colours exactly, while
+  pine, willow and coral now lean toward their own.
+- **The forest fits a budget it measures.** Grove trees are capped at 450-1,400 branches
+  by thinning their outermost level evenly, and built one per frame just before they
+  sprout. A LOD drops outer twig levels and a share of the leaves, largest-on-screen
+  first, against an instance budget that shrinks when the GPU passes 85% of the frame
+  and grows back under 65%, so thermal throttling thins the far trees instead of the
+  frame rate. The `[perf]` line carries `forest_vis=` and `budget=`.
+- **The echoes live their own lives.** Each echo now spins, wanders, swells, drifts along
+  the palette and every few minutes swaps shape, folding back into its parents and growing
+  another preset from the root, each on its own seeded clock. All of it runs in the IFS
+  vertex shader off one `echo_t` uniform, so the CPU writes nothing per echo per frame.
+  Placement charges every echo for its full motion reach, so the head, floor, sight-cone
+  and overlap rules hold at every moment. The ladder is now few, many, lots, swarm, host
+  (16/40/96/192/288) and opens on LOTS. MOTION off freezes the echoes too.
+
+### Changed
+- **IFS edits land in place.** Release, UNDO, cancel and the DETAIL and DEPTH steps no
+  longer collapse and regrow the sculpture and every echo; a step that adds a generation
+  grows only that one. Breathing rebuilds every second frame (527 to 248 us a tick on the
+  Mac), and the echo layout is cached, so a recentre at 288 echoes costs 1.2 ms.
+- **The `[perf]` line splits script, render CPU and GPU time.** `cpu_ms` was
+  `Performance.TIME_PROCESS`, which in Godot 4.7.2 also wraps the render sync and draw,
+  fence waits included, so a GPU-bound frame read as CPU. It is renamed `loop_max_ms`, and
+  `proc_ms`/`proc_max_ms` (main.gd's `_process` timed end to end) and `rcpu_ms` (the
+  render thread's measured CPU) join it. The frozen `soak.sh` prefix is unchanged.
+- The wrist footer and the IFS frame and triangle counts show only in debug builds.
+- **The ambient spin turns the hero on its own trunk; the forest stands still.** Spinning
+  the cloud orbited every planted tree around the hero and swept trunks through the viewer.
+  Wind now crosses a grove as one gust, reaching each tree a little later the further
+  downwind it stands, and a planted tree no longer gets its own wind direction from its yaw.
+- Tree branches are 12 triangles, not 24: the cylinder's middle ring bent each segment
+  under wind by well under a millimetre. Pine's hero drops from 496k to 263k triangles.
 - **The ground zooms 512 times deeper: 8.4e6x, up from 16,384x.** `STAGE_MAX` goes from
   13 to 22, which is where df32 itself runs out: at stage 22 every escape-time family stays
   within 0.11 of a texel of a 64-bit reference on four spots each, and at stage 23 Buffalo
@@ -205,6 +253,49 @@ All notable changes to FractalXR are documented here. Format based on
   reached the headset unchecked.
 
 ### Fixed
+- **BULB, GROUND, FLAME no longer brings the flame back as a frozen ball of seeds.** The
+  settle countdown ran down in ground, tree and IFS, which never iterate the cloud.
+- **A bulb switch measures and bakes the new bulb, not the last one.** A source
+  generation now tags each measurement and bake; one that describes the previous source is
+  dropped, and the bake bins against the target framing rather than the eased one.
+- **A frozen or baked bulb holds no raw seeds.** Reseeding stops for the last frames of
+  the settle and through the bake, as the flame's settle already did.
+- **A bulb load keeps the chosen colour theme** instead of showing its own palette under
+  the theme's swatch.
+- **Bulb splats are the size SPLAT and COVERAGE ask for.** Surface-aligned splats took the
+  cloud's scale twice, so at the 0.55 toy scale they drew at 0.55x.
+- **The cloud stops simulating under the marcher.** With SURFACE on, a settled bulb
+  freezes and a pending bake waits until the particles are shown again.
+- **The quaternion DE reads 0 at the origin** in `march.gdshader` and `bulb.glsl`, as
+  `BulbSource.de` already did, instead of inf or NaN. `de_check` samples the origin now.
+- **The godot/tools harnesses report a pass as a pass.** Their EXIT trap's `kill` of an
+  already-reaped watchdog failed under `set -e` in macOS bash 3.2 and turned exit 0 into 1.
+- **No more flashes of the wrong terrain while zooming or walking on the ground.** The
+  shader trusted every level's whole window, but a pan strip or a level a zoom step had
+  just made sat queued for the fill with its slots still holding texels from the far side
+  of the window or another scale, and the finest levels, the ones at your feet, were
+  filled last. Worst of all, crossing one of the iteration floor's steps (stages 10, 13,
+  16, 19, 22) rebuilt every level, and with nothing marked complete the floor drew the
+  coarsest level mid-fill. The host now hands the shader each level's filled rectangle and
+  the shader steps up to the next coarser filled level where the one it wants is still
+  queued: a patch a level blurrier for a moment, never one of somewhere else. Windows
+  re-centre at half the old slack, so a new strip starts 24 texels beyond reach instead of
+  at it. An iteration step refills in place behind the old picture instead of rebuilding.
+  `tools/ground_fill.sh` poisons every queued slot and paints any pixel that reads one:
+  at a Quest-like fill rate the old code showed them in 168 of 216 frames of a walk at
+  ITER 4096 and on the whole floor across a zoom's iteration step; now in none.
+- **The fill aims for 2 ms of GPU a frame, down from 3.5.** Ground mode drew in 12.4-12.8
+  ms of a 13.9 ms frame with the fill idle, so 3.5 ms more had nowhere to go.
+- **The orbit trace follows the hand anywhere and at any depth.** Its culling box sat
+  round the room's origin, so pointing more than a metre or so away hid it, and the point
+  under the hand went through a float32 `Vector2`, a metre and a half of floor a step at
+  stage 18.
+- **Julia seeds keep 64 bits**, so "Julia here" at depth seeds from where you stand
+  rather than from the nearest float32. Leaving ground mode with a grip held no longer
+  drags the next visit's fresh ground by the hand's travel in between.
+- **The selftest's ground check reads the packed level format.** It still decoded four
+  half floats after the stack moved to packed 16-bit uints, and failed on an inside
+  texel's distance sentinel (-40) as if it were the inside flag. The fill was right.
 - **The ground fill no longer runs away on a Mac.** Metal hands back GPU timestamps that
   are all zero, the fill read that as free and grew its budget to 2M texels a frame, and
   deep df32 fills at ITER 4096 stalled the GPU long enough to drop fences and leave garbage
