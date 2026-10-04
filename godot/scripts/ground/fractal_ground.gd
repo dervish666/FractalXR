@@ -26,9 +26,13 @@ class_name FractalGround
 var n_tex := 1024
 ## Nine, because the finest texel is 1.5mm and the horizon still wants ~180m of window.
 const LEVELS := 9
-## Window is re-centred once the viewer drifts this many texels from its centre. The
-## shader treats n_tex/2 - SLACK texels around the viewer as valid, so keep them in step.
+## The shader treats n_tex/2 - SLACK texels around the viewer as a level's reach.
 const SLACK := 48
+## The window re-centres once the viewer drifts this many texels from its centre. Half of
+## SLACK, so the strip a re-centre queues lies RECENTRE texels beyond the shader's reach and
+## the fill has that much walking to land it before anything can sample it. Re-centring at
+## SLACK put the new strip right at the reach, exposed from the next step on.
+const RECENTRE := SLACK / 2
 ## Finest texel at the viewer's feet, in metres, at a zoom stage boundary (it grows to
 ## twice this just before the next stage). About two pixels at standing height.
 const TEXEL_M := 0.0015
@@ -49,7 +53,11 @@ const ANCHOR_Q := 1048576
 const ANCHOR_REBASE := 268435456
 const BUDGET_MIN := 20000.0
 const BUDGET_MAX := 2000000.0
-const TARGET_US := 3500.0
+## GPU time the fill aims for each frame. It was 3500, more than the headset has spare: a
+## 2026-09-15 headset log reads draw_ms 12.4-12.8 in ground mode with the fill idle, of a
+## 13.9 ms frame at 72 Hz. Not yet measured on the headset at 2000. A smaller fill takes
+## longer to land, which the shader covers with the next coarser level, not stale texels.
+const TARGET_US := 2000.0
 ## Past this many texels per fractal unit of coordinate, float32 stops telling neighbouring
 ## texels apart and a dispatch switches to the df32 variant of ground.glsl. A float32 near
 ## a coordinate of magnitude m is spaced m * 2^-24 to m * 2^-23 apart, so at 2^22 the
@@ -90,7 +98,17 @@ var centre: Vector2:
 		_cy = v.y
 var wpu := WPU_BASE
 var julia := false
-var julia_c := Vector2(-0.8, 0.156)
+## The Julia seed, 64-bit like the centre: julia_here() takes it from the viewer's position,
+## and a float32 Vector2 rounded that to the same c for every point within 6e-8, a seed
+## a metre and a half wide at stage 18. julia_c is the rough view for the orbit trace.
+var _jx := -0.8
+var _jy := 0.156
+var julia_c: Vector2:
+	get:
+		return Vector2(_jx, _jy)
+	set(v):
+		_jx = v.x
+		_jy = v.y
 ## Which escape-time family the tiles are filled with. ORDER IS LOAD-BEARING: it indexes
 ## the switch in ground.glsl's iterate(). Append only, and keep the shader in step.
 const FORMULA_NAMES := ["mandelbrot", "burning ship", "tricorn", "celtic",
@@ -123,7 +141,14 @@ var _rot := 0
 var _win_lo: Array[Vector2i] = []
 var _have: Array[bool] = []
 var _full: Array[bool] = []
-var _dirty: Array = []            # per level: Array[Rect2i], texels of that level from the anchor
+## Per level, Array[Rect2i] of texels (counted from the anchor) whose slots do not hold that
+## level's data yet: a pan strip, a new level, a rebuild. The shader routes round them.
+var _dirty: Array = []
+## Per level, Array[Rect2i] of texels that hold the right place but an older fill (another
+## iteration count). Shown as they are until refilled, after all of _dirty.
+var _refresh: Array = []
+## Per level, the part of the window the shader may read, as texels from the viewer's.
+var _clean := PackedVector4Array()
 var _budget := 150000.0
 var _head_xz := Vector2.ZERO
 var _ready_ok := false
@@ -149,6 +174,9 @@ var _ay := 0
 var _level_set := false
 var _level_chasing := false
 var _pending_peak := 0
+## Test hook: called with (level, rect) whenever a rect is queued because its slots no
+## longer hold that level's texels. tools/ground_fill.gd poisons them through it.
+var on_queue := Callable()
 
 
 func get_error() -> String:
@@ -183,6 +211,8 @@ func _init() -> void:
 		_have.append(false)
 		_full.append(true)
 		_dirty.append([] as Array[Rect2i])
+		_refresh.append([] as Array[Rect2i])
+		_clean.append(Vector4.ZERO)
 	_material.set_shader_parameter("tex_size", n_tex)
 	_material.set_shader_parameter("num_levels", LEVELS)
 	_material.set_shader_parameter("slack", float(SLACK))
@@ -326,6 +356,13 @@ func world_to_fractal(w: Vector2) -> Vector2:
 	return Vector2(_cx + o.x, _cy + o.y)
 
 
+## world_to_fractal() without the float32 round trip: [x, y] in 64-bit floats, for the
+## orbit trace, which iterates the point under the hand and at depth needs it to the texel.
+func world_to_fractal64(w: Vector2) -> PackedFloat64Array:
+	var o := _m.basis_xform(w) / wpu
+	return PackedFloat64Array([_cx + o.x, _cy + o.y])
+
+
 func fractal_to_world(f: Vector2) -> Vector2:
 	return _m.basis_xform_inv(Vector2((f.x - _cx) * wpu, (f.y - _cy) * wpu))
 
@@ -408,6 +445,10 @@ func progress() -> float:
 func set_quality(n: int) -> void:
 	if n == n_tex or not _ready_ok:
 		return
+	# ground.gdshader wraps texel indices with a mask, which is only a modulo for a power of two.
+	if n <= 0 or n & (n - 1) != 0:
+		push_error("FractalGround.set_quality: %d is not a power of two" % n)
+		return
 	n_tex = n
 	_texture.texture_rd_rid = RID()
 	if _tex.is_valid():
@@ -421,7 +462,9 @@ func set_quality(n: int) -> void:
 	img.binding = 0
 	img.add_id(_tex)
 	_set = _rd.uniform_set_create([img], _shader, 0)
-	invalidate()
+	# A new texture holds nothing yet, not even an old picture to refill in place.
+	for i in LEVELS:
+		_have[i] = false
 
 
 func set_julia(on: bool) -> void:
@@ -446,7 +489,8 @@ func formula_name() -> String:
 
 ## Julia set seeded from the point you are standing on: the classic pairing.
 func julia_here() -> void:
-	julia_c = viewer_fractal()
+	_jx = viewer_fx()
+	_jy = viewer_fy()
 	julia = true
 	invalidate()
 
@@ -457,7 +501,7 @@ func set_max_iter(n: int) -> void:
 	max_iter = n
 	if effective_iter() != _iter_used:
 		_iter_used = effective_iter()
-		invalidate()
+		refresh()
 
 
 ## The fewest iterations the fill runs at this depth, whatever ITER says. Deep spots need
@@ -485,11 +529,34 @@ func set_texture_on(on: bool) -> void:
 	invalidate()
 
 
-## Every level needs recomputing: a different set, iteration count or texture channel.
-## The old picture stays up while the new one fills in, coarse levels first.
+## Every level needs recomputing: a different set or texture channel, or a new texture.
+## The fine levels drop out at once and come back coarse to fine as they fill; the coarsest
+## keeps its old picture and is refilled in place, so the floor always shows something
+## that belongs where it is drawn. With nothing to keep (a new texture, or a level still
+## being built) the coarsest is rebuilt too and the floor fogs over until it lands, rather
+## than drawing whatever the slots held before.
 func invalidate() -> void:
-	for i in LEVELS:
+	for i in LEVELS - 1:
 		_have[i] = false
+	var top := LEVELS - 1
+	if _have[top] and not _full[top]:
+		_refresh[top] = [_window(top)] as Array[Rect2i]
+	else:
+		_have[top] = false
+
+
+## Same place, more iterations: every texel is still the right point, only its count is
+## short. Refill in place, coarsest first, with the old picture up until each texel lands.
+## A rebuild here (what this used to be) dropped the floor to the coarsest level, half a
+## metre a texel, every time a zoom crossed one of iter_floor()'s steps.
+func refresh() -> void:
+	for i in LEVELS:
+		if _have[i] and not _full[i]:
+			_refresh[i] = [_window(i)] as Array[Rect2i]
+
+
+func _window(i: int) -> Rect2i:
+	return Rect2i(_win_lo[i], Vector2i(n_tex, n_tex))
 
 
 func _sync_stage() -> void:
@@ -513,9 +580,11 @@ func _shift_in() -> void:
 		_have[i] = _have[i - 1]
 		_full[i] = _full[i - 1]
 		_dirty[i] = _dirty[i - 1]
+		_refresh[i] = _refresh[i - 1]
 	_have[0] = false
 	_full[0] = true
 	_dirty[0] = [] as Array[Rect2i]
+	_refresh[0] = [] as Array[Rect2i]
 
 
 func _shift_out() -> void:
@@ -526,9 +595,11 @@ func _shift_out() -> void:
 		_have[i] = _have[i + 1]
 		_full[i] = _full[i + 1]
 		_dirty[i] = _dirty[i + 1]
+		_refresh[i] = _refresh[i + 1]
 	_have[LEVELS - 1] = false
 	_full[LEVELS - 1] = true
 	_dirty[LEVELS - 1] = [] as Array[Rect2i]
+	_refresh[LEVELS - 1] = [] as Array[Rect2i]
 	# Halving keeps the anchor on the same point but only a multiple of ANCHOR_Q / 2, so
 	# snap it back, after the levels have moved: _set_anchor shifts level i by the new
 	# stage's texels. Done before the move, it shifted each window by half what it should,
@@ -558,7 +629,7 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 		_glide = Vector2.ZERO
 	if effective_iter() != _iter_used:
 		_iter_used = effective_iter()
-		invalidate()
+		refresh()
 	var vx := viewer_fx()
 	var vy := viewer_fy()
 	var t0 := _texel0()
@@ -585,16 +656,26 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 				_level_chasing = false
 
 	var frac := Vector2(vx / t0 - float(vt0.x + _ax), vy / t0 - float(vt0.y + _ay))
-	var min_level := LEVELS - 1
+	# What the shader may read: per level, the part of the window with nothing queued, as
+	# texels from the viewer's. Taken before this frame's fill, so a rect that lands now is
+	# used from the next frame: a frame late, never a frame early.
+	var min_level := -1
+	var max_level := -1
 	for i in LEVELS:
-		if not _full[i]:
-			min_level = i
-			break
-	var max_level := 0
-	for i in range(LEVELS - 1, -1, -1):
-		if not _full[i]:
+		var vt := Vector2i(vt0.x >> i, vt0.y >> i)
+		var c := _clean_rect(i, vt)
+		if c.has_area():
+			_clean[i] = Vector4(c.position.x - vt.x, c.position.y - vt.y, c.end.x - vt.x, c.end.y - vt.y)
+			if min_level < 0:
+				min_level = i
 			max_level = i
-			break
+		else:
+			_clean[i] = Vector4.ZERO
+	if min_level < 0:
+		# Nothing usable anywhere: the shader finds the coarsest level empty too, and fogs.
+		min_level = LEVELS - 1
+		max_level = LEVELS - 1
+	_material.set_shader_parameter("clean_rect", _clean)
 	_material.set_shader_parameter("texel0", t0)
 	_material.set_shader_parameter("wpu", wpu)
 	_material.set_shader_parameter("head_xz", head_xz)
@@ -605,7 +686,7 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_material.set_shader_parameter("ref_hold", REF_HOLD_M)
 	_material.set_shader_parameter("level_rot", _rot)
 	_material.set_shader_parameter("min_level", min_level)
-	_material.set_shader_parameter("max_level", maxi(max_level, min_level))
+	_material.set_shader_parameter("max_level", max_level)
 	_material.set_shader_parameter("fog_end",
 		float(n_tex / 2 - SLACK - 2) * _texel(LEVELS - 1) * wpu)
 	RenderingServer.call_on_render_thread(_flush)
@@ -638,15 +719,15 @@ func _set_anchor(nx: int, ny: int) -> void:
 	for i in LEVELS:
 		var sh := Vector2i(dx / (1 << i), dy / (1 << i))
 		_win_lo[i] -= sh
-		var rects: Array[Rect2i] = _dirty[i]
-		for k in rects.size():
-			rects[k] = Rect2i(rects[k].position - sh, rects[k].size)
-		_dirty[i] = rects
+		for q: Array in [_dirty, _refresh]:
+			var rects: Array[Rect2i] = q[i]
+			for k in rects.size():
+				rects[k] = Rect2i(rects[k].position - sh, rects[k].size)
 	_ax = nx
 	_ay = ny
 
 
-## Keep level i's window centred within SLACK texels of the viewer and queue whatever
+## Keep level i's window centred within RECENTRE texels of the viewer and queue whatever
 ## strip the move uncovered. A window that does not exist yet is queued whole. vt0 is
 ## the viewer's level-0 texel from the anchor.
 func _track_window(i: int, vt0: Vector2i) -> void:
@@ -657,28 +738,81 @@ func _track_window(i: int, vt0: Vector2i) -> void:
 		_have[i] = true
 		_full[i] = true
 		_dirty[i] = [Rect2i(want, Vector2i(n_tex, n_tex))] as Array[Rect2i]
+		_refresh[i] = [] as Array[Rect2i]
+		if on_queue.is_valid(): on_queue.call(i, _dirty[i][0])
 		return
 	var d := want - _win_lo[i]
-	if absi(d.x) <= SLACK and absi(d.y) <= SLACK:
+	if absi(d.x) <= RECENTRE and absi(d.y) <= RECENTRE:
 		return
 	var old := _win_lo[i]
 	if absi(d.x) >= n_tex or absi(d.y) >= n_tex:
 		_win_lo[i] = want
 		_full[i] = true
 		_dirty[i] = [Rect2i(want, Vector2i(n_tex, n_tex))] as Array[Rect2i]
+		_refresh[i] = [] as Array[Rect2i]
+		if on_queue.is_valid(): on_queue.call(i, _dirty[i][0])
 		return
+	# Whatever is still queued from earlier moves only matters inside the new window. Past
+	# its edge a rect's slots now belong to the new strip, and since the fill no longer
+	# runs strictly in queue order, filling it after that strip would write the far side's
+	# texels over the near side's.
+	var win := Rect2i(want, Vector2i(n_tex, n_tex))
+	_clip(_dirty, i, win)
+	_clip(_refresh, i, win)
 	var rects: Array[Rect2i] = _dirty[i]
 	if d.x != 0:
 		var x0 := old.x + n_tex if d.x > 0 else want.x
 		rects.append(Rect2i(Vector2i(x0, want.y), Vector2i(absi(d.x), n_tex)))
+		if on_queue.is_valid(): on_queue.call(i, rects[-1])
 	if d.y != 0:
 		var y0 := old.y + n_tex if d.y > 0 else want.y
 		var xa := maxi(old.x, want.x)
 		var xb := mini(old.x, want.x) + n_tex
 		if xb > xa:
 			rects.append(Rect2i(Vector2i(xa, y0), Vector2i(xb - xa, absi(d.y))))
+			if on_queue.is_valid(): on_queue.call(i, rects[-1])
 	_dirty[i] = rects
 	_win_lo[i] = want
+
+
+func _clip(q: Array, i: int, win: Rect2i) -> void:
+	var out: Array[Rect2i] = []
+	for r: Rect2i in q[i]:
+		var c := r.intersection(win)
+		if c.has_area():
+			out.append(c)
+	q[i] = out
+
+
+## The largest rectangle of level i's window with nothing in _dirty, around the viewer's
+## texel vt. Each queued rect it overlaps is cut off along whichever side leaves the viewer
+## the most reach (the least of the four distances to the edge, which is what the shader's
+## square reach test spends). Empty when a queued rect covers the viewer.
+func _clean_rect(i: int, vt: Vector2i) -> Rect2i:
+	if not _have[i] or _full[i]:
+		return Rect2i()
+	var c := _window(i)
+	for r: Rect2i in _dirty[i]:
+		if not r.intersects(c):
+			continue
+		var best := Rect2i()
+		var reach := -1
+		for cand: Rect2i in [
+				Rect2i(c.position, Vector2i(r.position.x - c.position.x, c.size.y)),
+				Rect2i(Vector2i(r.end.x, c.position.y), Vector2i(c.end.x - r.end.x, c.size.y)),
+				Rect2i(c.position, Vector2i(c.size.x, r.position.y - c.position.y)),
+				Rect2i(Vector2i(c.position.x, r.end.y), Vector2i(c.size.x, c.end.y - r.end.y))]:
+			if not cand.has_area() or not cand.has_point(vt):
+				continue
+			var m := mini(mini(vt.x - cand.position.x, cand.end.x - 1 - vt.x),
+				mini(vt.y - cand.position.y, cand.end.y - 1 - vt.y))
+			if m > reach:
+				reach = m
+				best = cand
+		if reach < 0:
+			return Rect2i()
+		c = best
+	return c
 
 
 const PC_SIZE := 96
@@ -701,7 +835,7 @@ func _is_deep(level: int, r: Rect2i) -> bool:
 	var m := maxf(1.0, maxf(maxf(absf(o[0]), absf(o[0] + float(r.size.x) * t)),
 		maxf(absf(o[1]), absf(o[1] + float(r.size.y) * t))))
 	if julia:
-		m = maxf(m, julia_c.length())
+		m = maxf(m, sqrt(_jx * _jx + _jy * _jy))
 	return m / t > DF_RATIO
 
 
@@ -726,8 +860,8 @@ func push_constant_at(level: int, r: Rect2i, ox: float, oy: float) -> PackedByte
 	pc.encode_s32(4, r.position.y)
 	pc.encode_s32(8, r.size.x)
 	pc.encode_s32(12, r.size.y)
-	_encode_df(pc, 16, 80, julia_c.x)
-	_encode_df(pc, 20, 84, julia_c.y)
+	_encode_df(pc, 16, 80, _jx)
+	_encode_df(pc, 20, 84, _jy)
 	_encode_df(pc, 24, 60, _texel(level))
 	pc.encode_s32(28, (level + _rot) % LEVELS)
 	pc.encode_s32(32, n_tex)
@@ -742,8 +876,9 @@ func push_constant_at(level: int, r: Rect2i, ox: float, oy: float) -> PackedByte
 	return pc
 
 
-## Spend this frame's texel budget on the dirty rectangles, coarsest level first so a
-## rebuild shows a blurry whole before a sharp corner. Render thread only.
+## Spend this frame's texel budget: every hole in _dirty before any refresh, each coarsest
+## level first so a rebuild shows a blurry whole before a sharp corner and a fine level's
+## strip always has a filled coarser level for the shader to fall back on. Render thread.
 func _flush() -> void:
 	_read_timestamp()
 	# Adapt the budget to what the last fill actually cost. Only once a timestamp has ever
@@ -765,61 +900,74 @@ func _flush() -> void:
 			else:
 				_budget = minf(BUDGET_MAX, _budget * 1.15)
 	_worked = false
-	var any_f32 := false
-	var any_df := false
+	_any_f32 = false
+	_any_df = false
+	_cl = -1
+	_bound = -1
 	# The budget is in texels at 256 iterations; deeper counts get proportionally fewer
 	# texels a frame, so ITER 4096 sharpens over more frames rather than stalling one.
 	var left := _budget * 256.0 / float(maxi(1, effective_iter()))
-	var cl := -1
-	var bound := -1   # 0 f32, 1 df: which pipeline the list has bound
 	for i in range(LEVELS - 1, -1, -1):
-		var rects: Array[Rect2i] = _dirty[i]
-		while not rects.is_empty() and left > 0.0:
-			var r: Rect2i = rects[0]
-			var deep := _is_deep(i, r)
-			var cost := _df_cost if deep else 1.0
-			any_df = any_df or deep
-			any_f32 = any_f32 or not deep
-			var rows := mini(r.size.y, maxi(1, int(left / (cost * float(maxi(1, r.size.x))))))
-			var sub := Rect2i(r.position, Vector2i(r.size.x, rows))
-			var split_x := false
-			if deep and rows < 16 and r.size.y >= 16:
-				# A thin strip wastes most of every 16x16 workgroup, and a df32 budget is
-				# often only a few rows of a 1024-wide rect: one row ran a sixteenth of the
-				# lanes and measured 5 ms for 1024 texels. Take a 16-row block of the width
-				# the budget allows instead, and leave the rest of that strip queued.
-				var w := int(left / (cost * 16.0)) / 16 * 16
-				sub = Rect2i(r.position, Vector2i(clampi(w, 16, r.size.x), 16))
-				split_x = sub.size.x < r.size.x
-				rows = 16
-			if cl < 0:
-				cl = _rd.compute_list_begin()
-				_rd.capture_timestamp("ground_begin")
-			var want := 1 if deep else 0
-			if want != bound:
-				_rd.compute_list_bind_compute_pipeline(cl, _pipeline_df if deep else _pipeline)
-				_rd.compute_list_bind_uniform_set(cl, _set, 0)
-				bound = want
-			_rd.compute_list_set_push_constant(cl, _push_constant(i, sub), PC_SIZE)
-			_rd.compute_list_dispatch(cl, int(ceil(float(sub.size.x) / 16.0)),
-				int(ceil(float(sub.size.y) / 16.0)), 1)
-			left -= cost * float(sub.size.x * sub.size.y)
-			if split_x:
-				rects[0] = Rect2i(r.position + Vector2i(sub.size.x, 0), Vector2i(r.size.x - sub.size.x, 16))
-				if r.size.y > 16:
-					rects.insert(1, Rect2i(r.position + Vector2i(0, 16), Vector2i(r.size.x, r.size.y - 16)))
-			elif rows >= r.size.y:
-				rects.pop_front()
-			else:
-				rects[0] = Rect2i(r.position + Vector2i(0, rows), Vector2i(r.size.x, r.size.y - rows))
-		_dirty[i] = rects
-		if rects.is_empty():
+		left = _spend(_dirty[i], i, left)
+		if (_dirty[i] as Array).is_empty():
 			_full[i] = false
-	if cl >= 0:
+	for i in range(LEVELS - 1, -1, -1):
+		left = _spend(_refresh[i], i, left)
+	if _cl >= 0:
 		_rd.compute_list_end()
 		_rd.capture_timestamp("ground_end")
 		_worked = true
-	_df_run = _df_run + 1 if (any_df and not any_f32) else 0
+	_df_run = _df_run + 1 if (_any_df and not _any_f32) else 0
+
+
+var _cl := -1
+var _bound := -1   # 0 f32, 1 df: which pipeline the list has bound
+var _any_f32 := false
+var _any_df := false
+
+
+## Dispatch from the front of one level's queue until it is empty or `left` runs out, and
+## return what is left. Edits `rects` in place.
+func _spend(rects: Array[Rect2i], i: int, left: float) -> float:
+	while not rects.is_empty() and left > 0.0:
+		var r: Rect2i = rects[0]
+		var deep := _is_deep(i, r)
+		var cost := _df_cost if deep else 1.0
+		_any_df = _any_df or deep
+		_any_f32 = _any_f32 or not deep
+		var rows := mini(r.size.y, maxi(1, int(left / (cost * float(maxi(1, r.size.x))))))
+		var sub := Rect2i(r.position, Vector2i(r.size.x, rows))
+		var split_x := false
+		if deep and rows < 16 and r.size.y >= 16:
+			# A thin strip wastes most of every 16x16 workgroup, and a df32 budget is
+			# often only a few rows of a 1024-wide rect: one row ran a sixteenth of the
+			# lanes and measured 5 ms for 1024 texels. Take a 16-row block of the width
+			# the budget allows instead, and leave the rest of that strip queued.
+			var w := int(left / (cost * 16.0)) / 16 * 16
+			sub = Rect2i(r.position, Vector2i(clampi(w, 16, r.size.x), 16))
+			split_x = sub.size.x < r.size.x
+			rows = 16
+		if _cl < 0:
+			_cl = _rd.compute_list_begin()
+			_rd.capture_timestamp("ground_begin")
+		var want := 1 if deep else 0
+		if want != _bound:
+			_rd.compute_list_bind_compute_pipeline(_cl, _pipeline_df if deep else _pipeline)
+			_rd.compute_list_bind_uniform_set(_cl, _set, 0)
+			_bound = want
+		_rd.compute_list_set_push_constant(_cl, _push_constant(i, sub), PC_SIZE)
+		_rd.compute_list_dispatch(_cl, int(ceil(float(sub.size.x) / 16.0)),
+			int(ceil(float(sub.size.y) / 16.0)), 1)
+		left -= cost * float(sub.size.x * sub.size.y)
+		if split_x:
+			rects[0] = Rect2i(r.position + Vector2i(sub.size.x, 0), Vector2i(r.size.x - sub.size.x, 16))
+			if r.size.y > 16:
+				rects.insert(1, Rect2i(r.position + Vector2i(0, 16), Vector2i(r.size.x, r.size.y - 16)))
+		elif rows >= r.size.y:
+			rects.pop_front()
+		else:
+			rects[0] = Rect2i(r.position + Vector2i(0, rows), Vector2i(r.size.x, r.size.y - rows))
+	return left
 
 
 func _read_timestamp() -> void:
@@ -877,7 +1025,7 @@ func set_look(name: StringName, v: Variant) -> void:
 func pending_texels() -> int:
 	var total := 0
 	for i in LEVELS:
-		for r: Rect2i in _dirty[i]:
+		for r: Rect2i in _dirty[i] + _refresh[i]:
 			total += r.size.x * r.size.y
 	return total
 

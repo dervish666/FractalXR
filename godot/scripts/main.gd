@@ -1434,6 +1434,9 @@ func _set_ground_mode(on: bool) -> void:
 	ground_mode = on
 	ground.visible = on
 	orbit.visible = false
+	# _ground_grab() only clears its grip history while ground mode runs it, so a grip held
+	# across leaving and coming back applied the hand's travel in between to the fresh ground.
+	_gg_hands = []
 	cloud.set_visible_cloud(not on)
 	if on:
 		_render_idx_saved = render_idx
@@ -1508,7 +1511,7 @@ func _tick_orbit() -> void:
 		orbit.visible = false
 		return
 	orbit.visible = true
-	orbit.update(ground.world_to_fractal(hit), ground.julia, ground.julia_c, ground.formula,
+	orbit.update(ground.world_to_fractal64(hit), ground.julia, ground._jx, ground._jy, ground.formula,
 		ground.fractal_dir_to_world, hit)
 
 

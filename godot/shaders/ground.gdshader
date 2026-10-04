@@ -33,6 +33,12 @@ uniform vec2 level_e0 = vec2(0.0);
 // be finer than the eye-centred mesh can carry anywhere the eye is allowed to be.
 uniform float ref_hold = 0.3;
 uniform float slack = 48.0;             // texels of window kept around the viewer (see .gd)
+// Per level, the part of its window that holds that level's texels right now, as
+// (lo.x, lo.y, hi.x, hi.y) in level texels from the viewer's texel, hi exclusive. The rest
+// is queued for the fill (a strip a pan uncovered, a level a zoom step just made) and its
+// slots still hold texels from the far side of the window or another scale entirely.
+// All zeros: nothing usable. FractalGround._clean_rect() works these out.
+uniform vec4 clean_rect[9];
 uniform float fog_end = 100.0;          // metres; the coarsest window ends a little past this
 uniform vec3 fog_colour : source_color = vec3(0.02, 0.02, 0.04);
 
@@ -95,23 +101,44 @@ int layer_of(int level) {
 // Unpacks ground.glsl's encode(): count as float32, distance as half, texture as 15-bit
 // unorm, inside flag as the low bit. Keep the two in step.
 vec4 fetch(int level, ivec2 a) {
-	ivec2 slot = ((a % tex_size) + tex_size) % tex_size;
+	// tex_size is a power of two (1024, 2048), so the torus wrap is a mask: two's
+	// complement makes it the positive modulo for negative indices too. Two integer
+	// modulos here ran on every one of the ~70 fetches a pixel makes.
+	ivec2 slot = a & ivec2(tex_size - 1);
 	uvec4 u = texelFetch(levels, ivec3(slot, layer_of(level)), 0);
 	return vec4(uintBitsToFloat(u.x | (u.y << 16u)), unpackHalf2x16(u.z).x,
 		float(u.w & 1u), float(u.w >> 1u) / 32767.0);
 }
 
-// Bilinear sample of a level at a level-0 texel coordinate (already relative to the
-// viewer's texel, so the arithmetic below never sees a large number). Also returns, via
-// `inside_window`, whether the point lies inside this level's valid window.
-// Whether the point lies in level `level`'s window: sample_level's test without the fetches.
+// Whether level `level` can be sampled at the point: inside its reach around the viewer, and
+// every texel a sample there fetches is filled. The widest fetch is relief_heights()'s 4x4
+// block, base - 1 to base + 2 with base = floor(rel - 0.5), which stays inside [lo, hi) for
+// rel in [lo + 1.5, hi - 1.5). Pure arithmetic, so walking up the levels with it is cheap.
 bool in_window(int level, vec2 e0) {
 	ivec2 vt = view_texel0 >> level;
 	ivec2 rem = view_texel0 - (vt << level);
 	vec2 rel = (vec2(rem) + view_frac0 + e0) / float(1 << level);
-	return all(lessThan(abs(rel), vec2(float(tex_size) * 0.5 - slack - 1.0)));
+	vec4 c = clean_rect[level];
+	return all(lessThan(abs(rel), vec2(float(tex_size) * 0.5 - slack - 1.0)))
+		&& all(greaterThanEqual(rel, c.xy + 1.5)) && all(lessThan(rel, c.zw - 1.5));
 }
 
+// The finest level from `level` up whose sample at the point is usable, or max_level if
+// none is (the caller then finds that one unusable too).
+int usable_level(int level, vec2 e0) {
+	int l = level;
+	for (int i = 0; i < 9; i++) {
+		if (l >= max_level || in_window(l, e0)) {
+			break;
+		}
+		l++;
+	}
+	return l;
+}
+
+// Bilinear sample of a level at a level-0 texel coordinate (already relative to the
+// viewer's texel, so the arithmetic below never sees a large number). Also returns, via
+// `inside_window`, whether the point can be sampled there (in_window).
 vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 	// Level-i texel coordinate of the point, split as (viewer texel >> i) + small float.
 	ivec2 vt = view_texel0 >> level;
@@ -129,9 +156,7 @@ vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 	vec2 wl = f - fl;
 	vec2 w = wl * wl * (3.0 - 2.0 * wl);
 	ivec2 base = vt + ivec2(fl);
-	// The window is N texels centred within `slack` of the viewer's texel.
-	vec2 rel = f + 0.5;
-	inside_window = all(lessThan(abs(rel), vec2(float(tex_size) * 0.5 - slack - 1.0)));
+	inside_window = in_window(level, e0);
 	vec4 s00 = fetch(level, base);
 	vec4 s10 = fetch(level, base + ivec2(1, 0));
 	vec4 s01 = fetch(level, base + ivec2(0, 1));
@@ -207,14 +232,22 @@ void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float 
 // blended continuously between its two neighbours so no ring of distance pops. The grain
 // is per-texel and scales with the level's texel, so displacing it at coarse levels raised
 // a field of metre-high spikes on the horizon; it stays a shading term.
+// A level with texels still queued at the point is passed over for the next coarser one,
+// as the fragment does.
 float shape_height(vec2 e0p, float lod, out bool inside) {
 	float lc = clamp(lod, float(min_level), float(max_level));
 	int la = int(lc);
+	float k = lc - float(la);
+	int lu = usable_level(la, e0p);
+	if (lu != la) k = 0.0;
+	la = lu;
 	int lb = min(la + 1, max_level);
 	bool ib;
 	vec4 a = sample_level(la, e0p, inside);
+	float ha = height_of(a, la, false);
+	if (k <= 0.0 || lb == la || !in_window(lb, e0p)) return ha;
 	vec4 b = sample_level(lb, e0p, ib);
-	return mix(height_of(a, la, false), height_of(b, lb, false), lc - float(la));
+	return mix(ha, height_of(b, lb, false), k);
 }
 
 void vertex() {
@@ -296,9 +329,18 @@ void fragment() {
 	float lod_win = log2(max(max(abs(e0.x), abs(e0.y)), 1e-3) / (0.5 * R));
 	float lod = clamp(max(lod_fp, lod_win), float(min_level), float(max_level));
 	int l0 = int(floor(lod));
+	float k = fract(lod);
+	// A level whose texels here are still queued for the fill holds the far side of its
+	// window or another scale in those slots. Pass over it to the next coarser level that is
+	// filled, without a blend: a patch a level blurrier until the fill lands, never one of
+	// somewhere else. Same for l1, which then drops out of the blend.
+	int lu = usable_level(l0, e0);
+	if (lu != l0) k = 0.0;
+	l0 = lu;
 	int l1 = min(l0 + 1, max_level);
-	bool in0;
-	bool in1;
+	bool in0 = in_window(l0, e0);
+	bool in1 = l1 != l0 && in_window(l1, e0);
+	if (!in1) k = 0.0;
 	// Relief needs a 4x4 block at l0 that contains this sample: fetch it once, up front.
 	bool relief_on = relief_mode != 0 || bump_strength > 0.0;
 	float hx0 = 0.0;
@@ -308,18 +350,18 @@ void fragment() {
 	vec4 sa;
 	if (relief_on) {
 		relief_heights(l0, e0, hx0, hx1, hz0, hz1, sa);
-		in0 = in_window(l0, e0);
 	} else {
-		sa = sample_level(l0, e0, in0);
+		bool d0;
+		sa = sample_level(l0, e0, d0);
 	}
-	// At the coarsest level l1 == l0: the same sample, not a second one.
+	// Without a usable l1 (or at the coarsest level) k is 0: the same sample, not a second.
 	vec4 sb = sa;
-	in1 = in0;
-	if (l1 != l0) sb = sample_level(l1, e0, in1);
-	float k = fract(lod);
-	if (!in0) { sa = sb; k = 1.0; }
+	if (k > 0.0) {
+		bool d1;
+		sb = sample_level(l1, e0, d1);
+	}
 	vec4 s = mix(sa, sb, k);
-	bool valid = in0 || in1;
+	bool valid = in0;
 
 	// How much per-texel detail this pixel can still resolve. Measured as iteration counts
 	// per pixel, which is what the contour fade below has always used: past about one
