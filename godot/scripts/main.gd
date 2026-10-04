@@ -1260,9 +1260,18 @@ func _ifs_scale() -> float:
 ## The second half of the [perf] line. Appended, never inserted: see the note above the
 ## print. Each field here exists because a question could not be answered from a log.
 ##
-##   cpu_ms  draw_ms is the GPU alone. A session that held 12.8 ms of GPU against a
-##           13.89 ms budget and still dropped to 48 fps could have been CPU-bound or
-##           compositor-bound and the log could not say which.
+##   proc_ms / proc_max_ms
+##           main.gd's _process (input, menu, modes, the compute encode), mean and worst
+##           frame over this log window. Script time only.
+##   rcpu_ms the render thread's CPU for the last frame: viewport_get_measured_render_time_cpu
+##           plus get_frame_setup_time_cpu (culling, draw-list building, submission). With
+##           draw_ms as the GPU, these split a slow frame into script, render CPU and GPU.
+##   loop_max_ms
+##           Performance.TIME_PROCESS, which used to be logged as cpu_ms. In Godot 4.7.2 it
+##           is the worst frame per second of a span that wraps _process AND
+##           RenderingServer sync() + draw() (main.cpp:5059-5100, published at :5136), and
+##           with rendering on the main thread draw() includes the fence and swapchain
+##           waits. A GPU-bound frame reads high here, so it says nothing about CPU alone.
 ##   hz      the budget itself. 13.89 ms at 72 Hz, 11.11 ms at 90; without the refresh
 ##           rate "is 12.8 ms over budget" has no answer.
 ##   guard   _perf_scale. The frame-rate governor only ever surfaced as "guard NN%" on
@@ -1277,9 +1286,18 @@ func _perf_tail() -> String:
 	var hz := 0.0
 	if xr != null:
 		hz = xr.get_display_refresh_rate()
-	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
-	var head := " cpu_ms=%.3f hz=%.0f guard=%.2f mr=%s" % [
-		cpu_ms, hz, _perf_scale, "on" if passthrough else "off"]
+	var vp := get_viewport().get_viewport_rid()
+	var proc_ms := (float(_proc_us_sum) / float(maxi(1, _proc_frames))) / 1000.0
+	var proc_max_ms := float(_proc_us_max) / 1000.0
+	_proc_us_sum = 0
+	_proc_us_max = 0
+	_proc_frames = 0
+	var rcpu_ms := RenderingServer.viewport_get_measured_render_time_cpu(vp) \
+			+ RenderingServer.get_frame_setup_time_cpu()
+	var loop_max_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	var head := " proc_ms=%.3f proc_max_ms=%.3f rcpu_ms=%.3f loop_max_ms=%.3f hz=%.0f guard=%.2f mr=%s" % [
+		proc_ms, proc_max_ms, rcpu_ms, loop_max_ms, hz, _perf_scale,
+		"on" if passthrough else "off"]
 	if ifs_mode:
 		# edit= is what makes a drag measurable after the fact: build_ms during a drag is the
 		# number that decides whether every frame can rebuild, and without this field there is
@@ -2047,7 +2065,23 @@ func _current_eye_res() -> Vector2i:
 	return get_viewport().get_visible_rect().size
 
 
+## Script time for the [perf] line: this node's _process, timed end to end and summed over
+## the log window. Performance.TIME_PROCESS cannot stand in for it (see _perf_tail).
+var _proc_us_sum := 0
+var _proc_us_max := 0
+var _proc_frames := 0
+
+
 func _process(delta: float) -> void:
+	var t0 := Time.get_ticks_usec()
+	_process_frame(delta)
+	var us := Time.get_ticks_usec() - t0
+	_proc_us_sum += us
+	_proc_us_max = maxi(_proc_us_max, us)
+	_proc_frames += 1
+
+
+func _process_frame(delta: float) -> void:
 	_uptime += delta
 	cloud.ease_framing(delta)
 	if _theme_blend < 1.0:
