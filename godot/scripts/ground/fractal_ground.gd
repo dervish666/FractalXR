@@ -159,6 +159,9 @@ var _ay := 0
 var _level_set := false
 var _level_chasing := false
 var _pending_peak := 0
+## Test hook: called with (level, rect) whenever a rect is queued because its slots no
+## longer hold that level's texels. tools/ground_fill.gd poisons them through it.
+var on_queue := Callable()
 
 
 func get_error() -> String:
@@ -668,6 +671,7 @@ func _track_window(i: int, vt0: Vector2i) -> void:
 		_have[i] = true
 		_full[i] = true
 		_dirty[i] = [Rect2i(want, Vector2i(n_tex, n_tex))] as Array[Rect2i]
+		if on_queue.is_valid(): on_queue.call(i, _dirty[i][0])
 		return
 	var d := want - _win_lo[i]
 	if absi(d.x) <= SLACK and absi(d.y) <= SLACK:
@@ -677,17 +681,20 @@ func _track_window(i: int, vt0: Vector2i) -> void:
 		_win_lo[i] = want
 		_full[i] = true
 		_dirty[i] = [Rect2i(want, Vector2i(n_tex, n_tex))] as Array[Rect2i]
+		if on_queue.is_valid(): on_queue.call(i, _dirty[i][0])
 		return
 	var rects: Array[Rect2i] = _dirty[i]
 	if d.x != 0:
 		var x0 := old.x + n_tex if d.x > 0 else want.x
 		rects.append(Rect2i(Vector2i(x0, want.y), Vector2i(absi(d.x), n_tex)))
+		if on_queue.is_valid(): on_queue.call(i, rects[-1])
 	if d.y != 0:
 		var y0 := old.y + n_tex if d.y > 0 else want.y
 		var xa := maxi(old.x, want.x)
 		var xb := mini(old.x, want.x) + n_tex
 		if xb > xa:
 			rects.append(Rect2i(Vector2i(xa, y0), Vector2i(xb - xa, absi(d.y))))
+			if on_queue.is_valid(): on_queue.call(i, rects[-1])
 	_dirty[i] = rects
 	_win_lo[i] = want
 
