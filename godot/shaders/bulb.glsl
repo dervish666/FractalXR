@@ -160,7 +160,12 @@ vec4 quatDE(vec3 pos) {
 		trapY = min(trapY, abs(z.y));
 		if (m2 > 256.0) { esc = 1.0; break; }
 	}
-	return vec4(0.25 * log(m2) * sqrt(m2 / md2), trapR, trapY, esc);
+	// At the origin a Julia's md2 is 0 (z = 0 is a critical point) and a Mandelbrot's m2
+	// stays 0: inf or 0/0. BulbSource.de reads that as 0, inside the set; match it.
+	// Self-compare for NaN, because mobile isnan is unreliable.
+	float dist = 0.25 * log(m2) * sqrt(m2 / md2);
+	if (dist != dist || abs(dist) > 1e30) dist = 0.0;
+	return vec4(dist, trapR, trapY, esc);
 }
 
 vec4 de(vec3 q) {

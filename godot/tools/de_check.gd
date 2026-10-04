@@ -156,7 +156,8 @@ func _points(bound: float, seed: int) -> PackedVector3Array:
 		var r := bound * 0.95 * pow(rng.randf(), 0.6)
 		var dir := Vector3(rng.randfn(), rng.randfn(), rng.randfn()).normalized()
 		pts[i] = dir * r
-	pts[0] = Vector3(1e-3, 5e-4, 0.0)   # near the origin; the exact origin is 0/0 for quat
+	pts[0] = Vector3(1e-3, 5e-4, 0.0)   # near the origin
+	pts[1] = Vector3.ZERO   # the exact origin is inf or 0/0 for quat; all three ports read 0
 	return pts
 
 
