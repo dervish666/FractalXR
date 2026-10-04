@@ -29,8 +29,25 @@ All notable changes to FractalXR are documented here. Format based on
   first, against an instance budget that shrinks when the GPU passes 85% of the frame
   and grows back under 65%, so thermal throttling thins the far trees instead of the
   frame rate. The `[perf]` line carries `forest_vis=` and `budget=`.
+- **The echoes live their own lives.** Each echo now spins, wanders, swells, drifts along
+  the palette and every few minutes swaps shape, folding back into its parents and growing
+  another preset from the root, each on its own seeded clock. All of it runs in the IFS
+  vertex shader off one `echo_t` uniform, so the CPU writes nothing per echo per frame.
+  Placement charges every echo for its full motion reach, so the head, floor, sight-cone
+  and overlap rules hold at every moment. The ladder is now few, many, lots, swarm, host
+  (16/40/96/192/288) and opens on LOTS. MOTION off freezes the echoes too.
 
 ### Changed
+- **IFS edits land in place.** Release, UNDO, cancel and the DETAIL and DEPTH steps no
+  longer collapse and regrow the sculpture and every echo; a step that adds a generation
+  grows only that one. Breathing rebuilds every second frame (527 to 248 us a tick on the
+  Mac), and the echo layout is cached, so a recentre at 288 echoes costs 1.2 ms.
+- **The `[perf]` line splits script, render CPU and GPU time.** `cpu_ms` was
+  `Performance.TIME_PROCESS`, which in Godot 4.7.2 also wraps the render sync and draw,
+  fence waits included, so a GPU-bound frame read as CPU. It is renamed `loop_max_ms`, and
+  `proc_ms`/`proc_max_ms` (main.gd's `_process` timed end to end) and `rcpu_ms` (the
+  render thread's measured CPU) join it. The frozen `soak.sh` prefix is unchanged.
+- The wrist footer and the IFS frame and triangle counts show only in debug builds.
 - **The ambient spin turns the hero on its own trunk; the forest stands still.** Spinning
   the cloud orbited every planted tree around the hero and swept trunks through the viewer.
   Wind now crosses a grove as one gust, reaching each tree a little later the further
@@ -193,6 +210,23 @@ All notable changes to FractalXR are documented here. Format based on
   reached the headset unchecked.
 
 ### Fixed
+- **BULB, GROUND, FLAME no longer brings the flame back as a frozen ball of seeds.** The
+  settle countdown ran down in ground, tree and IFS, which never iterate the cloud.
+- **A bulb switch measures and bakes the new bulb, not the last one.** A source
+  generation now tags each measurement and bake; one that describes the previous source is
+  dropped, and the bake bins against the target framing rather than the eased one.
+- **A frozen or baked bulb holds no raw seeds.** Reseeding stops for the last frames of
+  the settle and through the bake, as the flame's settle already did.
+- **A bulb load keeps the chosen colour theme** instead of showing its own palette under
+  the theme's swatch.
+- **Bulb splats are the size SPLAT and COVERAGE ask for.** Surface-aligned splats took the
+  cloud's scale twice, so at the 0.55 toy scale they drew at 0.55x.
+- **The cloud stops simulating under the marcher.** With SURFACE on, a settled bulb
+  freezes and a pending bake waits until the particles are shown again.
+- **The quaternion DE reads 0 at the origin** in `march.gdshader` and `bulb.glsl`, as
+  `BulbSource.de` already did, instead of inf or NaN. `de_check` samples the origin now.
+- **The godot/tools harnesses report a pass as a pass.** Their EXIT trap's `kill` of an
+  already-reaped watchdog failed under `set -e` in macOS bash 3.2 and turned exit 0 into 1.
 - **No more flashes of the wrong terrain while zooming or walking on the ground.** The
   shader trusted every level's whole window, but a pan strip or a level a zoom step had
   just made sat queued for the fill with its slots still holding texels from the far side
