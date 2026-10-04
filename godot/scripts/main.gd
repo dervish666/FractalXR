@@ -976,9 +976,14 @@ func _build_menu() -> void:
 			# Breathing and a morph rebuild on every frame, so they run at the rung a drag runs
 			# at. Naming it keeps the frame count below from reading as the wrong number for
 			# the rung on the DETAIL tile.
+			# Instance and triangle counts are instruments: debug builds only, so they stay
+			# out of a release build's menu shots.
+			var dbg := OS.is_debug_build()
 			if ifs.levels_built < IFS_DETAIL[ifs_detail_idx]:
-				return "moving at level %d · %d frames" % [ifs.levels_built, ifs.instance_count]
-			return "%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]
+				return ("moving at level %d · %d frames" % [ifs.levels_built, ifs.instance_count]) \
+						if dbg else "moving at level %d" % ifs.levels_built
+			return ("%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]) \
+					if dbg else ""
 		if tree_mode:
 			# At capacity the trigger stops doing anything and the marker goes away, so
 			# say why here rather than leaving the floor silently dead.
@@ -1007,6 +1012,9 @@ func _build_menu() -> void:
 		return "drifting" if _drift else ""
 
 	menu.status_main = func():
+		# The footer is a perf readout. A release build shows nothing there.
+		if not OS.is_debug_build():
+			return ""
 		if ifs_mode:
 			# Build time, not draw time: the sculpture is static, so what a rung costs to
 			# generate is the number that decides whether a drag can rebuild every frame.
@@ -1252,9 +1260,18 @@ func _ifs_scale() -> float:
 ## The second half of the [perf] line. Appended, never inserted: see the note above the
 ## print. Each field here exists because a question could not be answered from a log.
 ##
-##   cpu_ms  draw_ms is the GPU alone. A session that held 12.8 ms of GPU against a
-##           13.89 ms budget and still dropped to 48 fps could have been CPU-bound or
-##           compositor-bound and the log could not say which.
+##   proc_ms / proc_max_ms
+##           main.gd's _process (input, menu, modes, the compute encode), mean and worst
+##           frame over this log window. Script time only.
+##   rcpu_ms the render thread's CPU for the last frame: viewport_get_measured_render_time_cpu
+##           plus get_frame_setup_time_cpu (culling, draw-list building, submission). With
+##           draw_ms as the GPU, these split a slow frame into script, render CPU and GPU.
+##   loop_max_ms
+##           Performance.TIME_PROCESS, which used to be logged as cpu_ms. In Godot 4.7.2 it
+##           is the worst frame per second of a span that wraps _process AND
+##           RenderingServer sync() + draw() (main.cpp:5059-5100, published at :5136), and
+##           with rendering on the main thread draw() includes the fence and swapchain
+##           waits. A GPU-bound frame reads high here, so it says nothing about CPU alone.
 ##   hz      the budget itself. 13.89 ms at 72 Hz, 11.11 ms at 90; without the refresh
 ##           rate "is 12.8 ms over budget" has no answer.
 ##   guard   _perf_scale. The frame-rate governor only ever surfaced as "guard NN%" on
@@ -1269,9 +1286,18 @@ func _perf_tail() -> String:
 	var hz := 0.0
 	if xr != null:
 		hz = xr.get_display_refresh_rate()
-	var cpu_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
-	var head := " cpu_ms=%.3f hz=%.0f guard=%.2f mr=%s" % [
-		cpu_ms, hz, _perf_scale, "on" if passthrough else "off"]
+	var vp := get_viewport().get_viewport_rid()
+	var proc_ms := (float(_proc_us_sum) / float(maxi(1, _proc_frames))) / 1000.0
+	var proc_max_ms := float(_proc_us_max) / 1000.0
+	_proc_us_sum = 0
+	_proc_us_max = 0
+	_proc_frames = 0
+	var rcpu_ms := RenderingServer.viewport_get_measured_render_time_cpu(vp) \
+			+ RenderingServer.get_frame_setup_time_cpu()
+	var loop_max_ms := Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+	var head := " proc_ms=%.3f proc_max_ms=%.3f rcpu_ms=%.3f loop_max_ms=%.3f hz=%.0f guard=%.2f mr=%s" % [
+		proc_ms, proc_max_ms, rcpu_ms, loop_max_ms, hz, _perf_scale,
+		"on" if passthrough else "off"]
 	if ifs_mode:
 		# edit= is what makes a drag measurable after the fact: build_ms during a drag is the
 		# number that decides whether every frame can rebuild, and without this field there is
@@ -1709,6 +1735,9 @@ func _load_bulb(i: int) -> void:
 	# Only entering bulb mode (see _set_bulb_mode) puts you inside the surface.
 	_converge = CONVERGE_FRAMES
 	cloud.request_measure()
+	# set_source and reload_source paint the bulb's own palette (apply_look). Put the
+	# user's theme back over it and resync the menu swatch and marcher, as _load_preset does.
+	call_deferred("_apply_palette")
 
 
 func _morph_to_new(g: Dictionary) -> void:
@@ -1745,6 +1774,12 @@ func _sync_iteration() -> void:
 			if _bulb_settle == 0:
 				cloud.request_measure()
 				_bake_wait = BAKE_DELAY_FRAMES
+		elif cloud.is_hidden():
+			# The marcher is drawing the surface. The settle above still runs, because the
+			# marcher frames itself from the cloud's measurement, but after that nothing
+			# draws the particles: freeze them (no dispatch at all) and hold any pending
+			# bake until they are shown again.
+			_bulb.update_mod = 0
 		elif _bake_wait > 0:
 			# Let the measurement land: the bake bins particles into a grid sized from
 			# the framing, and binning against a stale extent drops the outliers.
@@ -1758,6 +1793,13 @@ func _sync_iteration() -> void:
 			_bulb.update_mod = 0
 		else:
 			_bulb.update_mod = want
+		# The flame's reseed-free tail, for the frames that end in a freeze or a bake. A
+		# reseed gets only proj_steps of projection, and a Mandelbox point that fails to
+		# escape is stored raw and reprojected next frame, so both leave unprojected seeds
+		# in the last frame stepped. With no reseeding the raw share decays geometrically.
+		var fusing := (_bulb_settle > 0 and _bulb_settle <= FUSE_FRAMES) \
+				or _bake_wait > 0 or cloud.is_baking()
+		_bulb.reseed_prob = 0.0 if fusing else BulbSource.RESEED_PROB
 		return
 	var src := cloud.source as FlameSource
 	if src == null:
@@ -2023,7 +2065,23 @@ func _current_eye_res() -> Vector2i:
 	return get_viewport().get_visible_rect().size
 
 
+## Script time for the [perf] line: this node's _process, timed end to end and summed over
+## the log window. Performance.TIME_PROCESS cannot stand in for it (see _perf_tail).
+var _proc_us_sum := 0
+var _proc_us_max := 0
+var _proc_frames := 0
+
+
 func _process(delta: float) -> void:
+	var t0 := Time.get_ticks_usec()
+	_process_frame(delta)
+	var us := Time.get_ticks_usec() - t0
+	_proc_us_sum += us
+	_proc_us_max = maxi(_proc_us_max, us)
+	_proc_frames += 1
+
+
+func _process_frame(delta: float) -> void:
 	_uptime += delta
 	cloud.ease_framing(delta)
 	if _theme_blend < 1.0:
@@ -2056,7 +2114,9 @@ func _process(delta: float) -> void:
 			_guard_march()
 	if not ground_mode and not tree_mode and not ifs_mode:
 		_tick_morph(delta)   # the flame and its drift wait while you are on the ground
-	if _converge > 0:
+	# Same gate as _tick_morph: ground, tree and IFS never dispatch cloud.iterate, so a
+	# countdown burnt there brought the flame back as a frozen ball of seeds.
+	if _converge > 0 and not ground_mode and not tree_mode and not ifs_mode:
 		_converge -= 1
 		# Flame only: a bulb also sets _converge, and caching its measurement here filed
 		# the bulb's framing under the flame preset that happened to be selected.
