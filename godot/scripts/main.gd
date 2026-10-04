@@ -1717,6 +1717,9 @@ func _load_bulb(i: int) -> void:
 	# Only entering bulb mode (see _set_bulb_mode) puts you inside the surface.
 	_converge = CONVERGE_FRAMES
 	cloud.request_measure()
+	# set_source and reload_source paint the bulb's own palette (apply_look). Put the
+	# user's theme back over it and resync the menu swatch and marcher, as _load_preset does.
+	call_deferred("_apply_palette")
 
 
 func _morph_to_new(g: Dictionary) -> void:
