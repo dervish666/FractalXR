@@ -43,18 +43,19 @@ func _init() -> void:
 		await process_frame
 
 	var failures: Array[String] = []
-	# The device path: open through update(), no debug_level/debug_force. Every shot below
-	# goes through debug_level(""), which once hid a fresh panel opening with no cards.
-	var m = main.menu
-	m._pinned = true
-	for i in 60:
-		await process_frame
-	var cold_ok: bool = m.visible and m._level == "" and m._top.visible and m._top.modulate.a > 0.99
-	print("MENUSHOT cold_open %s top=%s/%.2f" % ["PASS" if cold_ok else "FAIL", m._top.visible, m._top.modulate.a])
-	if not cold_ok:
-		failures.append("cold_open: the top level is hidden on a natural open")
-	m._pinned = false
-	m._shown = 0.0
+	# The device path. Every shot below goes through debug_level(), which once hid two
+	# device bugs: a fresh panel opening with no cards, and a panel left blank after a
+	# card. This walk uses only what a hand can do: open the float, aim the right ray at
+	# a tile, pull a trigger. Rail to every mode, into every card and back, and the exact
+	# sequence Sam hit: into a non-gallery card, then the rail to another mode.
+	var walk := await _walk(main, false)
+	walk.append_array(await _walk(main, true))
+	failures.append_array(walk)
+	print("MENUSHOT walk %s (%d problems)" % ["PASS" if walk.is_empty() else "FAIL", walk.size()])
+	for w in walk:
+		print("MENUSHOT walk_detail %s" % w)
+	main.menu.set_pinned(false, true)
+	main.menu._shown = 0.0
 	for i in 5:
 		await process_frame
 	var shots := 0
@@ -297,3 +298,179 @@ func _is_blank(img: Image) -> bool:
 			if img.get_pixel(x, y).a > 0.05:
 				lit += 1
 	return lit < 32
+
+
+# --- the device-path walk ---------------------------------------------------------
+
+var _worn := false
+var _main
+
+
+## Worn: hold the head 40 cm in front of the wrist panel, so the wrist reads as turned up.
+func _face(main) -> void:
+	var m = main.menu
+	var g: Transform3D = m.global_transform
+	var eye: Vector3 = g.origin + g.basis.z.normalized() * 0.4
+	main.xr_camera.global_transform = Transform3D(Basis(), eye).looking_at(g.origin, Vector3.UP)
+
+
+## Put the right controller 15 cm off the front plane, its ray through `pixel`.
+func _aim(main, pixel: Vector2) -> void:
+	var m = main.menu
+	if _worn:
+		_face(main)
+	var half: Vector2 = m.PANEL_METRES * 0.5
+	var u := pixel.x / float(m.VIEW_SIZE.x)
+	var v := pixel.y / float(m.VIEW_SIZE.y)
+	var f: Transform3D = m._front.global_transform
+	var p := f * Vector3((u * 2.0 - 1.0) * half.x, (1.0 - 2.0 * v) * half.y, 0.0)
+	var n := f.basis.z.normalized()
+	var at := p + n * 0.15
+	main.right_hand.global_transform = Transform3D(Basis(), at).looking_at(p, f.basis.y.normalized())
+
+
+## Aim at a tile, let update() hover it, pull the right trigger. False if it never hovered.
+func _press(main, tile: int) -> bool:
+	var m = main.menu
+	var c: Control = m._tiles[tile]
+	for k in 30:
+		_aim(main, c.get_global_rect().get_center())
+		await process_frame
+		if m._hovered == tile:
+			m.trigger(true)
+			return true
+	return false
+
+
+## Frames until the zoom and the open have finished, on the menu's own clock.
+func _settle_walk(m) -> void:
+	for k in 600:
+		if _worn:
+			_face(_main)
+		await process_frame
+		if m._zoom_t >= 1.0 and m._shown >= 1.0:
+			break
+	for k in 4:
+		await process_frame
+
+
+func _alpha(c: Control, stop: Node) -> float:
+	var a := 1.0
+	var n: Node = c
+	while n != null and n != stop:
+		if n is CanvasItem:
+			a *= (n as CanvasItem).modulate.a * (n as CanvasItem).self_modulate.a
+		n = n.get_parent()
+	return a
+
+
+## The top level: at least three cards, every one drawn and opaque.
+func _check_top(m, tag: String) -> Array[String]:
+	var bad: Array[String] = []
+	if m._level != "":
+		bad.append("%s: level '%s', not the top" % [tag, m._level])
+	var n := 0
+	for c in m._cards:
+		if not c.is_visible_in_tree():
+			continue
+		n += 1
+		var a := _alpha(c, m._root)
+		if a < 0.9:
+			bad.append("%s: card %s alpha %.2f" % [tag, c.label, a])
+	if n < 3:
+		bad.append("%s: %d cards showing (top=%s a=%.2f)" % [tag, n, m._top.visible, m._top.modulate.a])
+	return bad
+
+
+## Inside a card: at least one control in its box, every one drawn and opaque.
+func _check_sub(m, key: String, tag: String) -> Array[String]:
+	var bad: Array[String] = []
+	if m._level != key:
+		bad.append("%s: level '%s', wanted '%s'" % [tag, m._level, key])
+		return bad
+	var box: Control = m._boxes[key]["box"]
+	var n := 0
+	for i in m._tiles.size():
+		var t: Control = m._tiles[i]
+		if not t.is_visible_in_tree() or not box.is_ancestor_of(t):
+			continue
+		if m._tile_kind[i] == m.Kind.MORE or m._tile_kind[i] == m.Kind.BACK:
+			continue
+		n += 1
+		var a := _alpha(t, m._root)
+		if a < 0.9:
+			bad.append("%s: control %d alpha %.2f" % [tag, i, a])
+	if n == 0:
+		bad.append("%s: no controls showing" % tag)
+	if OS.get_environment("WALKSHOT") == "1":
+		(m.debug_composite() as Image).save_png("res://.spike-out/walk_%s.png" % tag.replace("/", "_").replace(" ", "_"))
+		print("WALK %s sub.scale=%s sub.pos=%s sub.a=%.2f top.vis=%s box=%s" % [tag, m._sub.scale, m._sub.global_position, m._sub.modulate.a, m._top.visible, (m._boxes[key]["box"] as Control).get_global_rect()])
+	return bad
+
+
+func _station(m, mode: String) -> int:
+	for i in m._tiles.size():
+		if m._tile_kind[i] == m.Kind.STATION and m.items[m._tile_item[i]].label.to_lower() == mode:
+			return i
+	return -1
+
+
+func _card_tile(m, key: String) -> int:
+	for i in m._tiles.size():
+		if m._tile_kind[i] == m.Kind.CARD and m._tile_key[i] == key:
+			return i
+	return -1
+
+
+func _walk(main, pinned: bool) -> Array[String]:
+	var bad: Array[String] = []
+	var m = main.menu
+	_worn = not pinned
+	_main = main
+	if _worn:
+		_face(main)
+	m.set_pinned(pinned, true)
+	await _settle_walk(m)
+	bad.append_array(_check_top(m, "open"))
+	for mode in MODES:
+		var st := _station(m, mode)
+		if st < 0 or not await _press(main, st):
+			bad.append("%s: could not press its station" % mode)
+			continue
+		await _settle_walk(m)
+		bad.append_array(_check_top(m, "%s top" % mode))
+		var keys: Array[String] = []
+		for c in m._cards.size():
+			if m._cards[c].is_visible_in_tree():
+				keys.append(m._card_keys[c])
+		for key in keys:
+			var ct := _card_tile(m, key)
+			if ct < 0 or not await _press(main, ct):
+				bad.append("%s/%s: could not press the card" % [mode, key])
+				continue
+			await _settle_walk(m)
+			bad.append_array(_check_sub(m, key, "%s/%s" % [mode, key]))
+			m.trigger(false)   # the other hand's trigger: back up a level
+			await _settle_walk(m)
+			bad.append_array(_check_top(m, "%s/%s back" % [mode, key]))
+	# Sam's sequence: into a card that is not the gallery, then the rail to another mode.
+	for pair in [["flame", "bulb"], ["bulb", "flame"], ["tree", "ifs"]]:
+		await _press(main, _station(m, pair[0]))
+		await _settle_walk(m)
+		var key := ""
+		for c in m._cards.size():
+			var k: String = m._card_keys[c]
+			if m._cards[c].is_visible_in_tree() and int(m._boxes[k]["wide_item"]) < 0:
+				key = k
+				break
+		if key == "" or not await _press(main, _card_tile(m, key)):
+			bad.append("%s: no non-gallery card to press" % pair[0])
+			continue
+		await _settle_walk(m)
+		bad.append_array(_check_sub(m, key, "%s/%s" % [pair[0], key]))
+		if not await _press(main, _station(m, pair[1])):
+			bad.append("%s/%s: rail to %s not pressable" % [pair[0], key, pair[1]])
+			continue
+		await _settle_walk(m)
+		bad.append_array(_check_top(m, "%s/%s then rail to %s" % [pair[0], key, pair[1]]))
+	return bad

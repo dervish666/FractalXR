@@ -625,6 +625,7 @@ var _refresh_accum := REFRESH_S
 var _wants_stick := false
 var _focused := true
 var _back_dirty := true
+var _back_until := 0           # process frame the back plane may stop rendering at
 var _debug_hold := false
 
 # --- wear or pin -------------------------------------------------------------
@@ -696,6 +697,8 @@ func set_mode(mode: String) -> void:
 	# A new world opens at its top level: the cards you had open belong to the old one.
 	if _vp != null:
 		_go_level("", Vector2(VIEW_SIZE) * 0.5, false)
+		if OS.is_debug_build() and visible:
+			_log_layers.call_deferred("mode")
 
 
 ## The menu button: fly off the arm to a float in front of you, or fly home.
@@ -1042,7 +1045,7 @@ func _build_viewports() -> void:
 	_bvp = SubViewport.new()
 	_bvp.size = VIEW_SIZE
 	_bvp.transparent_bg = true
-	_bvp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	_bvp.render_target_update_mode = SubViewport.UPDATE_DISABLED   # _animate drives it
 	_bvp.disable_3d = true
 	add_child(_bvp)
 	_broot = Control.new()
@@ -1401,9 +1404,22 @@ func update(delta: float) -> bool:
 
 
 ## One line per open in debug builds, so a device log proves what the compositor was given.
-func _log_layers() -> void:
-	var s := "[menu] open level='%s' zoom_in=%s top=%s/%.2f pinned=%s" % [
-		_level, _zoom_in, _top.visible, _top.modulate.a, _pinned]
+func _log_layers(why := "open") -> void:
+	var lo := 9.0
+	var shown := 0
+	var host: Control = _top if _level == "" else _boxes[_level]["box"]
+	for t in _tiles:
+		if t.is_visible_in_tree() and host.is_ancestor_of(t):
+			shown += 1
+			var a := 1.0
+			var n: Node = t
+			while n != null and n != _root:
+				a *= (n as CanvasItem).modulate.a if n is CanvasItem else 1.0
+				n = n.get_parent()
+			lo = minf(lo, a)
+	var s := "[menu] %s mode=%s level='%s' zoom=%.2f/%s top=%s/%.2f/%.2f sub=%s/%.2f/%.2f tiles=%d min_a=%.2f pinned=%s front_z=%.3f" % [
+		why, _mode, _level, _zoom_t, _zoom_in, _top.visible, _top.modulate.a, _top.scale.x,
+		_sub.visible, _sub.modulate.a, _sub.scale.x, shown, lo, _pinned, _front.position.z]
 	for pair in [["back", _blayer, _bvp], ["front", _layer, _vp]]:
 		var l := pair[1] as OpenXRCompositionLayerQuad
 		var v := pair[2] as SubViewport
@@ -1785,6 +1801,8 @@ func _animate(delta: float) -> void:
 		_zoom_t = minf(1.0, _zoom_t + (delta / ZOOM_S if delta > 0.0 else 0.0))
 		if _zoom_t >= 1.0:
 			_layout_dirty()   # the shadows of what just faded out go with it
+			if OS.is_debug_build() and _vp != null:
+				_log_layers.call_deferred("settled")
 	var z := _zoom_t * _zoom_t * (3.0 - 2.0 * _zoom_t)
 	var zin := z if _zoom_in else 1.0 - z
 	var top_s := 1.0 + 1.3 * zin
@@ -1846,9 +1864,22 @@ func _animate(delta: float) -> void:
 			var lift := 1.0 + (0.03 if w.kind == Kind.CARD else 0.02) * h - 0.05 * _pulse[i]
 			w.scale = Vector2(0.72 + 0.28 * pour, 0.9 + 0.1 * pour) * lift
 			w.queue_redraw()
-	if _back_dirty and _bvp != null:
-		_back_dirty = false
-		_bvp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	# The back plane renders for a couple of frames when something on it moved, then
+	# stops. Not UPDATE_ONCE: Godot's composition layer gives every UPDATE_ONCE a fresh
+	# STATIC_IMAGE swapchain (openxr_composition_layer_extension.cpp), and the back is
+	# dirtied every frame of the open and every refresh, so that was a swapchain created
+	# and destroyed several times a second. ALWAYS-then-DISABLED reuses one swapchain and
+	# the compositor keeps showing its last released image while nothing renders.
+	if _bvp != null:
+		var now := Engine.get_process_frames()
+		if _back_dirty:
+			_back_dirty = false
+			_back_until = now + 2
+			if _bvp.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+				_bvp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		elif now >= _back_until and not _debug_hold \
+				and _bvp.render_target_update_mode == SubViewport.UPDATE_ALWAYS:
+			_bvp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 
 func _wrist_facing() -> bool:
