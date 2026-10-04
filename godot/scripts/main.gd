@@ -1109,7 +1109,7 @@ func _step_detail(d: int) -> void:
 	if march.is_on():
 		render_idx = MARCH_RENDER_IDX
 	if xr != null:
-		xr.render_target_size_multiplier = MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx]
+		_set_eye_scale(MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx])
 
 
 
@@ -1500,7 +1500,7 @@ func _set_ground_mode(on: bool) -> void:
 		if render_idx == GROUND_RENDER_IDX:
 			render_idx = _render_idx_saved
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		_set_eye_scale(RENDER_STEPS[render_idx])
 
 
 ## Point at the ground and pull: glide until that spot is under you.
@@ -1688,7 +1688,7 @@ func _enter_inside() -> void:
 	_inside_slow = 0
 	render_idx = INSIDE_RENDER_IDX
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		_set_eye_scale(RENDER_STEPS[render_idx])
 	var p := _bulb.find_hollow()
 	var d := maxf(_bulb.de(p), 1e-4)
 	var local := (p - cloud.center) * cloud.fit
@@ -1732,7 +1732,32 @@ func _leave_inside() -> void:
 	_inside = false
 	render_idx = _inside_render_saved
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		_set_eye_scale(RENDER_STEPS[render_idx])
+
+
+## The eye buffer scale, applied between frames rather than when it is asked for. Godot
+## sizes the XR viewport's render buffers by polling get_render_target_size() in the root
+## viewport's internal process (Viewport::_check_xr_size), but OpenXR recreates its
+## swapchains at draw time (OpenXRAPI::pre_draw_viewport). A multiplier written from
+## _process, after the root had already polled, drew one frame with new-size swapchain
+## images against old-size render buffers: the "All textures in a framebuffer should be the
+## same size" burst on every DETAIL, ground, ENTER and march change. Written from
+## frame_post_draw, the next frame's poll and its draw both see the new size.
+var _eye_scale_pending := -1.0
+
+
+func _set_eye_scale(m: float) -> void:
+	if xr == null:
+		return
+	if _eye_scale_pending < 0.0:
+		RenderingServer.frame_post_draw.connect(_commit_eye_scale, CONNECT_ONE_SHOT)
+	_eye_scale_pending = m
+
+
+func _commit_eye_scale() -> void:
+	if xr != null and _eye_scale_pending > 0.0:
+		xr.render_target_size_multiplier = _eye_scale_pending
+	_eye_scale_pending = -1.0
 
 
 func _apply_foveation() -> void:
@@ -2556,7 +2581,7 @@ func _apply_march_budget() -> void:
 		_march_render_saved = render_idx
 	render_idx = MARCH_RENDER_IDX
 	if xr != null:
-		xr.render_target_size_multiplier = MARCH_RENDER_SCALE
+		_set_eye_scale(MARCH_RENDER_SCALE)
 
 
 func _restore_march_budget() -> void:
@@ -2566,7 +2591,7 @@ func _restore_march_budget() -> void:
 	render_idx = _march_render_saved
 	_march_render_saved = -1
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		_set_eye_scale(RENDER_STEPS[render_idx])
 
 
 ## Outside the explicit ENTER path the user can still fill both eye buffers by bringing a
