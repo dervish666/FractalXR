@@ -67,6 +67,7 @@ func _init() -> void:
 	_echoes(ifs)
 	_echo_layout()
 	_echo_life(ifs)
+	_land(ifs)
 	await _grab_suspend()
 	_editor_setup()
 	await _editor_space()
@@ -1029,6 +1030,43 @@ func _echo_life(ifs: FractalIFS) -> void:
 			+ "mm+material agree=%s, advance() %.1f us/frame, tiers skipped when off=%s caught up=%s") % [
 			lay.size(), counts[0], counts[1], counts[2], counts[3], fastest, str(distinct), worst, ctl,
 			changed, start.size(), str(agree), per_frame_us, str(skipped), str(caught)])
+
+
+## An edit lands in place (audit 2026-10-04): a release, UNDO, cancel or DETAIL step must not
+## restart the grow-in, which collapsed the sculpture and every echo and regrew them. A step
+## that adds a generation grows only that one. With MOTION on it builds at the drag rung the
+## next frame uses. The control is a plain build(), which must restart the clock.
+func _land(ifs: FractalIFS) -> void:
+	_defaults(ifs)
+	ifs.ambient = false
+	ifs.detail = 2
+	ifs.build()
+	ifs.anim_t += 5.0
+	var born0: float = ifs.material().get_shader_parameter(&"born_at")
+	ifs.plane1_offset = 0.1
+	ifs.land_edit()
+	var same_rung: bool = ifs.material().get_shader_parameter(&"born_at") == born0
+	ifs.detail = 3
+	ifs.land_edit()
+	var gf: float = ifs.material().get_shader_parameter(&"grow_from")
+	var deeper: bool = ifs.levels_built == 3 and gf > 0.4
+	ifs.build()
+	var ctl: bool = ifs.material().get_shader_parameter(&"born_at") != born0 \
+		and float(ifs.material().get_shader_parameter(&"grow_from")) == 0.0
+	ifs.ambient = true
+	ifs.set_preset(2)
+	ifs.detail = 3
+	var t0 := Time.get_ticks_usec()
+	ifs.land_edit()
+	var live_ms := float(Time.get_ticks_usec() - t0) * 0.001
+	var at_drag: bool = ifs.levels_built == int(FractalIFS.PRESETS[2]["drag"])
+	ifs.ambient = false
+	_defaults(ifs)
+	ifs.build(false)
+	_ok("edits land", same_rung and deeper and ctl and at_drag,
+		("same rung no regrow=%s, detail 2->3 grows only level 3 (grow_from %.3f)=%s, "
+			+ "MOTION on lands at STAR drag rung=%s in %.2f ms, build() control restarts=%s") % [
+			str(same_rung), gf, str(deeper), str(at_drag), live_ms, str(ctl)])
 
 
 func _rejection(ifs: FractalIFS) -> void:

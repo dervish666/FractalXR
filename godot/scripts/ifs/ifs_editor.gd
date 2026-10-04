@@ -146,7 +146,7 @@ func undo() -> bool:
 	_apply(_undo_snap)
 	_has_undo = false
 	_undo_snap = {}
-	_ifs.build()
+	_ifs.land_edit()
 	refresh()
 	return true
 
@@ -160,7 +160,7 @@ func cancel() -> void:
 	_end()
 	_rearm = [true, true]
 	_ifs.detail = _full_detail
-	_ifs.build()
+	_ifs.land_edit()
 	refresh()
 
 
@@ -277,7 +277,7 @@ func _commit() -> void:
 		_hand.trigger_haptic_pulse("haptic", 0.0, 0.3, 0.02, 0.0)
 	_end()
 	_ifs.detail = _full_detail
-	_ifs.build()
+	_ifs.land_edit()
 	refresh()
 
 

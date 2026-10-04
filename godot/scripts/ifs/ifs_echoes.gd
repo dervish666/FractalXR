@@ -135,6 +135,8 @@ var _folding := PackedByteArray()
 var _next := PackedFloat64Array()
 var _next_any := INF
 var _unit := 1.0
+static var _layout_key: Array = []
+static var _layout_val: Array = []
 
 
 func _init() -> void:
@@ -223,7 +225,16 @@ func instance_total() -> int:
 func place(anchor: Transform3D, floor_y: float, unit: float, width_m: float, hero: Vector3) -> void:
 	global_transform = anchor
 	_unit = unit
-	placements = layout(floor_y, width_m, hero)
+	# The layout is pure, so a recentre at the same floor reuses the last one. At HOST it
+	# measured 19 ms on the Mac, several frames on Quest, every time the mode opened.
+	# Floor rounded up to 10 cm, the conservative way: a floor that is really lower only adds
+	# clearance, and a recentre a few centimetres taller or shorter hits the cache.
+	var fy := ceilf(floor_y * 10.0 - 1e-4) / 10.0
+	var key := [fy, width_m, hero]
+	if key != _layout_key:
+		_layout_key = key
+		_layout_val = layout(fy, width_m, hero)
+	placements = _layout_val
 	_next_any = INF
 	for i in _nodes.size():
 		var m := _nodes[i]
@@ -370,6 +381,9 @@ static func layout(floor_y: float, width_m: float, hero: Vector3) -> Array:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = SEED
 	var out: Array = []
+	# The overlap test's inputs as packed arrays: the dictionary walk was most of layout's time.
+	var at := PackedVector3Array()
+	var rad := PackedFloat32Array()
 	var hero_dir := hero.normalized() if hero.length() > 1e-4 else Vector3.FORWARD
 	# One group per ladder rung, so each count is placed around the smaller one before it.
 	var counts: Array[int] = []
@@ -391,9 +405,11 @@ static func layout(floor_y: float, width_m: float, hero: Vector3) -> Array:
 		sizes.sort()
 		sizes.reverse()
 		for s in sizes:
-			var rec := _fit(rng, s, floor_y, width_m, hero_dir, out)
+			var rec := _fit(rng, s, floor_y, width_m, hero_dir, at, rad)
 			if not rec.is_empty():
 				out.append(rec)
+				at.append(rec["pos"] as Vector3)
+				rad.append(float(rec["r"]))
 	# The life is drawn after, from its own stream per echo, so it cannot shift a placement and
 	# each echo keeps its life when a bigger rung is added around it.
 	for i in out.size():
@@ -467,7 +483,7 @@ static func radius_of(s: float, width_m: float) -> float:
 
 
 static func _fit(rng: RandomNumberGenerator, s: float, floor_y: float, width_m: float,
-		hero_dir: Vector3, placed: Array) -> Dictionary:
+		hero_dir: Vector3, at: PackedVector3Array, rad: PackedFloat32Array) -> Dictionary:
 	var r := radius_of(s, width_m)
 	for t in TRIES:
 		var d := clampf(D_MIN * pow(s / S_MIN, DIST_POW) * rng.randf_range(DIST_JITTER.x, DIST_JITTER.y),
@@ -486,7 +502,7 @@ static func _fit(rng: RandomNumberGenerator, s: float, floor_y: float, width_m: 
 		if axis.length() < 1e-3:
 			axis = Vector3.UP
 		var basis := Basis(axis.normalized(), rng.randf_range(0.0, TAU))
-		if violates(pos, r, floor_y, hero_dir, placed):
+		if _violates(pos, r, floor_y, hero_dir, at, rad):
 			continue
 		var shell := log(d / D_MIN) / log(D_MAX / D_MIN)
 		return {
@@ -500,6 +516,16 @@ static func _fit(rng: RandomNumberGenerator, s: float, floor_y: float, width_m: 
 
 ## Every comfort rule, as one predicate a check can also hand a bad placement to.
 static func violates(pos: Vector3, r: float, floor_y: float, hero_dir: Vector3, placed: Array) -> bool:
+	var at := PackedVector3Array()
+	var rad := PackedFloat32Array()
+	for q in placed:
+		at.append(q["pos"] as Vector3)
+		rad.append(float(q["r"]))
+	return _violates(pos, r, floor_y, hero_dir, at, rad)
+
+
+static func _violates(pos: Vector3, r: float, floor_y: float, hero_dir: Vector3,
+		at: PackedVector3Array, rad: PackedFloat32Array) -> bool:
 	var d := pos.length()
 	if d - r < HEAD_CLEAR:
 		return true
@@ -509,7 +535,8 @@ static func violates(pos: Vector3, r: float, floor_y: float, hero_dir: Vector3, 
 	var off := rad_to_deg(pos.normalized().angle_to(hero_dir))
 	if off < SIGHT_CONE_DEG + rad_to_deg(asin(clampf(r / d, 0.0, 1.0))):
 		return true
-	for q in placed:
-		if pos.distance_to(q["pos"] as Vector3) < (r + float(q["r"])) * 1.1:
+	for k in at.size():
+		var lim := (r + rad[k]) * 1.1
+		if pos.distance_squared_to(at[k]) < lim * lim:
 			return true
 	return false

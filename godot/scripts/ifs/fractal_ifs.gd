@@ -66,6 +66,7 @@ const BREATHE_AMP := 0.04
 ## so a cube preset comes back to itself every 30 s rather than every 120.
 const TWIST_S := 120.0
 const MORPH_S := 2.0         # seconds from one preset's maps to the next
+const BREATHE_EVERY := 2     # frames per breathing rebuild; see tick()
 const COLOUR_EASE_S := 0.5   # time constant of the palette settling after a change of rung
 ## The ramp texture the shader samples. 256 is more than a five-stop palette needs and still
 ## a rounding-free number of texels per stop for the sizes a palette actually comes in.
@@ -176,6 +177,7 @@ var ambient_hold := false
 ## calling tick() with the delta it wants, which the shader's own TIME would not allow.
 var anim_t := 0.0
 var breathe_t := 0.0
+var _breathe_n := 0
 ## Morph progress, 1.0 when there is none. `morph_to` is the preset it is heading for.
 var morph_t := 1.0
 var morph_to := -1
@@ -459,8 +461,30 @@ func tick(delta: float) -> bool:
 		return false
 	if ambient:
 		breathe_t += delta
-		_rebuild_live()
+		# Every BREATHE_EVERY frames: the median breathing rebuild was 2.0 ms on Quest, and at
+		# 36 Hz the outermost frame of a 0.6 m sculpture steps under half a millimetre. A long
+		# frame (a hitch, or a harness stepping seconds) rebuilds at once.
+		if _breathe_n == 0 or delta > 0.034:
+			_rebuild_live()
+			_breathe_n = 0
+		_breathe_n = (_breathe_n + 1) % BREATHE_EVERY
 	return false
+
+
+## Land an edit (a released handle, UNDO, cancel, a DETAIL or DEPTH step) in place: no
+## collapse and regrow of the whole sculpture, the way a SHAPE morph lands. With MOTION on it
+## builds at the rung the next frame rebuilds at anyway, so a DETAIL step does not pay for a
+## full build that one frame later throws away. A generation the edit adds grows out of the
+## frames already on screen.
+func land_edit() -> void:
+	var shown := levels_built
+	if ambient and not ambient_hold:
+		_rebuild_live()
+		_breathe_n = 1 % BREATHE_EVERY
+	else:
+		build(false)
+	if levels_built > shown:
+		_grow_levels_from(shown + 1)
 
 
 ## Travel to another preset's maps over MORPH_S. Retargets from wherever the shape is now, so
