@@ -20,7 +20,7 @@ PID=$!
 # Own only this child. pkill -f on the project path would take out any other run in flight.
 ( sleep 300; kill -9 "$PID" 2>/dev/null ) >/dev/null 2>&1 &
 WATCHDOG=$!
-trap 'kill "$WATCHDOG" 2>/dev/null; kill -9 "$PID" 2>/dev/null' EXIT
+trap 'set +e; kill "$WATCHDOG" 2>/dev/null; kill -9 "$PID" 2>/dev/null; true' EXIT
 wait "$PID"
 RC=$?
 kill "$WATCHDOG" 2>/dev/null; wait "$WATCHDOG" 2>/dev/null || true

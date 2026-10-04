@@ -6,7 +6,7 @@ mkdir -p "$PROJ/.spike-out"
 "$GODOT" $GODOT_FLAGS --headless --import >/dev/null 2>&1 || true
 ( sleep 240; pkill -9 -f "Godot --xr-mode off --path $PROJ" 2>/dev/null ) &
 WATCHDOG=$!
-trap 'kill $WATCHDOG 2>/dev/null' EXIT
+trap 'set +e; kill $WATCHDOG 2>/dev/null; true' EXIT
 "$GODOT" $GODOT_FLAGS --rendering-method mobile --resolution 1280x800 --position 0,0 \
 	--script tools/forest_shot.gd > "$PROJ/.spike-out/forest_shot.log" 2>&1
 RC=$?
