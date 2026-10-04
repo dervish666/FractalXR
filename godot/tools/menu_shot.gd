@@ -377,6 +377,7 @@ func _check_top(m, tag: String) -> Array[String]:
 		var a := _alpha(c, m._root)
 		if a < 0.9:
 			bad.append("%s: card %s alpha %.2f" % [tag, c.label, a])
+	bad.append_array(_check_finite(m, tag))
 	if n < 3:
 		bad.append("%s: %d cards showing (top=%s a=%.2f)" % [tag, n, m._top.visible, m._top.modulate.a])
 	return bad
@@ -405,6 +406,16 @@ func _check_sub(m, key: String, tag: String) -> Array[String]:
 	if OS.get_environment("WALKSHOT") == "1":
 		(m.debug_composite() as Image).save_png("res://.spike-out/walk_%s.png" % tag.replace("/", "_").replace(" ", "_"))
 		print("WALK %s sub.scale=%s sub.pos=%s sub.a=%.2f top.vis=%s box=%s" % [tag, m._sub.scale, m._sub.global_position, m._sub.modulate.a, m._top.visible, (m._boxes[key]["box"] as Control).get_global_rect()])
+	return bad
+
+
+func _check_finite(m, tag: String) -> Array[String]:
+	var bad: Array[String] = []
+	for v in [m._zoom_at, m._top.pivot_offset, m._sub.pivot_offset]:
+		if not (v as Vector2).is_finite() or absf(v.x) > 1e5 or absf(v.y) > 1e5:
+			bad.append("%s: zoom pivot ran away (zoom_at=%s top.pivot=%s sub.pivot=%s)" % [
+				tag, m._zoom_at, m._top.pivot_offset, m._sub.pivot_offset])
+			break
 	return bad
 
 
@@ -468,6 +479,13 @@ func _walk(main, pinned: bool) -> Array[String]:
 			continue
 		await _settle_walk(m)
 		bad.append_array(_check_sub(m, key, "%s/%s" % [pair[0], key]))
+		# Stay a while, as a hand does. The zoom pivot once fed back on itself every frame
+		# the top level sat scaled behind a card, and overflowed to NaN in a few seconds.
+		for k in 500:
+			if _worn:
+				_face(main)
+			await process_frame
+		bad.append_array(_check_finite(m, "%s/%s after a dwell" % [pair[0], key]))
 		if not await _press(main, _station(m, pair[1])):
 			bad.append("%s/%s: rail to %s not pressable" % [pair[0], key, pair[1]])
 			continue

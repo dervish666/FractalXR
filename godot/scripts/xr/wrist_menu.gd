@@ -1417,9 +1417,10 @@ func _log_layers(why := "open") -> void:
 				a *= (n as CanvasItem).modulate.a if n is CanvasItem else 1.0
 				n = n.get_parent()
 			lo = minf(lo, a)
-	var s := "[menu] %s mode=%s level='%s' zoom=%.2f/%s top=%s/%.2f/%.2f sub=%s/%.2f/%.2f tiles=%d min_a=%.2f pinned=%s front_z=%.3f" % [
+	var s := "[menu] %s mode=%s level='%s' zoom=%.2f/%s top=%s/%.2f/%.2f sub=%s/%.2f/%.2f tiles=%d min_a=%.2f pivot=%s/%s pinned=%s front_z=%.3f" % [
 		why, _mode, _level, _zoom_t, _zoom_in, _top.visible, _top.modulate.a, _top.scale.x,
-		_sub.visible, _sub.modulate.a, _sub.scale.x, shown, lo, _pinned, _front.position.z]
+		_sub.visible, _sub.modulate.a, _sub.scale.x, shown, lo, _top.pivot_offset.round(),
+		_sub.pivot_offset.round(), _pinned, _front.position.z]
 	for pair in [["back", _blayer, _bvp], ["front", _layer, _vp]]:
 		var l := pair[1] as OpenXRCompositionLayerQuad
 		var v := pair[2] as SubViewport
@@ -1806,12 +1807,17 @@ func _animate(delta: float) -> void:
 	var z := _zoom_t * _zoom_t * (3.0 - 2.0 * _zoom_t)
 	var zin := z if _zoom_in else 1.0 - z
 	var top_s := 1.0 + 1.3 * zin
-	_top.pivot_offset = _zoom_at - _top.global_position + _stage.global_position * 0.0
+	# The pivot is measured from each level's UNSCALED origin (the stage plus its own
+	# position). global_position already includes pivot and scale, so pivoting on it fed
+	# back: with the top scaled 2.3 behind an open card the pivot grew 1.3x per frame and
+	# reached NaN within seconds, and a NaN pivot blanks the cards for good.
+	var origin := _stage.global_position
+	_top.pivot_offset = _zoom_at - (origin + _top.position)
 	_top.scale = Vector2.ONE * top_s
 	_top.modulate.a = 1.0 - minf(1.0, zin * 1.8)
 	_top.visible = _top.modulate.a > 0.01
 	if _sub.visible or zin > 0.0:
-		_sub.pivot_offset = _zoom_at - _sub.global_position
+		_sub.pivot_offset = _zoom_at - (origin + _sub.position)
 		_sub.scale = Vector2.ONE * (0.42 + 0.58 * zin)
 		_sub.modulate.a = zin
 		_sub.visible = zin > 0.01
