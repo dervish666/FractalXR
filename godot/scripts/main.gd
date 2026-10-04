@@ -1756,6 +1756,12 @@ func _sync_iteration() -> void:
 			if _bulb_settle == 0:
 				cloud.request_measure()
 				_bake_wait = BAKE_DELAY_FRAMES
+		elif cloud.is_hidden():
+			# The marcher is drawing the surface. The settle above still runs, because the
+			# marcher frames itself from the cloud's measurement, but after that nothing
+			# draws the particles: freeze them (no dispatch at all) and hold any pending
+			# bake until they are shown again.
+			_bulb.update_mod = 0
 		elif _bake_wait > 0:
 			# Let the measurement land: the bake bins particles into a grid sized from
 			# the framing, and binning against a stale extent drops the outliers.

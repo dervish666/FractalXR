@@ -804,6 +804,11 @@ func set_visible_cloud(v: bool) -> void:
 		_sort_valid = false
 
 
+## True while the marcher (or another mode) has the cloud switched off.
+func is_hidden() -> bool:
+	return _hidden
+
+
 func request_seed() -> void:
 	_needs_seed = true
 
