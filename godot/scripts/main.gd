@@ -2082,7 +2082,9 @@ func _set_passthrough(on: bool) -> void:
 		elif xr.is_passthrough_supported():
 			if not xr.start_passthrough():
 				passthru_label = "n/a"
-				print("[xr] passthrough: start_passthrough() refused")
+				# Godot's is_passthrough_supported() is find() cast to bool, true exactly when
+				# alpha blend is NOT offered, so this branch is where "unsupported" lands.
+				print("[xr] passthrough: start_passthrough() refused (modes=%s; on Quest the vendors plugin provides alpha blend)" % str(modes))
 				return
 			print("[xr] passthrough on via start_passthrough")
 		else:
