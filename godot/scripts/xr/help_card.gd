@@ -32,6 +32,27 @@ func setup(head: Node3D) -> void:
 	visible = false
 	_build_viewport()
 	_build_quad()
+	# A composition layer keeps compositing when the app loses focus, so an open card
+	# drew over the Quest system menu, exactly as the wrist menu once did. Hide it the
+	# moment the session is merely visible rather than focused.
+	var xri := XRServer.find_interface("OpenXR") as OpenXRInterface
+	if xri != null:
+		xri.session_visible.connect(_hide_now)
+		xri.session_stopping.connect(_hide_now)
+
+
+## Drop the card in one frame, with no fade: the system UI is already up by the time
+## this runs, and anything still composited sits on top of it.
+func _hide_now() -> void:
+	_target = 0.0
+	_shown = 0.0
+	visible = false
+	if _card != null:
+		_card.modulate.a = 0.0
+	if _layer != null:
+		_layer.quad_size = PANEL_METRES * 0.001
+	if _vp != null:
+		_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 
 ## The physical buttons stay put, but their meaning changes by mode. Keeping this card
@@ -149,8 +170,11 @@ class ControlsCard extends Control:
 	const PART := Color(0.16, 0.21, 0.31, 1.0)       # stick, buttons, trigger
 	const LABEL := Color("#EDF1F8")                  # WristMenu.LABEL
 	const DIM := Color("#B8C3D4")                    # WristMenu.VALUE_INK
-	const ACCENT := Color(0.98, 0.62, 0.80)
 	const HAIR := Color(0.45, 0.55, 0.72, 0.8)       # callout lines
+	## The accent is the mode's own hue, the same one the wrist menu's frame wears, so
+	## the card and the panel agree about which world this is.
+	func _accent() -> Color:
+		return WristMenu.MODE_TINT.get(_mode, Color(0.98, 0.62, 0.80))
 
 	const TITLE_SIZE := 62
 	const SUB_SIZE := 32
@@ -197,23 +221,25 @@ class ControlsCard extends Control:
 		var left := _controller(Vector2(520, 470), -1.0, "X", "Y", "Left")
 		var right := _controller(Vector2(1080, 470), 1.0, "A", "B", "Right")
 
-		# Every string below is written against the handler that actually runs. The
-		# triggers branch in main.gd `_process`; the grips are read by WorldGrab in every
-		# mode but Ground, where they drag the field instead.
+		# Every string below is written against the handler that actually runs, in
+		# main.gd `_handle_input`. The fixed keys (A, B, X, Y, the menu button and both
+		# stick clicks) mean the same thing in every mode; only the triggers, the sticks
+		# and the noun on A/B change. A line that starts with "· " is drawn small.
 		var left_trigger := PackedStringArray(["Previous flame"])
-		var left_stick := PackedStringArray(["Grow and shrink"])
+		var left_stick := PackedStringArray(["Grow and shrink", "· click: passthrough"])
 		var right_trigger := PackedStringArray(["Next flame"])
-		var right_stick := PackedStringArray(["Spin it,", "push it away"])
+		var right_stick := PackedStringArray(["Turn, push away", "· click: motion on, off"])
 		var left_grip := PackedStringArray(["Hold to grab", "and move it"])
 		var right_grip := PackedStringArray(["Both grips: scale", "and fly through"])
-		# A and B are previous and next in every mode. Only the noun changes.
 		var face := PackedStringArray(["A · B: previous,", "next flame"])
+		var left_face := PackedStringArray(["X: home", "Y: next theme"])
+		var menu_btn := PackedStringArray(["Pin the wrist menu", "· press again to let go"])
 		var mode_note := "Left wrist up for the menu:  FLAME · BULB · GROUND · TREE · IFS"
 		if _mode == "tree":
 			left_trigger = PackedStringArray(["Regrow", "every tree"])
 			right_trigger = PackedStringArray(["Plant a tree", "at the point"])
 			face = PackedStringArray(["A · B: previous,", "next species"])
-			right_stick = PackedStringArray(["Turn the grove"])
+			right_stick = PackedStringArray(["Turn the grove", "· click: spin on, off"])
 			# The grips move the whole grove, hero and planted alike: they are one cloud.
 			left_grip = PackedStringArray(["Hold to grab", "the whole grove"])
 			right_grip = PackedStringArray(["Both grips:", "scale the grove"])
@@ -221,8 +247,8 @@ class ControlsCard extends Control:
 		elif _mode == "ground":
 			left_trigger = PackedStringArray(["Glide to", "the point"])
 			right_trigger = PackedStringArray(["Glide to", "the point"])
-			left_stick = PackedStringArray(["Walk", "the ground"])
-			right_stick = PackedStringArray(["Turn + zoom", "the ground"])
+			left_stick = PackedStringArray(["Walk the ground", "· click: passthrough"])
+			right_stick = PackedStringArray(["Turn + zoom", "· click: orbit on, off"])
 			face = PackedStringArray(["A · B: previous,", "next terrain style"])
 			# Ground has no object to hold. The grips drag and scale the field under you.
 			left_grip = PackedStringArray(["Hold to drag", "the ground"])
@@ -234,28 +260,29 @@ class ControlsCard extends Control:
 			face = PackedStringArray(["A · B: previous,", "next bulb"])
 			mode_note = "It arrives hand-sized. Both grips make it a room; SURFACE changes how it is drawn."
 		elif _mode == "ifs":
-			# Written against what IFS-3 wires up. Either trigger picks a handle, and only
-			# while EDIT has the guides showing, so the card says both things.
+			# Either trigger picks a handle, and only while EDIT has the guides showing.
 			left_trigger = PackedStringArray(["Hold on a handle", "to sculpt"])
 			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt"])
-			left_stick = PackedStringArray(["Grow and shrink"])
-			right_stick = PackedStringArray(["Turn it,", "push it away"])
+			right_stick = PackedStringArray(["Turn, push away", "· click: breathing on, off"])
 			face = PackedStringArray(["A · B: previous,", "next sculpture"])
+			left_face = PackedStringArray(["X: reset the shape", "Y: next theme"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
 			mode_note = "SHAPE morphs it; EDIT shows the mirrors; MOTION breathes; ECHOES fills the room"
-		_callout(left["trigger"], 310.0, true, left_trigger)
-		_callout(left["stick"], 450.0, true, left_stick)
-		_callout(left["grip"], 660.0, true, left_grip)
-		_callout(right["trigger"], 310.0, false, right_trigger)
-		_callout(right["stick"], 442.0, false, right_stick)
-		_callout(right["face"], 566.0, false, face)
-		_callout(right["grip"], 690.0, false, right_grip)
+		_callout(left["trigger"], 292.0, true, left_trigger)
+		_callout(left["stick"], 398.0, true, left_stick)
+		_callout(left["face"], 504.0, true, left_face)
+		_callout(left["menu"], 602.0, true, menu_btn)
+		_callout(left["grip"], 702.0, true, left_grip)
+		_callout(right["trigger"], 292.0, false, right_trigger)
+		_callout(right["stick"], 410.0, false, right_stick)
+		_callout(right["face"], 540.0, false, face)
+		_callout(right["grip"], 672.0, false, right_grip)
 
 		# The two things nobody discovers on their own, in the order they need them:
 		# how to leave this card, then where the rest of the app is hiding.
 		draw_string(font, Vector2(0, CARD.y - 108), "Pull either trigger to begin",
-			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, LABEL_SIZE, ACCENT)
+			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, LABEL_SIZE, _accent())
 		_fits(font, mode_note, NOTE_SIZE, CARD.x - 80.0)
 		draw_string(font, Vector2(0, CARD.y - 52), mode_note,
 			HORIZONTAL_ALIGNMENT_CENTER, CARD.x, NOTE_SIZE, DIM)
@@ -289,6 +316,16 @@ class ControlsCard extends Control:
 		_button(o + Vector2(52 * dir, 12), btn_a)
 		_button(o + Vector2(14 * dir, 66), btn_b)
 
+		# The menu button lives on the left controller only; the right one's twin is the
+		# Quest system button, which the app never sees, so it is not drawn.
+		var menu_at := o + Vector2(-20 * dir, 90)
+		if dir < 0.0:
+			draw_circle(menu_at, 12, PART)
+			draw_arc(menu_at, 12, 0, TAU, 20, SHELL_EDGE, 2.0, true)
+			for k in 3:
+				var yy := menu_at.y - 4.0 + 4.0 * float(k)
+				draw_line(Vector2(menu_at.x - 5, yy), Vector2(menu_at.x + 5, yy), DIM, 1.5, true)
+
 		draw_string(font, Vector2(o.x - 150, 258), caption, HORIZONTAL_ALIGNMENT_CENTER,
 			300, NOTE_SIZE, DIM)
 
@@ -296,7 +333,8 @@ class ControlsCard extends Control:
 			"trigger": trig.get_center() + Vector2(0, -8),
 			"grip": grip.get_center(),
 			"stick": stick,
-			"face": o + Vector2(33 * dir, 39),   # between A and B
+			"face": o + Vector2(33 * dir, 39),   # between A and B, or X and Y
+			"menu": menu_at,
 		}
 
 	func _button(c: Vector2, text: String) -> void:
@@ -314,13 +352,18 @@ class ControlsCard extends Control:
 		var edge := LEFT_EDGE if left_side else RIGHT_EDGE
 		var stub := edge + (20.0 if left_side else -20.0)
 		draw_line(from, Vector2(stub, y), HAIR, 2.0, true)
-		draw_circle(from, 6, ACCENT)
+		draw_circle(from, 6, _accent())
 		var ty := y - (lines.size() - 1) * 0.5 * (LABEL_SIZE + 8) + LABEL_SIZE * 0.35
 		for line in lines:
 			var x := edge - COLUMN if left_side else edge
 			var align := HORIZONTAL_ALIGNMENT_RIGHT if left_side else HORIZONTAL_ALIGNMENT_LEFT
-			_fits(font, line, LABEL_SIZE, COLUMN)
-			draw_string(font, Vector2(x, ty), line, align, COLUMN, LABEL_SIZE, LABEL)
+			# A "· " line is the button's second job (a stick click): smaller and dimmer,
+			# so the main verb stays the thing the eye lands on.
+			var small := line.begins_with("· ")
+			var text := line.substr(2) if small else line
+			var sz := NOTE_SIZE if small else LABEL_SIZE
+			_fits(font, text, sz, COLUMN)
+			draw_string(font, Vector2(x, ty), text, align, COLUMN, sz, DIM if small else LABEL)
 			ty += LABEL_SIZE + 8
 
 	## Measure before drawing. Everything on this card is positioned by hand against CARD,

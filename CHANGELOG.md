@@ -5,6 +5,35 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Changed
+- **The wrist menu is a strand of the fractal, not a slate.** A spine down the left edge
+  carries the live palette stood on end; sections hang off it as nodes; tiles are petals
+  (soft on one diagonal, sharp on the other) that unfold out of the spine in a wave when
+  the wrist turns up; the silhouette is a cut facet; a small chaos-game flame, rendered
+  once at build, glows behind the title. The frame takes a signature hue per mode (ember,
+  violet, teal, leaf, ice) that sweeps in over 0.4 s on a mode change, so GROUND reads
+  teal before a word is read. Pressing a tile sends a ring out of it. Type goes up two to
+  three points everywhere (labels 21, values 19, title 36) for forearm-length reading in a
+  headset. Same budget as before: one composition layer, no per-frame allocations.
+- **One meaning per controller button, in every mode.** A and B were already prev/next;
+  now X is home, Y is the next colour theme, the left menu button pins the wrist menu
+  open, left stick click is passthrough and right stick click is the mode's ambient
+  motion. Only the triggers belong to the mode (prev/next flame or bulb, glide, regrow
+  and plant, sculpt a handle). Everything the old per-mode buttons did (exposure, leaves,
+  julia, reseed, depth, brightness, stability) is still a tile. The right menu button was
+  bound to DETAIL and never fired: on a Quest it is the system button. The help card
+  shows the new scheme, with the menu button drawn and each stick's click named.
+
+### Fixed
+- The first-launch help card is now hidden the moment the session loses focus, as the
+  wrist menu already was; an open card drew over the Quest system menu.
+- Grip in GROUND no longer drags the hidden flame along with the field, so the flame
+  comes back where it was left.
+- Scrubbing a wrist-menu dial with the right stick in GROUND no longer also turns the
+  terrain.
+- A trigger pulled with the ray on the wrist panel but between tiles is swallowed, rather
+  than stepping the gallery behind the panel.
+
 ### Added
 - **The ground zooms 512 times deeper: 8.4e6x, up from 16,384x.** `STAGE_MAX` goes from
   13 to 22, which is where df32 itself runs out: at stage 22 every escape-time family stays

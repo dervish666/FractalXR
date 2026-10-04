@@ -1093,6 +1093,7 @@ func _set_mode(kind: String) -> void:
 	if want_ifs and not ifs_mode:
 		_set_ifs_mode(true)
 	help.set_mode(kind)
+	menu.set_mode(kind)
 
 
 ## The tree stands on the floor in front of you and grows. The cloud underneath keeps
@@ -2086,7 +2087,9 @@ func _process(delta: float) -> void:
 	# frame suspends the grab in the same frame rather than a frame late.
 	_trig_owned = _ifs_edit_pass()
 	if grab != null:
-		grab.suspended = ifs_edit.is_editing()
+		# Ground reads the same grips to drag the field; without this the hidden cloud
+		# was dragged along with it and came back in a moved pose when ground was left.
+		grab.suspended = ifs_edit.is_editing() or ground_mode
 		grab.update(delta)
 	_handle_input(delta)
 	_update_hud(delta)
@@ -2125,12 +2128,21 @@ func _process(delta: float) -> void:
 
 # --- controls ---------------------------------------------------------------
 #
-# Grip (either or both)  grab the cloud: one hand moves and rotates it, two hands
-#                        also scale it, so you can pull it open and fly through
-# Right stick X / Y      yaw or select tree species / push the scene away and pull it back
-# Left stick Y           scale
-# Right trigger          next preset / plant tree / glide to ground point
-# Left trigger           previous preset / regrow forest / glide to ground point
+# One meaning per physical button, in every mode. Only the triggers belong to the mode.
+#
+# Grip (either or both)  grab: one hand moves and turns it, two hands also scale it.
+#                        Ground has nothing to hold, so the grips drag and zoom the field.
+# A / B                  previous / next of whatever the mode is a gallery of
+# X                      home: the thing back where it started
+# Y                      next colour theme
+# Left menu (≡)          pin the wrist menu open, press again to let go
+# Left stick click       passthrough on / off
+# Right stick click      the mode's ambient motion on / off
+# Right stick            turn, push away and pull back (ground: turn and zoom)
+# Left stick             grow and shrink (ground: walk)
+# Triggers               THE MODE'S OWN: prev/next flame or bulb, glide (ground),
+#                        regrow/plant (tree), sculpt a handle (ifs)
+# Right menu             the Quest system button; the app never sees it. Not bound.
 
 func _handle_input(delta: float) -> void:
 	# Read every button edge before anything can return: the help card's early return
@@ -2143,7 +2155,7 @@ func _handle_input(delta: float) -> void:
 	var l_x := _pressed(left_hand, "ax_button")
 	var l_y := _pressed(left_hand, "by_button")
 	var l_menu := _pressed(left_hand, "menu_button")
-	var r_menu := _pressed(right_hand, "menu_button")
+	# No right menu read: on a Quest that is the system button and the app never sees it.
 	# While the card is up the triggers only dismiss it. The edges were read in _process, for
 	# both hands, so nothing here can leave one hand's edge state stale.
 	if help.is_open():
@@ -2176,7 +2188,7 @@ func _handle_input(delta: float) -> void:
 				ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
 			if absf(rs.y) > 0.15:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
-			if absf(rs.x) > 0.15:
+			if absf(rs.x) > 0.15 and not menu.wants_stick():
 				ground.rotate_about_head(-rs.x * GROUND_TURN_RAD_S * delta)
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
@@ -2231,80 +2243,63 @@ func _handle_input(delta: float) -> void:
 			_load_bulb(bulb_idx - 1)
 		else:
 			_morph_to_preset(preset_idx - 1)
-	if (l_menu or _key(KEY_D)) and not ground_mode and not tree_mode and not ifs_mode:
-		_drift = not _drift
-		_drift_hold = 0.0
-
-	# A and B are previous and next, in every mode, on whatever that mode is a gallery of:
-	# the flame, the bulb, the terrain style, the tree species. They used to be four
-	# unrelated tuning dials (particle count here, leaves there), so there was nothing to
-	# learn once and no way to browse a mode without the wrist menu. Everything they used
-	# to do is still on the menu, and the stick clicks below took the toggles worth having
-	# under a thumb. Face buttons are deliberately not gated on the menu: unlike the
-	# sticks, they keep working while the wrist panel is up.
+	# The fixed keys. Each one means the same thing in every mode; the noun changes with
+	# the mode, the verb never does. They used to be a different set of tuning dials per
+	# mode (leaves here, brightness there, julia somewhere else), so there was nothing
+	# to learn once. Every dial they used to reach is still a tile on the wrist menu.
+	# Face buttons are deliberately not gated on the menu: unlike the sticks, they keep
+	# working while the wrist panel is up.
+	if l_menu or _key(KEY_M):
+		menu.toggle_pin()
 	if r_a or _key(KEY_1):
 		_step_specimen(-1)
 	if r_b or _key(KEY_2):
 		_step_specimen(1)
-	# The rest stay mode-specific: these are the toggles worth a thumb rather than a trip
-	# to the menu, and there is no cross-mode meaning to give them.
-	if tree_mode:
-		if r_stick or _key(KEY_3):
-			tree.reseed()
-		if l_stick or _key(KEY_4):
-			_set_forest_leaves(not tree.leaves_on)
-		if l_x or _key(KEY_R):
-			_recenter()
-		if l_y or _key(KEY_5):
-			_regrow_forest()
-	elif ifs_mode:
-		# The sculpture has no cloud under it, so the flame's brightness and motion toggles
-		# have nothing to act on. DEPTH and RESET take their place; exposure still means
-		# what it means everywhere, because it is the Environment's.
-		if r_stick or _key(KEY_3):
-			_step_ifs_depth(1)
-		if l_x or _key(KEY_R):
-			_reset_ifs()
-		if l_y or _key(KEY_5):
-			exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size()
-			_apply_exposure()
-	elif ground_mode:
-		if r_stick or _key(KEY_3):
-			orbit_on = not orbit_on
-			orbit.visible = false
-		if l_stick or _key(KEY_4):
-			ground.set_julia(not ground.julia)
-		if l_x or _key(KEY_R):
-			ground.home()
-		if l_y or _key(KEY_5):
-			ground.julia_here()
-	else:
-		if r_stick or _key(KEY_3):
-			if bulb_mode:
-				breath_idx = (breath_idx + 1) % BREATH_STEPS.size()
-			else:
-				bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size()
-				_apply_point_look()
-		if l_stick or _key(KEY_4):
-			if bulb_mode:
-				bulb_stability_idx = (bulb_stability_idx + 1) % BULB_STABILITY.size()
-				if BULB_STABILITY[bulb_stability_idx] == 0:
-					_bake_wait = BAKE_DELAY_FRAMES
-			else:
-				stability_idx = (stability_idx + 1) % STABILITY.size()
-		if l_x or _key(KEY_R):
-			_recenter()
-			cloud.request_measure()
-		if l_y or _key(KEY_5):
-			exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size()
-			_apply_exposure()
+	if l_x or _key(KEY_R):
+		_go_home()
+	if l_y or _key(KEY_5):
+		_cycle_theme()
+	if l_stick or _key(KEY_4):
+		_set_passthrough(not passthrough)
+	if r_stick or _key(KEY_3):
+		_toggle_motion()
+	# Desktop-only dials. The right menu button is the Quest system button and never
+	# reaches the app, so DETAIL has its tile and KEY_6 here, nothing on the controller.
+	if _key(KEY_D) and not ground_mode and not tree_mode and not ifs_mode:
+		_drift = not _drift
+		_drift_hold = 0.0
 	if _key(KEY_W):
 		spin = not spin
 	if _key(KEY_S) and not ground_mode and not tree_mode and not ifs_mode:
 		cloud.request_seed()
 		_converge = CONVERGE_FRAMES
-	if r_menu or _key(KEY_6):
+	if _key(KEY_6):
 		_step_detail(1)
+
+
+## X: home. The mode's own idea of "put it back": the ground's start view, the
+## sculpture's shape and pose, otherwise the cloud's framing in front of you.
+func _go_home() -> void:
+	if ground_mode:
+		ground.home()
+	elif ifs_mode:
+		_reset_ifs()
+	else:
+		_recenter()
+		if not tree_mode:
+			cloud.request_measure()
+
+
+## Right stick click: the mode's ambient motion on or off. Spin for the cloud and the
+## grove, breathing for the sculpture, the orbit trace for the ground.
+func _toggle_motion() -> void:
+	if ifs_mode:
+		_toggle_ifs_motion()
+	elif ground_mode:
+		orbit_on = not orbit_on
+		orbit.visible = false
+	else:
+		spin = not spin
 
 
 ## Point size, falloff tightness and brightness move together: they are three ways of
