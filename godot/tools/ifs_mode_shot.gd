@@ -110,7 +110,7 @@ func _tree_settings(main) -> void:
 		"wind": main.tree_wind_idx,
 		"depth": main.tree_depth_idx,
 		"seed": main.tree.seed_value,
-		"planted": main._forest_trees.size(),
+		"planted": main.forest.planted_count(),
 	}
 
 
@@ -160,10 +160,10 @@ func _enter_from_flame(main) -> void:
 	# The trigger must not fall through to the flame gallery or the forest. The flame
 	# control at the end proves the key actually reaches _handle_input.
 	var preset_before: int = main.preset_idx
-	var planted_before: int = main._forest_trees.size()
+	var planted_before: int = main.forest.planted_count()
 	await _tap(main, KEY_RIGHT)
 	await _tap(main, KEY_LEFT)
-	var quiet: bool = main.preset_idx == preset_before and main._forest_trees.size() == planted_before
+	var quiet: bool = main.preset_idx == preset_before and main.forest.planted_count() == planted_before
 
 	var img := root.get_viewport().get_texture().get_image()
 	var err := img.save_png("%s/mode-ifs.png" % OUT)
@@ -181,7 +181,7 @@ func _enter_from_flame(main) -> void:
 	_ok("trigger quiet", quiet and key_live,
 		"in ifs: preset %d->%d planted %d->%d; flame control stepped=%s" % [
 			preset_before, main.preset_idx if not quiet else preset_before,
-			planted_before, main._forest_trees.size(), str(key_live)])
+			planted_before, main.forest.planted_count(), str(key_live)])
 
 
 func _tree_pair(main) -> void:
@@ -195,11 +195,11 @@ func _tree_pair(main) -> void:
 		and main.tree_wind_idx == _tree_want["wind"] \
 		and main.tree_depth_idx == _tree_want["depth"] \
 		and main.tree.seed_value == _tree_want["seed"] \
-		and main._forest_trees.size() == _tree_want["planted"] \
+		and main.forest.planted_count() == _tree_want["planted"] \
 		and main.tree_mode and not main.ifs_mode and not main.ifs.visible
 	_ok("flame-ifs-tree", kept, "species=%d/%d wind=%d/%d depth=%d/%d planted=%d/%d ifs hidden=%s" % [
 		main.tree_shape_idx, _tree_want["shape"], main.tree_wind_idx, _tree_want["wind"],
-		main.tree_depth_idx, _tree_want["depth"], main._forest_trees.size(),
+		main.tree_depth_idx, _tree_want["depth"], main.forest.planted_count(),
 		_tree_want["planted"], str(not main.ifs.visible)])
 
 

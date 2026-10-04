@@ -6,6 +6,37 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **TREE grows a forest.** Entering TREE sows a grove of 16 trees around the hero's trunk,
+  0.75-1.6 m out, tall inside and knee-high at the rim, sprouting one after another from
+  the hero outward over about 15 s. Thirteen species now, on the SHAPE tile and in the
+  grove: oak, pine, willow, coral, birch, poplar, palm, acacia, sakura, baobab, spiral,
+  crystal, thorn. The generator learned a curving bare trunk (palm, baobab), pinnate
+  fronds (palm), a tilt that widens toward the crown (acacia), kinks (thorn, sakura), a
+  fixed per-level turn (spiral at the golden angle, crystal at sixty degrees) and a leader
+  on every branch (spiral). Each species has its own leaf outline (disc, five-petal
+  blossom, needle star, sparkle), colour pulled from the theme toward its own, bark tint
+  and growth time, and every forest tree varies its angles, height, twist and colour by
+  seed. Every 45 s or so one grove tree withers back into the ground and a seedling of
+  another species takes root elsewhere in the ring. The planting ring names the species
+  the trigger will grow, in its colour, and each pull draws the next from a shuffled bag
+  (`_toggle_plant_mix()` plants the SHAPE species instead). CLEAR empties the forest;
+  REGROW, or entering TREE, sows a new grove into an empty one. The four original
+  species build the same geometry byte for byte; oak keeps its colours exactly, while
+  pine, willow and coral now lean toward their own.
+- **The forest fits a budget it measures.** Grove trees are capped at 450-1,400 branches
+  by thinning their outermost level evenly, and built one per frame just before they
+  sprout. A LOD drops outer twig levels and a share of the leaves, largest-on-screen
+  first, against an instance budget that shrinks when the GPU passes 85% of the frame
+  and grows back under 65%, so thermal throttling thins the far trees instead of the
+  frame rate. The `[perf]` line carries `forest_vis=` and `budget=`.
+
+### Changed
+- **The ambient spin turns the hero on its own trunk; the forest stands still.** Spinning
+  the cloud orbited every planted tree around the hero and swept trunks through the viewer.
+  Wind now crosses a grove as one gust, reaching each tree a little later the further
+  downwind it stands, and a planted tree no longer gets its own wind direction from its yaw.
+- Tree branches are 12 triangles, not 24: the cylinder's middle ring bent each segment
+  under wind by well under a millimetre. Pine's hero drops from 496k to 263k triangles.
 - **The ground zooms 512 times deeper: 8.4e6x, up from 16,384x.** `STAGE_MAX` goes from
   13 to 22, which is where df32 itself runs out: at stage 22 every escape-time family stays
   within 0.11 of a texel of a 64-bit reference on four spots each, and at stage 23 Buffalo
