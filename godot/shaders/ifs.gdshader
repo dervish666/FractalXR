@@ -37,6 +37,26 @@ uniform float radius_gain = 1.0;
 // defaults. Phase is in palette turns; gain dims a far echo so the hero stays the subject.
 instance uniform float echo_phase = 0.0;
 instance uniform float echo_gain = 1.0;
+// An echo's own life, all of it on the GPU so the CPU writes nothing per frame however many
+// echoes there are. IfsEchoes sets these once per placement and once per shape swap, and
+// advances echo_t; the hero leaves echo_live at 0 and runs none of it.
+//   echo_centre  the echo's centre in world space, what it spins and breathes about
+//   echo_spin    world axis (xyz) and rad/s (w)
+//   echo_wander  world amplitude in metres (xyz) and base rad/s (w), a slow Lissajous drift
+//   echo_life    clock offset s (x), breathe amplitude (y) and rad/s (z), palette drift turns/s (w)
+//   echo_swap    echo_t the shape began to fold away (x) and the next one began to grow (y)
+// IfsEchoes.reach() is the bound on all of this that the placement keeps clear; change one
+// and change the other.
+instance uniform float echo_live = 0.0;
+instance uniform vec3 echo_centre = vec3(0.0);
+instance uniform vec4 echo_spin = vec4(0.0, 1.0, 0.0, 0.0);
+instance uniform vec4 echo_wander = vec4(0.0);
+instance uniform vec4 echo_life = vec4(0.0);
+instance uniform vec2 echo_swap = vec2(1e9, -1e4);
+uniform float echo_t = 0.0;        // seconds, the echoes' clock: stops with MOTION off
+uniform float swap_s = 1.6;        // seconds for one generation to fold or grow
+uniform float swap_span = 2.4;     // seconds between the outermost generation and the root
+uniform float echo_glow = 1.5;     // gain swing per unit of breathe, so a swell also brightens
 
 varying float v_u;
 varying float v_shade;
@@ -53,13 +73,38 @@ void vertex() {
 	float late = birth - grow_from;
 	float g = late < 0.0 ? 1.0 : clamp((anim_t - born_at - late * grow_span) / grow_s, 0.0, 1.0);
 	g = g * g * (3.0 - 2.0 * g);
+	// A shape swap: the old shape folds back into its parents outermost generation first,
+	// then the new one grows out root first, the hero's own grow-in run at an echo's pace.
+	float g_out = 1.0 - clamp((echo_t - echo_swap.x - (1.0 - birth) * swap_span) / swap_s, 0.0, 1.0);
+	float g_in = clamp((echo_t - echo_swap.y - birth * swap_span) / swap_s, 0.0, 1.0);
+	float gs = min(g_out, g_in);
+	g *= gs * gs * (3.0 - 2.0 * gs);
 	vec3 parent = (COLOR.rgb * 2.0 - 1.0) * origin_span;
 	VERTEX *= UV.y < 0.5 ? seed_scale0 : seed_scale1;
 	VERTEX = mix(parent, VERTEX, g);
+	float swell = 0.0;
+	float t = echo_t + echo_life.x;
+	if (echo_live > 0.5) {
+		// In world space about the echo's centre, so every bound is in metres and none of it
+		// depends on the echo's random orientation or the instance's depth in the tree. Then
+		// back into the instance's mesh space for the model matrix to carry out again.
+		vec3 w = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		swell = echo_life.y * sin(echo_life.z * t);
+		vec3 rel = (w - echo_centre) * (1.0 + swell);
+		vec3 k = echo_spin.xyz;
+		float a = echo_spin.w * t;
+		float c = cos(a);
+		float s = sin(a);
+		rel = rel * c + cross(k, rel) * s + k * dot(k, rel) * (1.0 - c);
+		vec3 wob = echo_wander.xyz * sin(echo_wander.w * t * vec3(1.0, 1.37, 0.71) + vec3(0.0, 2.1, 4.2));
+		w = echo_centre + rel + wob;
+		VERTEX = inverse(mat3(MODEL_MATRIX)) * (w - MODEL_MATRIX[3].xyz);
+	}
 	// Level and radius together. Level alone bands the palette by generation with a hard
 	// line between bands, radius alone ignores the recursion that built the shape.
-	v_u = mix(level * level_gain, radius * radius_gain, radius_mix) + anim_t * scroll + echo_phase;
-	v_shade = UV.x * echo_gain;
+	v_u = mix(level * level_gain, radius * radius_gain, radius_mix) + anim_t * scroll + echo_phase
+		+ echo_life.w * echo_t;
+	v_shade = UV.x * echo_gain * (1.0 + echo_glow * swell);
 }
 
 void fragment() {

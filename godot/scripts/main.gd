@@ -1164,7 +1164,7 @@ func _step_ifs_detail(d: int) -> void:
 	# A drag previews one rung down, so it owns ifs.detail until the trigger comes up. Telling
 	# the editor keeps the release at the rung the tile now says.
 	ifs_edit.set_detail(ifs.detail)
-	ifs.build()
+	ifs.land_edit()
 	ifs_edit.refresh()
 
 
@@ -1173,7 +1173,7 @@ func _step_ifs_detail(d: int) -> void:
 func _step_ifs_depth(d: int) -> void:
 	ifs_depth_idx = wrapi(ifs_depth_idx + d, 0, IFS_DEPTH.size())
 	ifs.depth = IFS_DEPTH[ifs_depth_idx]
-	ifs.build()
+	ifs.land_edit()
 	ifs_edit.refresh()   # the depth plates sit on the published z extent, which just moved
 
 
