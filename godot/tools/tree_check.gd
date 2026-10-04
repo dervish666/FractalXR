@@ -1,32 +1,45 @@
 extends SceneTree
 
 ## Builds every tree shape at its default depth and reports the instance counts, plus a
-## control at depth 0 that must produce nothing. Headless: the geometry is CPU-side.
+## control at depth 0 that must produce nothing. Then builds each species as a forest
+## tree at the grove's largest and smallest size and checks the branch cap, the LOD
+## ladder and per-seed variety. Headless: the geometry is CPU-side.
 ##
 ##   tools/tree_check.sh
+
+const CYL_TRIS := 12   # rings = 0, six sides, no caps
+const LEAF_TRIS := 2
+
 
 func _init() -> void:
 	var tree := FractalTree.new()
 	root.add_child(tree)
 	var min_b := 1 << 30
 	var min_l := 1 << 30
+	var max_b := 0
 	var shapes := 0
+	print("  hero (species height, full depth):")
 	for s in FractalTree.SHAPE_NAMES:
 		tree.shape = s
 		tree.depth_delta = 0
 		tree.seed_value = 7
+		var t0 := Time.get_ticks_usec()
 		var n := tree.build()
+		var ms := (Time.get_ticks_usec() - t0) / 1000.0
 		var mm_b: int = tree.get_node("Branches").multimesh.instance_count
 		var mm_l: int = tree.get_node("Leaves").multimesh.instance_count
-		print("  %-7s depth=%d branches=%d (multimesh %d) leaves=%d (multimesh %d) height=%.1fm" % [
-			s, tree.effective_depth(), n, mm_b, tree.leaf_count, mm_l, tree.height_m])
+		print("  %-7s depth=%2d branches=%6d leaves=%6d tris=%7d height=%.1fm build=%.0fms" % [
+			s, tree.effective_depth(), n, tree.leaf_count, n * CYL_TRIS + tree.leaf_count * LEAF_TRIS,
+			tree.height_m, ms])
 		if n != mm_b or tree.leaf_count != mm_l:
 			print("TREECHECK FAIL multimesh counts disagree for %s" % s)
 			quit(1)
 			return
 		min_b = mini(min_b, n)
+		max_b = maxi(max_b, n)
 		min_l = mini(min_l, tree.leaf_count)
 		shapes += 1
+	var faces: int = tree.get_node("Branches").multimesh.mesh.get_faces().size() / 3
 	# Determinism: the same seed twice gives the same buffer.
 	tree.shape = "oak"
 	tree.seed_value = 42
@@ -42,7 +55,64 @@ func _init() -> void:
 	print("  determinism: same seed identical=%s, new seed differs=%s" % [str(same), str(differs)])
 	tree.depth_delta = -100
 	var ctl := tree.build()
-	var ok := shapes == 4 and min_b > 0 and min_l > 0 and ctl == 0 and same and differs
-	print("TREECHECK %s shapes=%d min_branches=%d min_leaves=%d control=%d" % [
-		"PASS" if ok else "FAIL", shapes, min_b, min_l, ctl])
+
+	# Forest trees: the grove's inner and rim sizes, as forest.gd builds them.
+	print("  forest (inner %.1fm cap %d / rim %.1fm cap %d), LOD 0..3 instance cost:" % [
+		Forest.GROVE_H_INNER, Forest.TREE_CAP_MAX, Forest.GROVE_H_OUTER, Forest.TREE_CAP_MIN])
+	var forest_ok := true
+	var inner_total := 0
+	var rim_total := 0
+	var worst_ms := 0.0
+	for s in FractalTree.SHAPE_NAMES:
+		var line := "  %-7s" % s
+		for size in [[Forest.GROVE_H_INNER, Forest.TREE_CAP_MAX], [Forest.GROVE_H_OUTER, Forest.TREE_CAP_MIN]]:
+			var f := FractalTree.new()
+			root.add_child(f)
+			f.shape = s
+			f.seed_value = 11
+			f.variety = 1.0
+			f.whole_levels = true
+			f.lod_ready = true
+			f.target_height = size[0]
+			f.branch_cap = size[1]
+			var t1 := Time.get_ticks_usec()
+			var n := f.build()
+			worst_ms = maxf(worst_ms, (Time.get_ticks_usec() - t1) / 1000.0)
+			var costs: Array[int] = []
+			for k in FractalTree.LOD_MAX + 1:
+				costs.append(f.lod_cost(k))
+			var ladder := true
+			for k in FractalTree.LOD_MAX:
+				ladder = ladder and costs[k + 1] <= costs[k]
+			forest_ok = forest_ok and n > 0 and n <= size[1] and f.leaf_count > 0 and ladder \
+				and absf(f.height_m - size[0]) < 1e-3
+			if size[1] == Forest.TREE_CAP_MAX:
+				inner_total += costs[0]
+			else:
+				rim_total += costs[0]
+			line += "  %4d br %4d lf lod=%s" % [n, f.leaf_count, str(costs)]
+			# Variety: another seed of the same species must differ in shape, not only jitter.
+			if size[1] == Forest.TREE_CAP_MAX:
+				var g := FractalTree.new()
+				root.add_child(g)
+				g.shape = s
+				g.seed_value = 12
+				g.variety = 1.0
+				g.whole_levels = true
+				g.target_height = size[0]
+				g.branch_cap = size[1]
+				g.build()
+				var ga: PackedFloat32Array = g.get_node("Branches").multimesh.buffer
+				var fa: PackedFloat32Array = f.get_node("Branches").multimesh.buffer
+				forest_ok = forest_ok and ga != fa
+				g.free()
+			f.free()
+		print(line)
+	print("  forest: inner tree avg %d instances, rim tree avg %d, worst build %.1f ms" % [
+		inner_total / FractalTree.SHAPE_NAMES.size(), rim_total / FractalTree.SHAPE_NAMES.size(), worst_ms])
+
+	var ok := shapes == FractalTree.SHAPE_NAMES.size() and min_b > 0 and min_l > 0 and ctl == 0 \
+		and same and differs and faces == CYL_TRIS and forest_ok
+	print("TREECHECK %s shapes=%d min_branches=%d max_branches=%d min_leaves=%d cyl_tris=%d control=%d forest=%s" % [
+		"PASS" if ok else "FAIL", shapes, min_b, max_b, min_l, faces, ctl, str(forest_ok)])
 	quit(0 if ok else 1)

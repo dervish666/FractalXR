@@ -23,6 +23,11 @@ uniform vec3 tree_origin = vec3(0.0);
 uniform vec3 tree_up = vec3(0.0, 1.0, 0.0);
 uniform vec3 wind_dir = vec3(1.0, 0.0, 0.0);
 uniform float tree_scale = 1.0;
+// Forest trees: a small tree sways less in metres (1.0 for the hero), and each tree's
+// gust arrives a little later the further downwind it stands, so wind crosses a grove
+// instead of every tree nodding in step.
+uniform float sway_gain = 1.0;
+uniform float sway_phase = 0.0;
 // The darkest palette stop is very nearly black in most themes, and the trunk sits on
 // it, against a black void, under a 0.25 ambient floor. The result was a canopy hanging
 // in mid-air. Lifting the darkest stop this far toward the next one keeps the trunk the
@@ -34,6 +39,19 @@ uniform float trunk_lift = 0.2;
 // is continuous along the whole tree, and mixing a little level back in keeps a low
 // side branch from reading as trunk.
 uniform float colour_height = 0.7;
+// Species bark: turn the theme's hue, then pull toward a species colour at the theme's
+// own lightness, so a birch is pale and a baobab grey in every theme without either
+// leaving it. All zero for oak, which draws exactly the theme.
+uniform float bark_hue = 0.0;
+uniform vec3 bark_tint = vec3(1.0);
+uniform float bark_mix = 0.0;
+
+// Rotate a colour about the grey axis (Rodrigues). Angle 0 returns it unchanged.
+vec3 hue_turn(vec3 c, float a) {
+	const vec3 k = vec3(0.57735027);
+	float ca = cos(a);
+	return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca);
+}
 
 varying float v_u;
 varying vec3 v_normal_w;
@@ -51,10 +69,11 @@ float flutter_phase(vec3 w0) {
 
 vec3 sway(vec3 w, float phase) {
 	float h = clamp(dot(w - tree_origin, tree_up) / max(tree_height * tree_scale, 1e-3), 0.0, 1.5);
-	float g = sin(TIME * 0.7) * 0.6 + sin(TIME * 1.9 + h * 2.0) * 0.25 + sin(TIME * 3.1 + phase) * 0.15;
+	float t = TIME + sway_phase;
+	float g = sin(t * 0.7) * 0.6 + sin(t * 1.9 + h * 2.0) * 0.25 + sin(t * 3.1 + phase) * 0.15;
 	vec3 lateral = cross(tree_up, cross(wind_dir, tree_up));
 	lateral = normalize(lateral + vec3(1e-5, 0.0, 0.0));
-	float amp = wind * 0.12 * h * h * tree_scale;
+	float amp = wind * 0.12 * h * h * tree_scale * sway_gain;
 	return w + lateral * (amp * g) - tree_up * (amp * 0.2 * abs(g));
 }
 
@@ -86,6 +105,11 @@ void fragment() {
 	float u = clamp(v_u, 0.0, 1.0);
 	vec3 root = mix(pal0, pal1, trunk_lift);
 	vec3 base = (u < 0.5) ? mix(root, pal1, u * 2.0) : mix(pal1, pal2, (u - 0.5) * 2.0);
+	if (bark_mix > 0.0 || bark_hue != 0.0) {
+		base = max(hue_turn(base, bark_hue), vec3(0.0));
+		float luma = dot(base, vec3(0.299, 0.587, 0.114));
+		base = mix(base, bark_tint * max(luma * 1.6, 0.05), bark_mix);
+	}
 	vec3 n = normalize(v_normal_w);
 	vec3 key = normalize(vec3(0.5, 0.8, 0.3));
 	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);

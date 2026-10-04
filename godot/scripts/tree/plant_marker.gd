@@ -9,8 +9,11 @@ class_name PlantMarker
 ## given, so what you see is where the trunk lands, not an estimate of it.
 ##
 ## World-locked, like the orbit trace. It is deliberately NOT a child of the particle
-## cloud: the cloud takes the ambient spin in tree mode, and a marker that drifted off
-## the spot you were pointing at would be worse than none.
+## cloud: grab moves the cloud, and a marker that drifted off the spot you were pointing
+## at would be worse than none.
+##
+## It also names the species the trigger will grow, in that species' colour, because with
+## a mixed bag the next tree is otherwise a surprise you cannot plan a grove around.
 
 const RADIUS := 0.12          # metres. A trunk is ~0.10 wide at the base.
 const THICKNESS := 0.008
@@ -22,6 +25,9 @@ var _mat: StandardMaterial3D
 var _shown := 0.0
 var _target := 0.0
 var _tint := Color(0.85, 0.95, 0.75)
+var _theme_tint := Color(0.85, 0.95, 0.75)
+var _label: Label3D
+var _species := ""
 
 
 func _init() -> void:
@@ -44,6 +50,17 @@ func _init() -> void:
 	_ring.material_override = _mat
 	_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_ring)
+	_label = Label3D.new()
+	_label.name = "Species"
+	_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_label.pixel_size = 0.0009
+	_label.font_size = 64
+	_label.outline_size = 10
+	_label.outline_modulate = Color(0, 0, 0, 0.6)
+	_label.position = Vector3(0.0, 0.07, 0.0)
+	_label.shaded = false
+	_label.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_label)
 	visible = false
 	_apply_alpha()
 
@@ -53,7 +70,21 @@ func set_palette(pal: Array) -> void:
 	if pal.size() < 5:
 		return
 	var c: Vector3 = pal[3]
-	_tint = Color(clampf(c.x, 0.0, 1.0), clampf(c.y, 0.0, 1.0), clampf(c.z, 0.0, 1.0))
+	_theme_tint = Color(clampf(c.x, 0.0, 1.0), clampf(c.y, 0.0, 1.0), clampf(c.z, 0.0, 1.0))
+	_species = ""   # recolour on the next set_species
+	_tint = _theme_tint
+	_apply_alpha()
+
+
+## The species the next trigger pull grows: its name over the ring, both in its colour
+## (or the theme's, for a species that wears the theme unchanged).
+func set_species(s: String) -> void:
+	if s == _species:
+		return
+	_species = s
+	_label.text = s.to_upper()
+	var t: Variant = FractalTree.species_tint(s)
+	_tint = _theme_tint.lerp(t, 0.7) if t != null else _theme_tint
 	_apply_alpha()
 
 
@@ -85,3 +116,9 @@ func _apply_alpha() -> void:
 	var c := _tint
 	c.a = 0.75 * _shown
 	_mat.albedo_color = c
+	if _label != null:
+		var lc := _tint
+		lc.a = 0.9 * _shown
+		_label.modulate = lc
+		_label.outline_modulate = Color(0, 0, 0, 0.6 * _shown)
+		_label.visible = _species != "" and _shown > 0.01

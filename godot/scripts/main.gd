@@ -162,11 +162,9 @@ var orbit_on := true
 var tree := FractalTree.new()
 var tree_mode := false
 const TREE_DISTANCE := 2.2        # metres in front of the head, on the floor; it towers
-## The hero tree stays full-detail. Point-planted neighbours are deliberately smaller in
-## recursion depth, so a forest adds depth without multiplying a pine's branch cap.
-const FOREST_EXTRA_MAX := 12
-const FOREST_SECONDARY_DEPTH_MAX := 6
-var _forest_trees: Array[FractalTree] = []
+## The hero tree stays full-detail. Everything else (the sown grove, planted trees, the
+## succession, their caps and LOD) is the Forest's: scripts/tree/forest.gd.
+var forest := Forest.new()
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
 const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
@@ -434,6 +432,7 @@ func _ready() -> void:
 	add_child(cloud)
 	cloud.add_child(march)
 	cloud.add_child(tree)
+	cloud.add_child(forest)
 	cloud.add_child(ifs)
 	ifs.add_child(ifs_edit)
 	ifs_edit.setup(ifs)
@@ -580,7 +579,7 @@ func _build_menu() -> void:
 			func(): _regrow_forest(),
 			false, _vis_tree),
 		WristMenu.Item.new("make", "CLEAR",
-			func(): return "%d planted" % _forest_trees.size(),
+			func(): return "%d trees" % forest.tree_count(),
 			func(): _clear_forest(),
 			false, _vis_tree),
 
@@ -987,7 +986,7 @@ func _build_menu() -> void:
 		if tree_mode:
 			# At capacity the trigger stops doing anything and the marker goes away, so
 			# say why here rather than leaving the floor silently dead.
-			if _forest_trees.size() >= FOREST_EXTRA_MAX:
+			if not forest.can_plant():
 				return "forest full · CLEAR to replant"
 			var gp := tree.grow_progress()
 			return ("growing %d%%" % int(gp * 100.0)) if gp < 1.0 else "grown"
@@ -1111,8 +1110,7 @@ func _set_tree_mode(on: bool) -> void:
 		plant_marker.hide_marker()
 		plant_marker.update(1.0)
 	tree.visible = on
-	for planted in _forest_trees:
-		planted.visible = on
+	forest.visible = on
 	cloud.set_visible_cloud(not on)
 	if on:
 		if tree.branch_count == 0:
@@ -1311,10 +1309,12 @@ func _perf_tail() -> String:
 			"on" if ifs.ambient else "off", ifs.morph_t, ifs_echoes.count(),
 			ifs_echoes.instance_total()]
 	if tree_mode:
-		return head + " mode=tree species=%s trees=%d branches=%d wind=%s leaves=%s" % [
+		# forest_vis/budget: the Forest's LOD governor, so a thinned grove is visible in the log.
+		return head + (" mode=tree species=%s trees=%d branches=%d wind=%s leaves=%s"
+			+ " forest_vis=%d budget=%d") % [
 			FractalTree.SHAPE_NAMES[tree_shape_idx], _forest_tree_count(),
 			_forest_branch_count(), TREE_WIND_NAMES[tree_wind_idx],
-			"on" if tree.leaves_on else "off"]
+			"on" if tree.leaves_on else "off", forest.visible_cost, forest.budget]
 	if ground_mode:
 		return head + " mode=ground set=%s julia=%s zoom=%s fill=%.2f iter=%d/%d relief=%s" % [
 			ground.formula_name().replace(" ", "_"), str(ground.julia),
@@ -1358,47 +1358,54 @@ func _cycle_tree_shape(d: int) -> void:
 
 func _set_forest_wind(amount: float) -> void:
 	tree.set_wind(amount)
-	for planted in _forest_trees:
-		planted.set_wind(amount)
+	forest.set_wind(amount)
 
 
 func _set_forest_leaves(on: bool) -> void:
 	tree.set_leaves(on)
-	for planted in _forest_trees:
-		planted.set_leaves(on)
+	forest.set_leaves(on)
 
 
 func _set_forest_palette(pal: Array) -> void:
 	tree.set_palette(pal)
-	for planted in _forest_trees:
-		planted.set_palette(pal)
+	forest.set_palette(pal)
 
 
+## Regrow the hero and the forest, staggered; an empty forest is sown afresh.
 func _regrow_forest() -> void:
 	tree.regrow()
-	for planted in _forest_trees:
-		planted.regrow()
+	forest.regrow()
 
 
 func _clear_forest() -> void:
-	for planted in _forest_trees:
-		planted.queue_free()
-	_forest_trees.clear()
+	forest.clear()
+
+
+## Bindable forest actions (the key scheme is owned elsewhere; these are the handles).
+## A new grove of mixed species, keeping the trees you planted.
+func _sow_grove() -> void:
+	forest.sow_grove()
+
+
+## Planting draws a mixed species each pull, or plants the SHAPE tile's species.
+func _toggle_plant_mix() -> void:
+	forest.set_plant_mix(not forest.plant_mix)
+
+
+## The slow wither-and-replace in the sown grove.
+func _toggle_succession() -> void:
+	forest.set_succession(not forest.succession)
 
 
 func _forest_tree_count() -> int:
-	return 1 + _forest_trees.size()
+	return 1 + forest.tree_count()
 
 
 func _forest_branch_count() -> int:
-	var total := tree.branch_count
-	for planted in _forest_trees:
-		total += planted.branch_count
-	return total
+	return tree.branch_count + forest.branch_total()
 
 
-## Add a new sapling exactly where the pointing ray reaches the floor. The primary tree
-## is full-detail; the added trees are capped at a forest-safe recursion depth.
+## Add a new sapling exactly where the pointing ray reaches the floor.
 func _plant_tree_from_hand(hand: XRController3D) -> bool:
 	var hit: Variant = _hand_floor_hit(hand)
 	if hit == null:
@@ -1407,26 +1414,12 @@ func _plant_tree_from_hand(hand: XRController3D) -> bool:
 
 
 func _plant_tree_at(hit: Vector2) -> bool:
-	if _forest_trees.size() >= FOREST_EXTRA_MAX:
-		print("[tree] forest full (%d planted)" % FOREST_EXTRA_MAX)
+	var planted := forest.plant_at(hit, FractalTree.SHAPE_NAMES[tree_shape_idx])
+	if planted == null:
+		print("[tree] forest full (%d planted)" % Forest.PLANT_MAX)
 		return false
-	var planted := FractalTree.new()
-	var species: String = FractalTree.SHAPE_NAMES[tree_shape_idx]
-	planted.shape = species
-	planted.seed_value = randi() % 100000 + 1
-	var base_depth: int = int(FractalTree.SHAPES[species]["depth"])
-	planted.depth_delta = mini(tree.effective_depth(), FOREST_SECONDARY_DEPTH_MAX) - base_depth
-	planted.build()
-	planted.set_wind(TREE_WIND[tree_wind_idx])
-	planted.set_leaves(tree.leaves_on)
-	planted.set_palette(_theme_palette())
-	cloud.add_child(planted)
-	var yaw := TAU * float(planted.seed_value % 10000) / 10000.0
-	planted.global_transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(hit.x, 0.0, hit.y))
-	planted.visible = tree_mode
-	_forest_trees.append(planted)
-	print("[tree] planted %s at %.2f, %.2f (%d/%d)" % [species, hit.x, hit.y,
-		_forest_trees.size(), FOREST_EXTRA_MAX])
+	print("[tree] planted %s at %.2f, %.2f (%d/%d)" % [planted.shape, hit.x, hit.y,
+		forest.planted_count(), Forest.PLANT_MAX])
 	return true
 
 
@@ -1489,14 +1482,14 @@ func _tick_plant_marker(delta: float) -> void:
 	# is not one of them: the trigger only goes to the menu when the ray is actually ON
 	# it (_menu_active), so a ring that vanished whenever the wrist panel was up would
 	# hide from you at the very moment the trigger still plants.
-	var want := tree_mode and not _menu_active and not help.is_open() \
-		and _forest_trees.size() < FOREST_EXTRA_MAX
+	var want := tree_mode and not _menu_active and not help.is_open() and forest.can_plant()
 	if want:
 		var hit = _hand_floor_hit(right_hand)
 		if hit == null:
 			plant_marker.hide_marker()
 		else:
 			plant_marker.show_at(hit)
+			plant_marker.set_species(forest.peek_plant(FractalTree.SHAPE_NAMES[tree_shape_idx]))
 	else:
 		plant_marker.hide_marker()
 	plant_marker.update(delta)
@@ -2141,8 +2134,12 @@ func _process_frame(delta: float) -> void:
 	# No ambient spin in IFS: a shape you are about to reach into and edit has to hold still.
 	if spin and _xr_focused and not ground_mode and not ifs_mode \
 			and (grab == null or not grab.is_grabbing()):
-		cloud.rotate_y(AMBIENT_SPIN * delta)
-		if not tree_mode:   # a tree turns; it does not tip over
+		if tree_mode:
+			# The hero turns on its own trunk and the forest stands still. Spinning the cloud
+			# orbited every planted tree around the hero, sweeping trunks through the viewer.
+			tree.rotate_y(AMBIENT_SPIN * delta)
+		else:
+			cloud.rotate_y(AMBIENT_SPIN * delta)
 			cloud.rotate_object_local(Vector3.RIGHT, AMBIENT_TILT * delta)
 	_read_triggers()
 	# The IFS handles resolve before the grab polls its grips, so an edit that starts this
@@ -2166,8 +2163,7 @@ func _process_frame(delta: float) -> void:
 	if tree_mode:
 		tree.tick(delta)
 		_tick_plant_marker(delta)
-		for planted in _forest_trees:
-			planted.tick(delta)
+		forest.tick(delta, xr_camera.global_transform.origin)
 		return
 	# The sculpture's only per-frame work: the ambient clocks, and whatever rebuild breathing
 	# or a SHAPE morph is asking for. Nothing is dispatched, which is what keeps the chaos
