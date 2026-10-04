@@ -6,15 +6,29 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Changed
-- **The wrist menu is a strand of the fractal, not a slate.** A spine down the left edge
-  carries the live palette stood on end; sections hang off it as nodes; tiles are petals
-  (soft on one diagonal, sharp on the other) that unfold out of the spine in a wave when
-  the wrist turns up; the silhouette is a cut facet; a small chaos-game flame, rendered
-  once at build, glows behind the title. The frame takes a signature hue per mode (ember,
-  violet, teal, leaf, ice) that sweeps in over 0.4 s on a mode change, so GROUND reads
-  teal before a word is read. Pressing a tile sends a ring out of it. Type goes up two to
-  three points everywhere (labels 21, values 19, title 36) for forearm-length reading in a
-  headset. Same budget as before: one composition layer, no per-frame allocations.
+- **The wrist menu is a zoomable panel of real controls with real depth.** Two
+  composition layers 12 mm apart: the glass behind (facet silhouette, the live palette
+  as a spine, title, breadcrumb, footer, and a soft shadow under every control) and the
+  controls in front, so in stereo they sit proud of the glass with true parallax rather
+  than a painted bevel. The top level is a handful of big cards, one per section plus the
+  flame gallery as its own, each showing its live state (values, or the palette as a
+  bar). Pressing a card zooms into it: the cards swell around the pressed one and fade,
+  the front plane comes 6 mm toward you, and the card's controls unfold where it was.
+  Back is the edge button or the other hand's trigger. Inside, every control is the
+  thing it does: switches that flip (DRIFT, SPIN, GLOW, JULIA, PASSTHRU...), sliders with
+  detents you drag with the trigger held while the fractal follows (SOLID, BRIGHT,
+  EXPOSURE, DETAIL, SIZE, SURFACE...), carousels with the actual palettes as swatches
+  (the flame gallery, THEME), buttons with a press, and EXIT as a hold-to-confirm ring.
+  Long tails sit behind MORE. The mode rail runs across the top at every level. The frame
+  takes a signature hue per mode (ember, violet, teal, leaf, ice) that sweeps in over
+  0.4 s. Haptics on hover, press, each detent and the hold. Budget: two layers, the back
+  one rendering only when something on it changes, no per-frame allocations.
+- **The menu can leave the arm.** The menu button flies the panel off the forearm to a
+  lazy-follow float half a metre out and a little below the eye line. It stays put while
+  you look around and eases back in front of you over half a second once your heading
+  drifts past 38 degrees; grip on it to move it, and that becomes its resting spot.
+  Press again and it flies home. Pinned, either hand's ray drives it. Worn or pinned is
+  remembered across sessions.
 - **One meaning per controller button, in every mode.** A and B were already prev/next;
   now X is home, Y is the next colour theme, the left menu button pins the wrist menu
   open, left stick click is passthrough and right stick click is the mode's ambient

@@ -132,7 +132,7 @@ func _build_layer() -> bool:
 	_layer.quad_size = PANEL_METRES
 	_layer.layer_viewport = _vp
 	_layer.alpha_blend = true
-	_layer.sort_order = 2        # above the wrist menu, which sits at 1
+	_layer.sort_order = 3        # above both wrist menu planes, which sit at 1 and 2
 	add_child(_layer)
 	return true
 
@@ -233,8 +233,8 @@ class ControlsCard extends Control:
 		var right_grip := PackedStringArray(["Both grips: scale", "and fly through"])
 		var face := PackedStringArray(["A · B: previous,", "next flame"])
 		var left_face := PackedStringArray(["X: home", "Y: next theme"])
-		var menu_btn := PackedStringArray(["Pin the wrist menu", "· press again to let go"])
-		var mode_note := "Left wrist up for the menu:  FLAME · BULB · GROUND · TREE · IFS"
+		var menu_btn := PackedStringArray(["Float the menu", "· again: back on the arm"])
+		var mode_note := "Wrist up for the menu. Point and pull; the other trigger goes back a level."
 		if _mode == "tree":
 			left_trigger = PackedStringArray(["Regrow", "every tree"])
 			right_trigger = PackedStringArray(["Plant a tree", "at the point"])

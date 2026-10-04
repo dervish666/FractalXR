@@ -546,7 +546,8 @@ func _build_menu() -> void:
 		WristMenu.Item.new("make", "DETAIL",
 			func(): return "%d · %d" % [IFS_DETAIL[ifs_detail_idx], ifs.instance_count],
 			func(): _step_ifs_detail(1),
-			false, _vis_ifs).stepping(func(d: int): _step_ifs_detail(d)),
+			false, _vis_ifs).stepping(func(d: int): _step_ifs_detail(d)).slider(
+			func(): return ifs_detail_idx, IFS_DETAIL.size()),
 		WristMenu.Item.new("make", "DEPTH",
 			func(): return "%.2fx" % IFS_DEPTH[ifs_depth_idx],
 			func(): _step_ifs_depth(1),
@@ -557,7 +558,7 @@ func _build_menu() -> void:
 		WristMenu.Item.new("make", "EDIT",
 			func(): return "handles on" if ifs_edit.guides_on else "handles off",
 			func(): ifs_edit.set_guides(not ifs_edit.guides_on),
-			false, _vis_ifs),
+			false, _vis_ifs).toggle(func(): return ifs_edit.guides_on),
 		WristMenu.Item.new("make", "UNDO",
 			func(): return "last edit" if ifs_edit.has_undo() else "nothing yet",
 			func(): ifs_edit.undo(),
@@ -579,6 +580,22 @@ func _build_menu() -> void:
 			func(): return "all trees",
 			func(): _regrow_forest(),
 			false, _vis_tree),
+		# The forest's own actions (forest branch, 2026-10-04). Called by name so this spec
+		# parses before and after the merge; the merge may make these direct calls.
+		WristMenu.Item.new("make", "SOW",
+			func(): return "mixed grove",
+			func(): call("_sow_grove"),
+			false, func(): return tree_mode and has_method("_sow_grove")),
+		WristMenu.Item.new("make", "MIX",
+			func(): return "species" if _forest_flag("plant_mix") else "one kind",
+			func(): call("_toggle_plant_mix"),
+			false, func(): return tree_mode and has_method("_toggle_plant_mix")).toggle(
+			func(): return _forest_flag("plant_mix")),
+		WristMenu.Item.new("make", "SUCCESSION",
+			func(): return "wither + regrow" if _forest_flag("succession") else "off",
+			func(): call("_toggle_succession"),
+			false, func(): return tree_mode and has_method("_toggle_succession")).toggle(
+			func(): return _forest_flag("succession")),
 		WristMenu.Item.new("make", "CLEAR",
 			func(): return "%d planted" % _forest_trees.size(),
 			func(): _clear_forest(),
@@ -599,7 +616,7 @@ func _build_menu() -> void:
 			false, _vis_flame),
 
 		WristMenu.Item.new("scene", "FLAME",
-			func(): return library.bulbs[bulb_idx].get("name", "?") if bulb_mode else "next",
+			func(): return library.bulbs[bulb_idx].get("name", "?") if bulb_mode else library.name_at(preset_idx),
 			func():
 				if bulb_mode:
 					_load_bulb(bulb_idx + 1)
@@ -609,14 +626,19 @@ func _build_menu() -> void:
 				if bulb_mode:
 					_load_bulb(bulb_idx + d)
 				else:
-					_morph_to_preset(preset_idx + d)),
+					_morph_to_preset(preset_idx + d)).gallery(
+			func(): return bulb_idx if bulb_mode else preset_idx,
+			func(): return library.bulbs.size() if bulb_mode else library.count(),
+			func(i: int): return PresetLibrary.palette_of(
+				library.bulbs[wrapi(i, 0, maxi(1, library.bulbs.size()))] if bulb_mode else library.at(i))
+			).as_card("make"),
 		WristMenu.Item.new("scene", "DRIFT",
 			func(): return "on" if _drift else "off",
 			func(): _drift = not _drift; _drift_hold = 0.0,
-			false, _vis_cloud),
+			false, _vis_cloud).toggle(func(): return _drift),
 		WristMenu.Item.new("scene", "SPIN",
 			func(): return "on" if spin else "off", func(): spin = not spin,
-			false, _vis_grab),
+			false, _vis_grab).toggle(func(): return spin),
 		WristMenu.Item.new("scene", "SPEED",
 			func(): return "%ds" % int(MORPH_STEPS[morph_idx]),
 			func(): morph_idx = (morph_idx + 1) % MORPH_STEPS.size(),
@@ -660,7 +682,7 @@ func _build_menu() -> void:
 					var nxt := wrapi(cur + d, 0, SPLAT_STEPS.size() + 1)
 					splat_on = nxt > 0
 					splat_idx = maxi(0, nxt - 1)
-				_apply_point_look()),
+				_apply_point_look()).minor(),
 		WristMenu.Item.new("look", "ADAPT",
 			func(): return "%d%%" % int(DENSITY_STEPS[density_idx] * 100.0),
 			func():
@@ -668,7 +690,7 @@ func _build_menu() -> void:
 				_apply_point_look(),
 			false, _vis_cloud).stepping(func(d: int):
 				density_idx = wrapi(density_idx + d, 0, DENSITY_STEPS.size())
-				_apply_point_look()),
+				_apply_point_look()).minor(),
 		WristMenu.Item.new("look", "SOLID",
 			func(): return "%d%%" % int(OPACITY_STEPS[opacity_idx] * 100.0),
 			func():
@@ -676,41 +698,43 @@ func _build_menu() -> void:
 				_apply_point_look(),
 			false, _vis_cloud).stepping(func(d: int):
 				opacity_idx = wrapi(opacity_idx + d, 0, OPACITY_STEPS.size())
-				_apply_point_look()),
+				_apply_point_look()).slider(func(): return opacity_idx, OPACITY_STEPS.size()),
 		WristMenu.Item.new("look", "SIZE",
 			func(): return "%.2f" % POINT_STEPS[point_idx],
 			func(): point_idx = (point_idx + 1) % POINT_STEPS.size(); _apply_point_look(),
 			false, _vis_flame).stepping(func(d: int):
 				point_idx = wrapi(point_idx + d, 0, POINT_STEPS.size())
-				_apply_point_look()),
+				_apply_point_look()).slider(func(): return point_idx, POINT_STEPS.size()),
 		WristMenu.Item.new("colour", "THEME",
 			func():
 				if recolor_on_drift:
 					return "auto %d" % (theme_idx + 1) if theme_idx >= 0 else "auto"
 				return "theme %d" % (theme_idx + 1) if theme_idx >= 0 else "preset",
-			func(): _cycle_theme()).stepping(func(d: int): _cycle_theme(d)),
+			func(): _cycle_theme()).stepping(func(d: int): _cycle_theme(d)).gallery(
+			func(): return theme_idx + 1, func(): return library.themes.size() + 1, _theme_swatch),
 		WristMenu.Item.new("colour", "AUTO",
 			func(): return "on" if recolor_on_drift else "off",
 			func(): recolor_on_drift = not recolor_on_drift,
-			false, _vis_cloud),
+			false, _vis_cloud).toggle(func(): return recolor_on_drift).minor(),
 		WristMenu.Item.new("colour", "BANDS",
 			func(): return "%dx" % int(COLOUR_CYCLES[colour_idx]),
 			func():
 				colour_idx = (colour_idx + 1) % COLOUR_CYCLES.size()
 				_apply_point_look()).stepping(func(d: int):
 				colour_idx = wrapi(colour_idx + d, 0, COLOUR_CYCLES.size())
-				_apply_point_look()),
+				_apply_point_look()).slider(func(): return colour_idx, COLOUR_CYCLES.size()).minor(),
 		WristMenu.Item.new("colour", "BRIGHT",
 			func(): return "%.3f" % BRIGHT_STEPS[bright_idx],
 			func(): bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size(); _apply_point_look(),
 			false, _vis_cloud).stepping(func(d: int):
 				bright_idx = wrapi(bright_idx + d, 0, BRIGHT_STEPS.size())
-				_apply_point_look()),
+				_apply_point_look()).slider(func(): return bright_idx, BRIGHT_STEPS.size()),
 
 		WristMenu.Item.new("colour", "EXPOSURE",
 			func(): return "%.0fx" % EXPOSURE_MUL[exposure_idx],
 			func(): exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size(); _apply_exposure()).stepping(
-			func(d: int): exposure_idx = wrapi(exposure_idx + d, 0, EXPOSURE_MUL.size()); _apply_exposure()),
+			func(d: int): exposure_idx = wrapi(exposure_idx + d, 0, EXPOSURE_MUL.size()); _apply_exposure()).slider(
+			func(): return exposure_idx, EXPOSURE_MUL.size()),
 		WristMenu.Item.new("look", "MOTION",
 			func():
 				var m: int = BULB_STABILITY[bulb_stability_idx] if bulb_mode else STABILITY[stability_idx]
@@ -730,13 +754,15 @@ func _build_menu() -> void:
 					if BULB_STABILITY[bulb_stability_idx] == 0:
 						_bake_wait = BAKE_DELAY_FRAMES
 				else:
-					stability_idx = wrapi(stability_idx + d, 0, STABILITY.size())),
+					stability_idx = wrapi(stability_idx + d, 0, STABILITY.size())).slider(
+			func(): return bulb_stability_idx if bulb_mode else stability_idx,
+			BULB_STABILITY.size()),
 		# The sculpture's own MOTION. The flame's above acts on a cloud that is not being
 		# drawn here, so the two never show at once.
 		WristMenu.Item.new("look", "MOTION",
 			func(): return "breathing" if ifs.ambient else "off",
 			func(): _toggle_ifs_motion(),
-			false, _vis_ifs),
+			false, _vis_ifs).toggle(func(): return ifs.ambient),
 		# Copies of the sculpture through the room. The count is what the tile prints, because
 		# the count is what the GPU pays for; the headset's frame time decides whether MANY stays.
 		WristMenu.Item.new("look", "ECHOES",
@@ -758,7 +784,7 @@ func _build_menu() -> void:
 					RenderingServer.call_on_render_thread(cloud.bake)
 				else:
 					cloud.clear_bake(),
-			false, func(): return bulb_mode),
+			false, func(): return bulb_mode).toggle(func(): return auto_bake).minor(),
 		WristMenu.Item.new("look", "BREATHE",
 			func():
 				# A frozen cloud cannot show a moving surface, so say so rather than
@@ -775,7 +801,7 @@ func _build_menu() -> void:
 			func(): surface_idx = (surface_idx + 1) % SURFACE_STEPS.size(); _apply_surface(),
 			false, func(): return bulb_mode).stepping(func(d: int):
 				surface_idx = wrapi(surface_idx + d, 0, SURFACE_STEPS.size())
-				_apply_surface()),
+				_apply_surface()).slider(func(): return surface_idx, SURFACE_STEPS.size()),
 		# ENTER (stand inside the shape at its roomiest hollow) is not on the headset menu.
 		# Measured 2026-09-12: 85-103 ms GPU at 48 steps on a 0.6x eye buffer, every pixel
 		# of both eyes marching, and the bail-out left the renderer in a broken pipeline
@@ -787,7 +813,8 @@ func _build_menu() -> void:
 		WristMenu.Item.new("look", "DETAIL",
 			func(): return "%.2fx" % (MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx]),
 			func(): _step_detail(1),
-			false, func(): return not ifs_mode).stepping(func(d: int): _step_detail(d)),
+			false, func(): return not ifs_mode).stepping(func(d: int): _step_detail(d)).slider(
+			func(): return render_idx, RENDER_STEPS.size()),
 		WristMenu.Item.new("look", "SET",
 			func(): return ground.formula_name(),
 			func(): ground.set_formula(ground.formula + 1),
@@ -800,7 +827,7 @@ func _build_menu() -> void:
 					ground.set_julia(false)
 				else:
 					ground.julia_here(),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).toggle(func(): return ground.julia),
 		WristMenu.Item.new("look", "ITER",
 			# Past stage 10 the ground raises the count itself (FractalGround.iter_floor);
 			# say so, or the tile names a number the fill is not using.
@@ -837,7 +864,7 @@ func _build_menu() -> void:
 				_apply_ground_look(),
 			false, func(): return ground_mode).stepping(func(d: int):
 				ground_texture_idx = wrapi(ground_texture_idx + d, 0, GROUND_TEXTURE.size())
-				_apply_ground_look()),
+				_apply_ground_look()).minor(),
 		WristMenu.Item.new("look", "FREQ",
 			func(): return "%.1fx" % GROUND_FREQ[ground_freq_idx],
 			func():
@@ -845,7 +872,7 @@ func _build_menu() -> void:
 				_apply_ground_look(),
 			false, func(): return ground_mode).stepping(func(d: int):
 				ground_freq_idx = wrapi(ground_freq_idx + d, 0, GROUND_FREQ.size())
-				_apply_ground_look()),
+				_apply_ground_look()).minor(),
 		WristMenu.Item.new("look", "HUE",
 			func(): return "%.2f" % ground_hue,
 			func():
@@ -853,7 +880,7 @@ func _build_menu() -> void:
 				_apply_ground_look(),
 			false, func(): return ground_mode).stepping(func(d: int):
 				ground_hue = fposmod(ground_hue + 0.125 * d, 1.0)
-				_apply_ground_look()),
+				_apply_ground_look()).slider(func(): return int(round(ground_hue * 8.0)) % 8, 8).minor(),
 		WristMenu.Item.new("look", "BUMP",
 			func(): return "%.1fx" % GROUND_BUMP[ground_bump_idx],
 			func():
@@ -861,7 +888,7 @@ func _build_menu() -> void:
 				_apply_ground_look(),
 			false, func(): return ground_mode).stepping(func(d: int):
 				ground_bump_idx = wrapi(ground_bump_idx + d, 0, GROUND_BUMP.size())
-				_apply_ground_look()),
+				_apply_ground_look()).minor(),
 		WristMenu.Item.new("look", "SKY",
 			func(): return "off" if GROUND_SKY[ground_sky_idx] == 0.0 else "mirror %.0fm" % GROUND_SKY[ground_sky_idx],
 			func():
@@ -869,13 +896,13 @@ func _build_menu() -> void:
 				_apply_ground_look(),
 			false, func(): return ground_mode).stepping(func(d: int):
 				ground_sky_idx = wrapi(ground_sky_idx + d, 0, GROUND_SKY.size())
-				_apply_ground_look()),
+				_apply_ground_look()).slider(func(): return ground_sky_idx, GROUND_SKY.size()).minor(),
 		WristMenu.Item.new("look", "INSIDE",
 			func(): return "room" if ground_inside_room and passthrough else ("needs room" if ground_inside_room else "solid"),
 			func():
 				ground_inside_room = not ground_inside_room
 				_apply_ground_look(),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).toggle(func(): return ground_inside_room).minor(),
 		WristMenu.Item.new("look", "HOME",
 			func(): return "reset view",
 			func(): ground.home(),
@@ -886,7 +913,7 @@ func _build_menu() -> void:
 			func():
 				orbit_on = not orbit_on
 				orbit.visible = false,
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).toggle(func(): return orbit_on),
 		WristMenu.Item.new("look", "DEPTH",
 			func(): return "%d · %s" % [tree.effective_depth(), _fmt_count(_forest_branch_count())],
 			func():
@@ -908,13 +935,13 @@ func _build_menu() -> void:
 		WristMenu.Item.new("look", "LEAVES",
 			func(): return "on" if tree.leaves_on else "off",
 			func(): _set_forest_leaves(not tree.leaves_on),
-			false, _vis_tree),
+			false, _vis_tree).toggle(func(): return tree.leaves_on),
 		# Double the level size and max the iterations: four times the fill for a still
 		# that is sharp out to the middle distance. The status line counts it in.
 		WristMenu.Item.new("look", "RENDER",
 			func(): return "hq 2048 / 4096" if _render_hq else "normal",
 			func(): _set_render_hq(not _render_hq),
-			false, func(): return ground_mode),
+			false, func(): return ground_mode).toggle(func(): return _render_hq).minor(),
 		# Fixed foveated rendering, the largest fragment-cost lever on a Quest. Off by
 		# default because the cloud showed it at the edges; this dial is the instrument
 		# for measuring it per mode (ground and tree may take it for free). Applied a
@@ -927,27 +954,24 @@ func _build_menu() -> void:
 				call_deferred("_apply_foveation"),
 			false).stepping(func(d: int):
 				fovea_idx = wrapi(fovea_idx + d, 0, FOVEA_STEPS.size())
-				call_deferred("_apply_foveation")),
+				call_deferred("_apply_foveation")).slider(func(): return fovea_idx, FOVEA_STEPS.size()).minor(),
 		# Glow is a downsample/blur/upsample chain per eye on a tiler, and its cost has
 		# never been measured. This toggle is the instrument: flip it and read the ms.
 		WristMenu.Item.new("look", "GLOW",
 			func(): return "on" if _env().glow_enabled else "off",
-			func(): _env().glow_enabled = not _env().glow_enabled),
+			func(): _env().glow_enabled = not _env().glow_enabled).toggle(
+			func(): return _env().glow_enabled).minor(),
 		# Application actions live together instead of being mixed into scene controls.
 		WristMenu.Item.new("app", "PASSTHRU",
 			func(): return passthru_label,
-			func(): _set_passthrough(not passthrough)),
+			func(): _set_passthrough(not passthrough)).toggle(func(): return passthrough),
 		WristMenu.Item.new("app", "HELP",
 			func(): return "controls", func(): help.open()),
-		# Two presses. The menu is driven by a ray and a trigger, and a single stray pull
-		# should not end the session; the first press arms it and says so on the tile.
+		# A hold. The menu is driven by a ray and a trigger, and a single stray pull should
+		# not end the session; the ring on the tile fills for a second before this runs.
 		WristMenu.Item.new("app", "EXIT",
-			func(): return "sure? press again" if _exit_armed_until > _uptime else "quit",
-			func():
-				if _exit_armed_until > _uptime:
-					get_tree().quit()
-				else:
-					_exit_armed_until = _uptime + EXIT_ARM_S),
+			func(): return "hold to quit",
+			func(): get_tree().quit()).hold(),
 	]
 	menu.title = func():
 		if ifs_mode:
@@ -1021,7 +1045,8 @@ func _build_menu() -> void:
 	menu.transform = Transform3D(Basis(), Vector3(0.0, 0.06, 0.10))
 	menu.rotation_degrees = Vector3(-62.0, 0.0, 0.0)
 	left_hand.add_child(menu)
-	menu.setup(xr_camera, right_hand)
+	menu.setup(xr_camera, right_hand, left_hand, xr_origin)
+	menu.pin_changed.connect(_save_menu_pinned)
 	# The floating readout is retired: it was a debug tool that sat in the view whether
 	# or not it was wanted. Status now lives on the wrist with everything else.
 	hud.visible = false
@@ -1308,6 +1333,23 @@ func _zoom_text(z: float) -> String:
 	var e := int(floor(log(z) / log(10.0)))
 	var m := z / pow(10.0, float(e))
 	return "%.1fe%dx" % [m, e]
+
+
+## One entry of the THEME carousel's swatch strip: 0 is the genome's own palette, the
+## rest are the library's themes, as the Vector3 triples the menu paints.
+func _theme_swatch(i: int) -> Array:
+	if i <= 0 or library.themes.is_empty():
+		return cloud.source.palette() if cloud.source != null else []
+	var out: Array = []
+	for c in library.themes[wrapi(i - 1, 0, library.themes.size())]:
+		out.append(Vector3(float(c[0]), float(c[1]), float(c[2])))
+	return out
+
+
+## A forest flag by name, false until the forest branch's `forest` exists here.
+func _forest_flag(flag: String) -> bool:
+	var f = get("forest")
+	return f != null and bool(f.get(flag))
 
 
 func _step_specimen(d: int) -> void:
@@ -2038,6 +2080,10 @@ func _process(delta: float) -> void:
 			_help_pending = false
 			_mark_help_seen()
 			help.open()
+		# Restored here and not in _ready: the float rests relative to the head, which is
+		# still at the origin until tracking lands.
+		if _menu_pinned_saved():
+			menu.set_pinned(true, true)
 	help.update(delta)
 	_menu_active = menu.update(delta)
 	if _xr_focused:
@@ -2089,7 +2135,7 @@ func _process(delta: float) -> void:
 	if grab != null:
 		# Ground reads the same grips to drag the field; without this the hidden cloud
 		# was dragged along with it and came back in a moved pose when ground was left.
-		grab.suspended = ifs_edit.is_editing() or ground_mode
+		grab.suspended = ifs_edit.is_editing() or ground_mode or menu.is_holding()
 		grab.update(delta)
 	_handle_input(delta)
 	_update_hud(delta)
@@ -2212,9 +2258,11 @@ func _handle_input(delta: float) -> void:
 
 	# An edit trigger is spent. The editor sits below the wrist menu and above everything else
 	# in the priority order, so a press it took cannot also step a gallery or plant a tree.
+	# With a ray on the panel the pointing hand's trigger acts on what it points at and
+	# the other hand's trigger backs out a level; neither reaches the mode below.
 	if (r_trigger or _key(KEY_RIGHT)) and not _trig_owned:
 		if _menu_active:
-			menu.activate()
+			menu.trigger(true)
 		elif ground_mode:
 			_ground_teleport(right_hand)
 		elif tree_mode:
@@ -2233,7 +2281,9 @@ func _handle_input(delta: float) -> void:
 		else:
 			_morph_to_preset(preset_idx + 1)
 	if (l_trigger or _key(KEY_LEFT)) and not _trig_owned:
-		if ground_mode:
+		if _menu_active:
+			menu.trigger(false)
+		elif ground_mode:
 			_ground_teleport(left_hand)
 		elif tree_mode:
 			_regrow_forest()
@@ -2600,6 +2650,20 @@ func _help_seen() -> bool:
 	if cfg.load(STATE_PATH) != OK:
 		return false
 	return bool(cfg.get_value("ui", "seen_help", false))
+
+
+func _menu_pinned_saved() -> bool:
+	var cfg := ConfigFile.new()
+	if cfg.load(STATE_PATH) != OK:
+		return false
+	return bool(cfg.get_value("ui", "menu_pinned", false))
+
+
+func _save_menu_pinned(on: bool) -> void:
+	var cfg := ConfigFile.new()
+	cfg.load(STATE_PATH)
+	cfg.set_value("ui", "menu_pinned", on)
+	cfg.save(STATE_PATH)
 
 
 func _mark_help_seen() -> void:
