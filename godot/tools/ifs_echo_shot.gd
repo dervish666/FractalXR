@@ -13,7 +13,7 @@ extends SceneTree
 ##
 ##   tools/ifs_echo_shot.sh
 
-const OUT := "res://.spike-out/ifs-echoes-2026-09-23"
+const OUT := "res://.spike-out/ifs-echoes-2026-10-04"
 const TABLE := Vector3(-19.0, 0.0, 0.0)
 ## Pitched up far enough that the hero, below the eye line and 0.8 m out, is out of frame.
 const UP := Vector3(45.0, 0.0, 0.0)
@@ -40,7 +40,7 @@ func _init() -> void:
 		_ok("echoes tile", false, "no ECHOES tile in the look section while in IFS")
 		quit(1)
 		return
-	# MANY opens by default; start the walk from FEW.
+	# LOTS opens by default; start the walk from FEW.
 	var opened := str(tile.read.call())
 	main.ifs_echoes.set_step(0)
 	var reads := [str(tile.read.call())]
@@ -61,22 +61,37 @@ func _init() -> void:
 	var lots_i: int = main.ifs_echoes.instance_total()
 	tile.advance.call()
 	reads.append(str(tile.read.call()))
+	var swarm: Image = await _shot(main, "echoes-swarm-up.png", UP)
+	tile.advance.call()
+	reads.append(str(tile.read.call()))
+	await _shot(main, "echoes-host.png", TABLE)
+	var host: Image = await _shot(main, "echoes-host-up.png", UP)
+	await _shot(main, "echoes-host-far.png", Vector3(8.0, 30.0, 0.0))
+	var host_i: int = main.ifs_echoes.instance_total()
+	tile.advance.call()
+	reads.append(str(tile.read.call()))
 	await _shot(main, "echoes-off.png", TABLE)
 	var off: Image = await _shot(main, "echoes-off-up.png", UP)
-	var lit := [_lit(off), _lit(few), _lit(many), _lit(lots)]
-	_ok("echoes tile", opened == "many · 40"
-			and reads == ["few · 16", "many · 40", "lots · 96", "off"] and main.ifs_echoes.count() == 0,
+	var lit := [_lit(off), _lit(few), _lit(many), _lit(lots), _lit(swarm), _lit(host)]
+	_ok("echoes tile", opened == "lots · 96"
+			and reads == ["few · 16", "many · 40", "lots · 96", "swarm · 192", "host · 288", "off"]
+			and main.ifs_echoes.count() == 0,
 		"opened %s, reads %s" % [opened, str(reads)])
-	_ok("echoes draw", lit[1] > lit[0] * 2 + 200 and lit[2] > lit[1] and lit[3] > lit[2],
-		("lit samples looking up: off=%d few=%d many=%d lots=%d, few=%d echoes %d frames, "
-			+ "many=%d echoes %d frames, lots %d frames, hero %d frames") % [lit[0], lit[1], lit[2],
-			lit[3], few_n, few_i, many_n, many_i, lots_i, main.ifs.instance_count])
+	_ok("echoes draw", lit[1] > lit[0] * 2 + 200 and lit[2] > lit[1] and lit[3] > lit[2]
+			and lit[4] > lit[3] and lit[5] > lit[4],
+		("lit samples looking up: off=%d few=%d many=%d lots=%d swarm=%d host=%d, few=%d echoes %d "
+			+ "frames, many=%d echoes %d frames, lots %d frames, host %d frames, hero %d frames") % [
+			lit[0], lit[1], lit[2], lit[3], lit[4], lit[5], few_n, few_i, many_n, many_i, lots_i,
+			host_i, main.ifs.instance_count])
+
+	# Off -> few -> many -> lots.
+	tile.advance.call()
+	tile.advance.call()
+	tile.advance.call()
+	await _life(main)
 
 	# Three more views of LOTS: turned left and looking up, and turned right, where the hero is
 	# out of frame and the room is all there is.
-	tile.advance.call()
-	tile.advance.call()
-	tile.advance.call()
 	await _shot(main, "echoes-lots-left-up.png", Vector3(20.0, 70.0, 0.0))
 	await _shot(main, "echoes-lots-right.png", Vector3(5.0, -100.0, 0.0))
 	await _shot(main, "echoes-lots-far.png", Vector3(8.0, 30.0, 0.0))
@@ -108,6 +123,72 @@ func _init() -> void:
 
 	print("IFSECHO %s failures=%d dir=%s" % ["PASS" if _fails == 0 else "FAIL", _fails, OUT])
 	quit(0 if _fails == 0 else 1)
+
+
+## The life, rendered. The shader takes every echo vertex out to world space and back to
+## move it; with the motion zeroed that round trip must draw what the plain path draws, or the
+## matrices are wrong and every echo is misplaced. Then ten minutes on, the same view must
+## differ (the echoes moved) and still be lit about as much (nothing flew off or collapsed).
+## The palette scroll and the hero's breathing are held still so only the echoes can change.
+func _life(main) -> void:
+	var ech: IfsEchoes = main.ifs_echoes
+	main.ifs.ambient = false
+	var mats: Array = ech._materials()
+	for m in mats:
+		m.set_shader_parameter(&"scroll", 0.0)
+	var keys := [&"echo_live", &"echo_spin", &"echo_wander", &"echo_life"]
+	var saved := []
+	for i in ech.count():
+		var n: MultiMeshInstance3D = ech.nodes()[i]
+		var row := {}
+		for k in keys:
+			row[k] = n.get_instance_shader_parameter(k)
+		saved.append(row)
+		n.set_instance_shader_parameter(&"echo_live", 0.0)
+	var plain: Image = await _shot(main, "life-plain.png", UP)
+	for i in ech.count():
+		var n: MultiMeshInstance3D = ech.nodes()[i]
+		n.set_instance_shader_parameter(&"echo_live", 1.0)
+		n.set_instance_shader_parameter(&"echo_spin", Vector4(0.0, 1.0, 0.0, 0.0))
+		n.set_instance_shader_parameter(&"echo_wander", Vector4.ZERO)
+		var l: Vector4 = saved[i][&"echo_life"]
+		n.set_instance_shader_parameter(&"echo_life", Vector4(l.x, 0.0, l.z, l.w))
+	var still: Image = await _shot(main, "life-zeroed.png", UP)
+	for i in ech.count():
+		var n: MultiMeshInstance3D = ech.nodes()[i]
+		for k in keys:
+			n.set_instance_shader_parameter(k, saved[i][k])
+	var now: Image = await _shot(main, "life-t0.png", UP)
+	ech.echo_t += 600.0
+	ech.advance(0.0)
+	var later: Image = await _shot(main, "life-t600.png", UP)
+	await _shot(main, "life-t600-left-up.png", Vector3(20.0, 70.0, 0.0))
+	var round_trip := _diff(plain, still)
+	var moved := _diff(now, later)
+	var ln := _lit(now)
+	var ll := _lit(later)
+	_ok("echoes life", round_trip.x < 0.0015 and moved.x > 0.002 and ll > ln * 0.6 and ll < ln * 1.6,
+		("zeroed motion vs plain path: mean %.5f max %.4f; t0 vs t+600 s: mean %.5f max %.4f; "
+			+ "lit %d -> %d") % [round_trip.x, round_trip.y, moved.x, moved.y, ln, ll])
+	main.ifs.ambient = true
+	for m in mats:
+		m.set_shader_parameter(&"scroll", FractalIFS.SCROLL)
+
+
+## Mean and max per-channel difference, sampled every other pixel.
+func _diff(a: Image, b: Image) -> Vector2:
+	var sum := 0.0
+	var mx := 0.0
+	var n := 0
+	for y in range(0, a.get_height(), 2):
+		for x in range(0, a.get_width(), 2):
+			var ca := a.get_pixel(x, y)
+			var cb := b.get_pixel(x, y)
+			var d := maxf(absf(ca.r - cb.r), maxf(absf(ca.g - cb.g), absf(ca.b - cb.b)))
+			sum += d
+			mx = maxf(mx, d)
+			n += 1
+	return Vector2(sum / float(n), mx)
 
 
 func _ok(name: String, pass_: bool, detail: String) -> void:

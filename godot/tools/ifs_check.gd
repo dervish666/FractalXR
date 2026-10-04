@@ -66,6 +66,7 @@ func _init() -> void:
 	_rejection(ifs)
 	_echoes(ifs)
 	_echo_layout()
+	_echo_life(ifs)
 	await _grab_suspend()
 	_editor_setup()
 	await _editor_space()
@@ -796,12 +797,16 @@ func _echoes(ifs: FractalIFS) -> void:
 		and ifs.echo_multimesh(1).instance_count == 73 and ifs.instance_count == 4681
 	var shared_mat := true
 	var shared_mm := true
-	for m in echoes.nodes():
-		shared_mat = shared_mat and m.material_override == ifs.material() \
-			and m.material_override == ifs.get_node("Frames").material_override
+	var worn := 0
 	for i in echoes.placements.size():
-		shared_mm = shared_mm and echoes.nodes()[i].multimesh \
-			== ifs.echo_multimesh(int(echoes.placements[i]["tier"]))
+		var m: MultiMeshInstance3D = echoes.nodes()[i]
+		var sh := echoes.shape_of(i)
+		worn += 1 if sh >= 0 else 0
+		shared_mat = shared_mat and m.material_override == echoes.shape_material(sh) \
+			and (sh >= 0 or m.material_override == ifs.get_node("Frames").material_override)
+		shared_mm = shared_mm and m.multimesh \
+			== echoes.shape_multimesh(sh, int(echoes.placements[i]["tier"]))
+	shared_mat = shared_mat and worn > 0 and worn < echoes.placements.size()
 	echoes.set_step(0)
 	var few := echoes.count()
 	var few_total := echoes.instance_total()
@@ -812,6 +817,11 @@ func _echoes(ifs: FractalIFS) -> void:
 	var lots := echoes.count()
 	var lots_total := echoes.instance_total()
 	echoes.set_step(3)
+	var swarm := echoes.count()
+	echoes.set_step(4)
+	var host := echoes.count()
+	var host_total := echoes.instance_total()
+	echoes.set_step(5)
 	var off := echoes.count()
 	var drawn := 0
 	for m in echoes.nodes():
@@ -826,9 +836,12 @@ func _echoes(ifs: FractalIFS) -> void:
 			+ "detail-4 tiers 9/73=%s material shared=%s tier mm shared=%s stale control='%s'") % [
 			_or_ok(before), _or_ok(after_edit), _or_ok(mid_morph), _or_ok(landed), str(moved),
 			str(blended), str(capped), str(shared_mat), str(shared_mm), ctl])
-	_ok("echoes ladder", few == 16 and many == 40 and lots == 96 and off == 0 and drawn == 0,
-		"few=%d (%d frames) many=%d (%d frames) lots=%d (%d frames) off=%d nodes drawn when off=%d" % [
-			few, few_total, many, many_total, lots, lots_total, off, drawn])
+	_ok("echoes ladder", few == 16 and many == 40 and lots == 96 and swarm == 192 and host == 288
+			and off == 0 and drawn == 0,
+		("few=%d (%d frames) many=%d (%d frames) lots=%d (%d frames) swarm=%d host=%d (%d frames) "
+			+ "off=%d nodes drawn when off=%d, %d wear another preset") % [
+			few, few_total, many, many_total, lots, lots_total, swarm, host, host_total, off, drawn,
+			worn])
 
 
 static func _or_ok(s: String) -> String:
@@ -844,7 +857,8 @@ func _echo_follows(ifs: FractalIFS, echoes: IfsEchoes) -> String:
 			return why
 	for i in echoes.placements.size():
 		var m: MultiMeshInstance3D = echoes.nodes()[i]
-		if m.multimesh != ifs.echo_multimesh(int(echoes.placements[i]["tier"])):
+		var want := echoes.shape_multimesh(echoes.shape_of(i), int(echoes.placements[i]["tier"]))
+		if m.multimesh != want:
 			return "echo %d draws a MultiMesh of its own" % i
 		# The node's own box is left unset so the tier's custom AABB is what culls it. The
 		# node's get_aabb() cannot say so here: the headless server reports an empty box.
@@ -920,6 +934,101 @@ func _echo_layout() -> void:
 			a.size(), IfsEchoes.MAX_ECHOES, str(same), bad, near, low, cone, smin, smax,
 			bands[0], bands[1], bands[2], tiers[0], tiers[1],
 			str(ctl_eye), str(ctl_floor), str(ctl_sight), str(ctl_overlap)])
+
+
+## The life. Three things a picture cannot show:
+##   - Bound: the shader's motion, ported here sample for sample, never takes any frame of any
+##     echo outside the reach the placement cleared. The control runs the same samples with the
+##     wander doubled and must escape, or the test cannot see an escape.
+##   - Variety: the effects are mixed, not uniform, and no two echoes share a clock.
+##   - Swaps: driving the clock for ten minutes folds and regrows shapes, every echo wears a
+##     MultiMesh and material that agree, and with ECHOES off the hero's rebuild stops
+##     uploading the tiers, then catches them up when they come back on.
+func _echo_life(ifs: FractalIFS) -> void:
+	var width := 0.6
+	var floor_y := -1.6
+	var lay := IfsEchoes.layout(floor_y, width, Vector3(0.0, -0.28, -0.8))
+	var worst := -INF
+	var ctl := -INF
+	var counts := [0, 0, 0, 0]
+	var offs := {}
+	var fastest := INF
+	for i in lay.size():
+		var p: Dictionary = lay[i]
+		var life: Dictionary = p["life"]
+		var s := float(p["s"])
+		var d := float(p["d"])
+		var r0 := IfsEchoes.radius_of(s, width)
+		var reach := float(p["r"])
+		counts[0] += 1 if float(life["spin_w"]) != 0.0 else 0
+		counts[1] += 1 if (life["wander"] as Vector3) != Vector3.ZERO else 0
+		counts[2] += 1 if float(life["swell"]) != 0.0 else 0
+		counts[3] += 1 if float(life["swap_every"]) > 0.0 else 0
+		offs[snappedf(float(life["t_off"]), 1e-3)] = true
+		if float(life["spin_w"]) != 0.0:
+			fastest = minf(fastest, TAU / absf(float(life["spin_w"])))
+		# A frame point on the sphere of radius r0, the farthest the shape reaches at rest.
+		for k in 64:
+			var t := float(k) * 37.3
+			var tt := t + float(life["t_off"])
+			var sw := float(life["swell"]) * sin(float(life["swell_w"]) * tt)
+			var wa: Vector3 = life["wander"]
+			var ph := Vector3(1.0, 1.37, 0.71) * float(life["wander_w"]) * tt + Vector3(0.0, 2.1, 4.2)
+			var wob := Vector3(wa.x * sin(ph.x), wa.y * sin(ph.y), wa.z * sin(ph.z))
+			var pt := Vector3(r0, 0.0, 0.0).rotated(Vector3(0.3, 0.9, 0.1).normalized(), t) * (1.0 + sw)
+			worst = maxf(worst, (pt + wob).length() - reach)
+			# Control: the static radius the placement used before echoes moved. A wandering
+			# echo must break it, or the samples never reach the edge of the motion.
+			ctl = maxf(ctl, (pt + wob).length() - r0 * (1.0 + IfsEchoes.SWELL_AMP.y))
+	var mixed: bool = counts[0] < lay.size() and counts[1] < lay.size() and counts[2] < lay.size() \
+		and counts[3] < lay.size() and counts.min() > lay.size() / 4
+	var distinct := offs.size() == lay.size()
+
+	_defaults(ifs)
+	var echoes := IfsEchoes.new()
+	ifs.add_child(echoes)
+	echoes.setup(ifs)
+	echoes.place(Transform3D(Basis(), Vector3(0.0, 1.6, 0.0)), floor_y, 0.3, width,
+		Vector3(0.0, -0.28, -0.8))
+	echoes.set_step(4)
+	ifs.build(false)
+	var start := []
+	for i in echoes.count():
+		start.append(echoes.shape_of(i))
+	var changed := 0
+	var t0 := Time.get_ticks_usec()
+	var steps := 0
+	while echoes.echo_t < 600.0:
+		echoes.advance(1.0 / 72.0)
+		steps += 1
+	var per_frame_us := float(Time.get_ticks_usec() - t0) / float(steps)
+	var agree := true
+	for i in echoes.count():
+		changed += 1 if echoes.shape_of(i) != start[i] else 0
+		var m: MultiMeshInstance3D = echoes.nodes()[i]
+		agree = agree and m.multimesh == echoes.shape_multimesh(echoes.shape_of(i),
+			int(echoes.placements[i]["tier"])) and m.material_override == echoes.shape_material(echoes.shape_of(i))
+	# Off: an edit must not reach the tiers. Back on: the tiers catch up before anything draws.
+	echoes.set_step(5)
+	var before: PackedFloat32Array = ifs.echo_multimesh(1).buffer
+	ifs.plane1_offset = 0.15
+	ifs.build(false)
+	var skipped: bool = ifs.echo_multimesh(1).buffer == before and not ifs.echoes_live
+	echoes.set_step(4)
+	var hero: MultiMesh = ifs.get_node("Frames").multimesh
+	var caught: bool = ifs.echo_multimesh(1).buffer \
+		== hero.buffer.slice(0, ifs.echo_multimesh(1).instance_count * 20)
+	ifs.remove_child(echoes)
+	echoes.free()
+	_defaults(ifs)
+	ifs.build(false)
+	_ok("echo life", worst <= 1e-4 and ctl > 0.0 and mixed and distinct and changed > 20 and agree
+			and skipped and caught,
+		("%d echoes: spin=%d wander=%d swell=%d swap=%d, fastest turn %.0f s, clocks distinct=%s, "
+			+ "worst overshoot of reach %.5f m (static-radius control %.3f), 10 min: %d of %d changed shape, "
+			+ "mm+material agree=%s, advance() %.1f us/frame, tiers skipped when off=%s caught up=%s") % [
+			lay.size(), counts[0], counts[1], counts[2], counts[3], fastest, str(distinct), worst, ctl,
+			changed, start.size(), str(agree), per_frame_us, str(skipped), str(caught)])
 
 
 func _rejection(ifs: FractalIFS) -> void:

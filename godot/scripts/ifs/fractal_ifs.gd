@@ -207,6 +207,11 @@ var _mmi: MultiMeshInstance3D
 ## same build() and pointed at the same seed mesh, so every edit, breath and morph reaches them
 ## with no second rebuild path. See IfsEchoes for why this is not the hero's own MultiMesh.
 var _echo_mm: Array[MultiMesh] = []
+## Whether any echo draws the tiers. IfsEchoes sets it from its count; true by default so a
+## FractalIFS without echoes attached still publishes them, as every check expects.
+var echoes_live := true
+var _echo_dirty := false
+var _last_buf := PackedFloat32Array()
 var _mat: ShaderMaterial
 var _shader: Shader
 var _shader_nocull: Shader
@@ -340,6 +345,33 @@ func _set_mesh(m: ArrayMesh) -> void:
 	_mmi.multimesh.mesh = m
 	for em in _echo_mm:
 		em.mesh = m
+
+
+## The echo tiers: the first generations of the hero's buffer. The AABB goes on the
+## MultiMesh, not on a node, so every echo sharing a tier is culled against the right box
+## through its own transform, and a custom AABB set first spares the buffer write a scan.
+## Skipped while no echo draws (echoes_live false): breathing rebuilds every frame, and two
+## slices and uploads nobody reads were the cost of MOTION with ECHOES off. Turning echoes
+## back on catches the tiers up from the hero's current buffer before anything draws them.
+func _upload_echo_tiers() -> void:
+	if not _echo_dirty or instance_count == 0:
+		return
+	_echo_dirty = false
+	var buf := _last_buf
+	for e in _echo_mm.size():
+		var lv := mini(int(ECHO_LEVELS[e]), levels_built)
+		var n := level_ends[lv]
+		var em := _echo_mm[e]
+		em.custom_aabb = level_bounds[lv]
+		if em.instance_count != n:
+			em.instance_count = n
+		em.buffer = buf if n == instance_count else buf.slice(0, n * 20)
+
+
+func set_echoes_live(on: bool) -> void:
+	echoes_live = on
+	if on:
+		_upload_echo_tiers()
 
 
 ## The MultiMesh an echo of tier `tier` draws. Views only: nothing outside build() writes it.
@@ -697,17 +729,10 @@ func build(grow := true) -> int:
 	# from the parent origins, every instance stays inside its finished box, so the bound a
 	# still shape publishes covers the animation too.
 	_mmi.custom_aabb = bounds
-	# The echo tiers: the first generations of this same buffer. The AABB goes on the
-	# MultiMesh, not on a node, so every echo sharing a tier is culled against the right box
-	# through its own transform, and a custom AABB set first spares the buffer write a scan.
-	for e in _echo_mm.size():
-		var lv := mini(int(ECHO_LEVELS[e]), levels_built)
-		var n := level_ends[lv]
-		var em := _echo_mm[e]
-		em.custom_aabb = level_bounds[lv]
-		if em.instance_count != n:
-			em.instance_count = n
-		em.buffer = buf if n == instance_count else buf.slice(0, n * 20)
+	_last_buf = buf
+	_echo_dirty = true
+	if echoes_live:
+		_upload_echo_tiers()
 	_mat.set_shader_parameter("origin_span", span)
 	# A full rebuild grows in from nothing and may recolour. Any other rebuild keeps each
 	# frame's colour where it was; see _gain_l.
