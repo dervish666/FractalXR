@@ -2056,7 +2056,9 @@ func _process(delta: float) -> void:
 			_guard_march()
 	if not ground_mode and not tree_mode and not ifs_mode:
 		_tick_morph(delta)   # the flame and its drift wait while you are on the ground
-	if _converge > 0:
+	# Same gate as _tick_morph: ground, tree and IFS never dispatch cloud.iterate, so a
+	# countdown burnt there brought the flame back as a frozen ball of seeds.
+	if _converge > 0 and not ground_mode and not tree_mode and not ifs_mode:
 		_converge -= 1
 		# Flame only: a bulb also sets _converge, and caching its measurement here filed
 		# the bulb's framing under the flame preset that happened to be selected.
