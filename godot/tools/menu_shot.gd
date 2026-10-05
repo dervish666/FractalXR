@@ -10,8 +10,16 @@ extends SceneTree
 ##
 ## The check that matters is geometry: a control whose rectangle runs past the viewport is
 ## invisible in the headset however cleanly the PNG saved. Overflow fails. So does a mode
-## rail with fewer than five stations, a top level with fewer than three cards, or an APP
-## level without PASSTHRU, HELP and EXIT.
+## rail with fewer than five stations, a top level with fewer than three cards, a bottom bar
+## without EXIT, PASSTHRU and HELP at any level, or a control running into that bar.
+##
+## The galleries are walked by hand, through update() and trigger(): into each mode's picture
+## page, every page turned with NEXT, every picture checked for a baked thumbnail, and one
+## picture pressed, which must select that fractal. The bar is pressed from inside a card:
+## HELP opens the card, PASSTHRU runs its toggle, and one pull on EXIT does not quit.
+## The float is checked last: the menu key sends the panel to the lower-right spot off a test
+## head pose, it holds still through 300 frames of the head turning and walking, and the key
+## brings it home to the wrist.
 ##
 ## With ANIM=1 in the environment it also writes a frame sequence to .spike-out/anim/:
 ## the panel opening, the zoom into a card, and a slider drag.
@@ -54,6 +62,16 @@ func _init() -> void:
 	print("MENUSHOT walk %s (%d problems)" % ["PASS" if walk.is_empty() else "FAIL", walk.size()])
 	for w in walk:
 		print("MENUSHOT walk_detail %s" % w)
+	var gal := await _gallery_walk(main)
+	failures.append_array(gal)
+	print("MENUSHOT gallery %s (%d problems)" % ["PASS" if gal.is_empty() else "FAIL", gal.size()])
+	for w in gal:
+		print("MENUSHOT gallery_detail %s" % w)
+	var fl := await _float_check(main)
+	failures.append_array(fl)
+	print("MENUSHOT float %s (%d problems)" % ["PASS" if fl.is_empty() else "FAIL", fl.size()])
+	for w in fl:
+		print("MENUSHOT float_detail %s" % w)
 	main.menu.set_pinned(false, true)
 	main.menu._shown = 0.0
 	for i in 5:
@@ -95,7 +113,8 @@ func _init() -> void:
 				await _settle(menu)
 				if not _card_visible(menu, key):
 					continue
-				var lname: String = _card_label(menu, key).to_lower()
+				var gi := _grid_item(menu, key)
+				var lname: String = "gallery" if gi >= 0 else _card_label(menu, key).to_lower()
 				menu.debug_level(key)
 				await _settle(menu)
 				var h2 := _first_control(menu)
@@ -105,6 +124,17 @@ func _init() -> void:
 				shots += 1
 				if r != "":
 					failures.append(r)
+				# Every further page of a picture gallery.
+				if gi >= 0:
+					var pages: int = menu._pages_of(menu._count_of(menu.items[gi]))
+					var p0: int = int(menu._page.get(gi, 0))
+					for k in range(1, pages):
+						menu.debug_page(gi, p0 + k)
+						await _settle(menu)
+						r = await _shoot(menu, "%s_gallery_p%d" % [mode, wrapi(p0 + k, 0, pages) + 1], key)
+						shots += 1
+						if r != "":
+							failures.append(r)
 				if _has_more(menu, key):
 					menu.debug_more(true)
 					await _settle(menu)
@@ -235,7 +265,8 @@ func _has_more(menu, key: String) -> bool:
 
 
 func _first_control(menu) -> int:
-	for kind in [menu.Kind.SLIDER, menu.Kind.TOGGLE, menu.Kind.CAROUSEL, menu.Kind.ACTION, menu.Kind.HOLD]:
+	for kind in [menu.Kind.SLIDER, menu.Kind.TOGGLE, menu.Kind.CAROUSEL, menu.Kind.ACTION, menu.Kind.PICK,
+			menu.Kind.HOLD]:
 		var i: int = menu.debug_first_tile(kind)
 		if i >= 0:
 			return i
@@ -243,7 +274,8 @@ func _first_control(menu) -> int:
 
 
 ## Every visible control must lie inside the texture; the rail must have five stations;
-## the top must have at least three cards; APP must show its three.
+## the top must have at least three cards; the bar must show its three and nothing on the
+## stage may run into it; a picture page must show a baked picture on every button.
 func _check_geometry(menu, level: String, height := -1.0) -> Array:
 	var out: Array = []
 	var w := float(menu.VIEW_SIZE.x)
@@ -251,7 +283,10 @@ func _check_geometry(menu, level: String, height := -1.0) -> Array:
 	var lowest := 0.0
 	var stations := 0
 	var cards := 0
-	var app_seen := 0
+	out.append_array(_check_bar(menu, level))
+	var gi := _grid_item(menu, level)
+	if gi >= 0:
+		out.append_array(_check_page(menu, gi, level))
 	for i in menu._tiles.size():
 		var t: Control = menu._tiles[i]
 		if t == null or not t.visible or not t.is_visible_in_tree():
@@ -267,17 +302,77 @@ func _check_geometry(menu, level: String, height := -1.0) -> Array:
 			stations += 1
 		elif kind == menu.Kind.CARD:
 			cards += 1
-		var item: int = menu.debug_tile_item(i)
-		if item >= 0 and menu.items[item].section == "app" and kind != menu.Kind.CARD:
-			app_seen += 1
 	if stations != MODES.size():
 		out.append("%d stations, expected %d" % [stations, MODES.size()])
 	if level == "top" and cards < 3:
 		out.append("%d cards at the top, expected at least 3" % cards)
-	if level == "app" and app_seen < 3:
-		out.append("%d app controls, expected PASSTHRU/HELP/EXIT" % app_seen)
 	if lowest > h:
 		out.append("content runs %.0f px past the panel" % (lowest - h))
+	return out
+
+
+## The bar: EXIT, PASSTHRU, HELP in that order, opaque, inside the panel and above the
+## footer; and no control on the stage (cards or a card's controls) reaching into it.
+func _check_bar(menu, tag: String) -> Array:
+	var out: Array = []
+	var names: Array[String] = []
+	var top := INF
+	for i in menu._tiles.size():
+		var t: Control = menu._tiles[i]
+		if t.is_visible_in_tree() and menu._bar.is_ancestor_of(t):
+			names.append(t.label)
+			top = minf(top, t.get_global_rect().position.y)
+			if t.get_global_rect().end.y > menu._foot_label.position.y + 1.0:
+				out.append("%s: bar %s overlaps the footer" % [tag, t.label])
+	if names != ["EXIT", "PASSTHRU", "HELP"]:
+		out.append("%s: bar shows %s, expected EXIT, PASSTHRU, HELP" % [tag, names])
+	for i in menu._tiles.size():
+		var t: Control = menu._tiles[i]
+		if t.is_visible_in_tree() and menu._stage.is_ancestor_of(t) \
+				and t.get_global_rect().end.y > top - 2.0:
+			out.append("%s: %s runs into the bar (%.0f > %.0f)" % [tag, t.label,
+				t.get_global_rect().end.y, top - 2.0])
+	return out
+
+
+## The picture item behind a level key, or -1.
+func _grid_item(menu, key: String) -> int:
+	if not key.begins_with("item:"):
+		return -1
+	var gi := int(key.substr(5))
+	return gi if menu.items[gi].kind == menu.Kind.GRID else -1
+
+
+## One page of pictures: the right number of buttons for the page, each with a baked
+## thumbnail and a name, and the current fractal framed if it is on this page.
+func _check_page(menu, gi: int, tag: String) -> Array:
+	var out: Array = []
+	var it = menu.items[gi]
+	var n: int = menu._count_of(it)
+	var per: int = menu._per_page(n)
+	var p: int = int(menu._page.get(gi, 0))
+	var want := mini(per, n - p * per)
+	var shown := 0
+	var chosen := 0
+	for i in menu._tiles.size():
+		if menu._tile_kind[i] != menu.Kind.PICK or menu._tile_item[i] != gi:
+			continue
+		var t = menu._tiles[i]
+		if not t.is_visible_in_tree():
+			continue
+		shown += 1
+		if t.tex == null:
+			out.append("%s: %s has no baked thumbnail" % [tag, t.label])
+		if t.label == "":
+			out.append("%s: a picture button with no name" % tag)
+		if t.chosen:
+			chosen += 1
+	if shown != want:
+		out.append("%s: page %d shows %d pictures, expected %d" % [tag, p + 1, shown, want])
+	var cur: int = int(it.index.call())
+	var on_page := cur / per == p
+	if chosen != (1 if on_page else 0):
+		out.append("%s: %d pictures marked current on page %d (current %d)" % [tag, chosen, p + 1, cur])
 	return out
 
 
@@ -378,6 +473,7 @@ func _check_top(m, tag: String) -> Array[String]:
 		if a < 0.9:
 			bad.append("%s: card %s alpha %.2f" % [tag, c.label, a])
 	bad.append_array(_check_finite(m, tag))
+	bad.append_array(_check_bar(m, tag))
 	if n < 3:
 		bad.append("%s: %d cards showing (top=%s a=%.2f)" % [tag, n, m._top.visible, m._top.modulate.a])
 	return bad
@@ -403,6 +499,7 @@ func _check_sub(m, key: String, tag: String) -> Array[String]:
 			bad.append("%s: control %d alpha %.2f" % [tag, i, a])
 	if n == 0:
 		bad.append("%s: no controls showing" % tag)
+	bad.append_array(_check_bar(m, tag))
 	if OS.get_environment("WALKSHOT") == "1":
 		(m.debug_composite() as Image).save_png("res://.spike-out/walk_%s.png" % tag.replace("/", "_").replace(" ", "_"))
 		print("WALK %s sub.scale=%s sub.pos=%s sub.a=%.2f top.vis=%s box=%s" % [tag, m._sub.scale, m._sub.global_position, m._sub.modulate.a, m._top.visible, (m._boxes[key]["box"] as Control).get_global_rect()])
@@ -492,3 +589,222 @@ func _walk(main, pinned: bool) -> Array[String]:
 		await _settle_walk(m)
 		bad.append_array(_check_top(m, "%s/%s then rail to %s" % [pair[0], key, pair[1]]))
 	return bad
+
+
+# --- the galleries and the bar, by hand ---------------------------------------------
+
+func _tile_where(m, kind: int, item: int, slot := -999) -> int:
+	for i in m._tiles.size():
+		if m._tile_kind[i] == kind and m._tile_item[i] == item and m._tiles[i].is_visible_in_tree() \
+				and (slot == -999 or m._tile_slot[i] == slot):
+			return i
+	return -1
+
+
+func _bar_tile(m, label: String) -> int:
+	for i in m._tiles.size():
+		if m._bar.is_ancestor_of(m._tiles[i]) and m._tiles[i].label == label:
+			return i
+	return -1
+
+
+## Through update() and trigger() only: rail to each mode, into its picture page, turn every
+## page with NEXT (checking each), back round to the first, then press a picture that is not
+## the current one and require the app to have selected exactly it.
+func _gallery_walk(main) -> Array[String]:
+	var bad: Array[String] = []
+	var m = main.menu
+	_worn = false
+	_main = main
+	m.set_pinned(true, true)
+	await _settle_walk(m)
+	for mode in MODES:
+		if not await _press(main, _station(m, mode)):
+			bad.append("%s: station not pressable" % mode)
+			continue
+		await _settle_walk(m)
+		var key := ""
+		var gi := -1
+		for c in m._cards.size():
+			var k: String = m._card_keys[c]
+			if m._cards[c].is_visible_in_tree() and _grid_item(m, k) >= 0:
+				key = k
+				gi = _grid_item(m, k)
+		if gi < 0:
+			bad.append("%s: no picture gallery card at the top" % mode)
+			continue
+		if not await _press(main, _card_tile(m, key)):
+			bad.append("%s: could not press the gallery card" % mode)
+			continue
+		await _settle_walk(m)
+		var it = m.items[gi]
+		var n: int = m._count_of(it)
+		var pages: int = m._pages_of(n)
+		var start: int = int(m._page.get(gi, -1))
+		if start != int(it.index.call()) / m._per_page(n):
+			bad.append("%s: opened on page %d, current entry is on page %d" % [mode, start + 1,
+				int(it.index.call()) / m._per_page(n) + 1])
+		var seen := 0
+		for p in pages:
+			bad.append_array(_check_page(m, gi, "%s gallery page %d" % [mode, int(m._page[gi]) + 1]))
+			seen += 1
+			if pages > 1:
+				var before: int = int(m._page[gi])
+				if not await _press(main, _tile_where(m, m.Kind.PAGE, gi, 1)):
+					bad.append("%s: NEXT not pressable" % mode)
+					break
+				for k in 6:
+					await process_frame
+				if int(m._page[gi]) != wrapi(before + 1, 0, pages):
+					bad.append("%s: NEXT went %d -> %d of %d" % [mode, before + 1, int(m._page[gi]) + 1, pages])
+		if pages > 1 and int(m._page[gi]) != start:
+			bad.append("%s: %d NEXTs did not come back round to page %d" % [mode, pages, start + 1])
+		if pages == 1 and _tile_where(m, m.Kind.PAGE, gi, 1) >= 0:
+			bad.append("%s: page arrows showing on a one-page gallery" % mode)
+		# Pick the last picture on the page that is not the current one.
+		var cur: int = int(it.index.call())
+		var pick := -1
+		var want := -1
+		for i in m._tiles.size():
+			if m._tile_kind[i] == m.Kind.PICK and m._tile_item[i] == gi and m._tiles[i].is_visible_in_tree():
+				var j: int = int(m._page[gi]) * m._per_page(n) + m._tile_slot[i]
+				if j != cur:
+					pick = i
+					want = j
+		if pick < 0 or not await _press(main, pick):
+			bad.append("%s: no picture to press" % mode)
+		else:
+			for k in 12:
+				await process_frame
+			var got: int = int(it.index.call())
+			if got != want:
+				bad.append("%s: pressed %s (entry %d), the app is on %d" % [mode, m._tiles[pick].label, want, got])
+			elif not m._tiles[pick].chosen:
+				bad.append("%s: %s selected but its button is not marked current" % [mode, m._tiles[pick].label])
+			else:
+				print("MENUSHOT gallery %s picked %s (%d of %d, %d pages, %d checked)" % [
+					mode, m._tiles[pick].label, want + 1, n, pages, seen])
+			(m.debug_composite() as Image).save_png("res://.spike-out/walk_gallery_%s.png" % mode)
+		m.trigger(false)
+		await _settle_walk(m)
+	# The bar from inside a card: HELP opens the controls card; PASSTHRU runs its own toggle;
+	# a single pull on EXIT must not quit (the ring is a hold). The closures are swapped for
+	# counters so the presses are measured, not assumed, and nothing actually quits.
+	var key2 := ""
+	for c in m._cards.size():
+		if m._cards[c].is_visible_in_tree() and _grid_item(m, m._card_keys[c]) < 0:
+			key2 = m._card_keys[c]
+			break
+	if key2 != "" and await _press(main, _card_tile(m, key2)):
+		await _settle_walk(m)
+		bad.append_array(_check_bar(m, "inside %s" % key2))
+		var counts := {"PASSTHRU": 0, "EXIT": 0}
+		var saved := {}
+		for lab in counts:
+			var ti := _bar_tile(m, lab)
+			var ii: int = m._tile_item[ti]
+			saved[lab] = m.items[ii].advance
+			m.items[ii].advance = func(): counts[lab] += 1
+		if not await _press(main, _bar_tile(m, "HELP")):
+			bad.append("bar: HELP not pressable inside %s" % key2)
+		else:
+			for k in 4:
+				await process_frame
+			if not main.help.is_open():
+				bad.append("bar: HELP pressed, the controls card did not open")
+			main.help.close()
+		if not await _press(main, _bar_tile(m, "PASSTHRU")) or counts["PASSTHRU"] != 1:
+			bad.append("bar: PASSTHRU press ran its toggle %d times" % counts["PASSTHRU"])
+		if not await _press(main, _bar_tile(m, "EXIT")) or counts["EXIT"] != 0:
+			bad.append("bar: one pull on EXIT ran quit %d times (it must be a hold)" % counts["EXIT"])
+		for lab in saved:
+			m.items[m._tile_item[_bar_tile(m, lab)]].advance = saved[lab]
+		(m.debug_composite() as Image).save_png("res://.spike-out/walk_bar_inside.png")
+		m.trigger(false)
+		await _settle_walk(m)
+	else:
+		bad.append("bar: no card to press for the inside-a-card check")
+	for k in 30:
+		await process_frame
+	main.help.close()
+	return bad
+
+
+## The float, by the menu key (main's own input path). From a test head pose the panel must
+## land FLOAT_FWD ahead, FLOAT_RIGHT right and FLOAT_DROP down in the head's level frame,
+## facing the eyes; hold still through 300 frames of the head turning and walking; and come
+## home to the wrist on the next press.
+func _float_check(main) -> Array[String]:
+	var bad: Array[String] = []
+	var m = main.menu
+	m.set_pinned(false, true)
+	for k in 20:
+		await process_frame
+	var cam: XRCamera3D = main.xr_camera
+	var head := Transform3D(Basis.from_euler(Vector3(deg_to_rad(-12.0), deg_to_rad(30.0), 0.0)),
+		Vector3(0.4, 1.55, -0.3))
+	cam.global_transform = head
+	for k in 3:
+		await process_frame
+	await _tap_key(KEY_M)
+	for k in 200:
+		if m._fly_t >= 1.0:
+			break
+		await process_frame
+	if not m.is_pinned() or m.get_parent() != main.xr_origin:
+		bad.append("menu key did not float the panel (pinned=%s)" % m.is_pinned())
+		return bad
+	var fwd := -head.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized()
+	var right := fwd.cross(Vector3.UP).normalized()
+	var d: Vector3 = m.global_position - head.origin
+	var got := Vector3(d.dot(right), d.y, d.dot(fwd))
+	var want := Vector3(m.FLOAT_RIGHT, -m.FLOAT_DROP, m.FLOAT_FWD)
+	if got.distance_to(want) > 0.005:
+		bad.append("float landed at right %.3f, up %.3f, fwd %.3f; wanted %.3f, %.3f, %.3f" % [
+			got.x, got.y, got.z, want.x, want.y, want.z])
+	var facing: float = m.global_transform.basis.z.normalized().dot((head.origin - m.global_position).normalized())
+	if facing < 0.99:
+		bad.append("float does not face the head (dot %.3f)" % facing)
+	print("MENUSHOT float landed right=%.3f up=%.3f fwd=%.3f facing=%.4f" % [got.x, got.y, got.z, facing])
+	var held: Transform3D = m.global_transform
+	var drift := 0.0
+	for k in 300:
+		var a := deg_to_rad(30.0 + 150.0 * sin(float(k) * 0.03))
+		cam.global_transform = Transform3D(Basis.from_euler(Vector3(deg_to_rad(-12.0), a, 0.0)),
+			head.origin + Vector3(0.8 * sin(float(k) * 0.02), 0.0, 0.6 * cos(float(k) * 0.025) - 0.6))
+		await process_frame
+		drift = maxf(drift, m.global_position.distance_to(held.origin))
+	var turned: float = (m.global_transform.basis.z - held.basis.z).length()
+	if drift > 1e-4 or turned > 1e-4:
+		bad.append("float moved while the head did: %.4f m, basis %.4f" % [drift, turned])
+	print("MENUSHOT float held through 300 frames: drift=%.6f m basis=%.6f" % [drift, turned])
+	await _tap_key(KEY_M)
+	for k in 200:
+		if m._fly_t >= 1.0 and m.get_parent() == main.left_hand:
+			break
+		await process_frame
+	if m.is_pinned() or m.get_parent() != main.left_hand \
+			or not m.transform.is_equal_approx(m._worn_local):
+		bad.append("menu key did not bring it home (pinned=%s parent=%s)" % [m.is_pinned(),
+			m.get_parent().name])
+	cam.global_transform = Transform3D(Basis(), Vector3(0.0, 1.6, 0.0))
+	return bad
+
+
+func _tap_key(code: Key) -> void:
+	var down := InputEventKey.new()
+	down.keycode = code
+	down.physical_keycode = code
+	down.pressed = true
+	Input.parse_input_event(down)
+	for i in 3:
+		await process_frame
+	var up := InputEventKey.new()
+	up.keycode = code
+	up.physical_keycode = code
+	up.pressed = false
+	Input.parse_input_event(up)
+	for i in 3:
+		await process_frame

@@ -71,6 +71,14 @@ node tools/export-presets.mjs   # from the repo root
 `tools/selftest.sh` steps every preset and fails on NaN, an escaping cloud, a collapse
 to a point, or a genome that has gone flat in z (the missing-z-injector bug).
 
+**Re-run `tools/thumb_bake.sh` after changing presets, bulbs, ground families
+(`FractalGround.FORMULA_NAMES`), tree species (`FractalTree.SHAPE_NAMES`) or IFS shapes
+(`FractalIFS.PRESETS`)**, then commit `art/thumbs/thumbs.png`, its `.import` and
+`thumbs.json`. The wrist menu's picture galleries read that one atlas, keyed by name. A
+missing entry shows "not baked" on its button (and `menu_shot.sh` fails on it); a stale one
+silently shows the old fractal. The bake drives the real main scene through every entry,
+about ten minutes on the Mac.
+
 ## Controls
 
 | Input | Does |
@@ -87,22 +95,27 @@ The first launch shows a card with both controllers drawn on it and what each bu
 dismissed by either trigger and never shown again (`user://state.cfg`); `HELP` in the wrist
 menu brings it back. Nobody was ever going to guess the wrist-turn on their own.
 
-Everything else lives in the wrist menu: Flame, Drift, Spin, Points, Size, Bright,
-Exposure, Motion, Detail, Recentre, with fps and the draw/sim split underneath.
+Everything else lives in the wrist menu. The menu button floats it off the wrist to a
+fixed spot low and to the right of where you are looking (worked out fresh on every press,
+then world-locked: it never follows you); grip it to move it, press again to put it back
+on the wrist.
 
 Desktop preview: arrows, left/right flames, D drift, 1 2 3 4 5 6, R reset, S reseed.
 
 ### Wrist menu
 
-Label3D rows rather than a SubViewport UI. A viewport would mean mapping a controller
-ray into synthetic mouse events; Label3D renders crisp MSDF text at any distance and
-picking is a plane intersection against row rectangles, which is cheaper and more
-predictable when there is nothing else in the scene to hit.
+Two OpenXR quad layers (`scripts/xr/wrist_menu.gd` has the full design note): the mode rail
+along the top, a card per section that zooms into its controls, and a fixed bar along the
+bottom with EXIT (hold), PASSTHRU and HELP at every level. Each mode's fractal chooser is a
+full-width card showing the current fractal's picture; inside it is a page of picture
+buttons, twelve at most per page with page arrows (thirteen split seven and six). The
+pictures are cut from `art/thumbs/thumbs.png` with AtlasTexture regions; nothing renders at
+runtime.
 
-Each entry is a label plus two closures, `read` and `advance`. The menu knows nothing
-about particle counts or exposures, so **adding a setting is one line** in the item
-list in `main.gd`. The trigger is taken over only while the pointer is actually on a
-row, so changing flames still works everywhere else.
+Each entry is a label plus two closures, `read` and `advance`, and a chain for its kind.
+The menu knows nothing about particle counts or exposures, so **adding a setting is one
+entry** in the item list in `main.gd`. The trigger is taken over only while the pointer is
+actually on the panel, so changing flames still works everywhere else.
 
 ## Transitions
 
@@ -343,6 +356,8 @@ Already installed on this machine, listed so it can be rebuilt elsewhere:
 ```bash
 tools/selftest.sh          # verify the compute chain on this machine, writes .spike-out/selftest.png
 tools/card_shot.sh         # render the first-launch controls card to .spike-out/help_card.png
+tools/menu_shot.sh         # render and walk the wrist menu (galleries, bar, float) to .spike-out/menu_*.png
+tools/thumb_bake.sh        # re-bake the menu's gallery pictures to art/thumbs/ (commit the result)
 tools/build.sh             # export build/fractalxr-debug.apk (debug-signed, the dev loop)
 tools/build.sh release     # export build/fractalxr.apk, signed for the store
 tools/keystore.sh          # make the release keystore, once, ever

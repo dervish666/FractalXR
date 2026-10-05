@@ -549,14 +549,49 @@ func _build_menu() -> void:
 		WristMenu.Item.new("mode", "IFS", func(): return "",
 			func(): _set_mode("ifs")).chosen_when(func(): return ifs_mode),
 
-		# IFS controls. SHAPE is the gallery: a different rule and a different seed frame, so it
-		# lands like a new sculpture rather than like a changed setting. DEPTH and DETAIL are
-		# deliberately separate: one stretches the shape front to back, the other adds a
-		# generation. All three rebuild; the palette does not.
-		WristMenu.Item.new("make", "SHAPE",
+		# The picture galleries, one per mode, each its own full-width card with a page of
+		# picture buttons inside (thumbnails from tools/thumb_bake.sh). The group names the
+		# atlas section; the name is the atlas key, so a renamed entry needs a re-bake.
+		WristMenu.Item.new("pick", "FLAMES",
+			func(): return library.name_at(preset_idx),
+			func(): _morph_to_preset(preset_idx + 1),
+			false, _vis_flame).pictures("flame",
+			func(): return preset_idx, func(): return library.count(),
+			func(i: int): return library.name_at(i),
+			func(i: int): _morph_to_preset(i)).as_card(),
+		WristMenu.Item.new("pick", "BULBS",
+			func(): return str(library.bulbs[bulb_idx].get("name", "?")),
+			func(): _load_bulb(bulb_idx + 1),
+			false, func(): return bulb_mode).pictures("bulb",
+			func(): return bulb_idx, func(): return library.bulbs.size(),
+			func(i: int): return str(library.bulbs[i].get("name", "?")),
+			func(i: int): _load_bulb(i)).as_card(),
+		WristMenu.Item.new("pick", "FAMILIES",
+			func(): return ground.formula_name(),
+			func(): ground.set_formula(ground.formula + 1),
+			false, func(): return ground_mode).pictures("ground",
+			func(): return ground.formula, func(): return FractalGround.FORMULA_NAMES.size(),
+			func(i: int): return FractalGround.FORMULA_NAMES[i],
+			func(i: int): ground.set_formula(i)).as_card(),
+		WristMenu.Item.new("pick", "SPECIES",
+			func(): return FractalTree.SHAPE_NAMES[tree_shape_idx],
+			func(): _cycle_tree_shape(1),
+			false, _vis_tree).pictures("tree",
+			func(): return tree_shape_idx, func(): return FractalTree.SHAPE_NAMES.size(),
+			func(i: int): return FractalTree.SHAPE_NAMES[i],
+			func(i: int): _cycle_tree_shape(i - tree_shape_idx)).as_card(),
+		# A different rule and a different seed frame, so a shape lands like a new sculpture
+		# rather than like a changed setting.
+		WristMenu.Item.new("pick", "SHAPES",
 			func(): return FractalIFS.preset_name(ifs_preset_idx),
 			func(): _cycle_ifs_preset(1),
-			false, _vis_ifs).stepping(func(d: int): _cycle_ifs_preset(d)),
+			false, _vis_ifs).pictures("ifs",
+			func(): return ifs_preset_idx, func(): return FractalIFS.PRESETS.size(),
+			func(i: int): return FractalIFS.preset_name(i),
+			func(i: int): _cycle_ifs_preset(i - ifs_preset_idx)).as_card(),
+
+		# IFS controls. DEPTH and DETAIL are deliberately separate: one stretches the shape
+		# front to back, the other adds a generation. Both rebuild; the palette does not.
 		WristMenu.Item.new("make", "DETAIL",
 			func(): return "%d · %d" % [IFS_DETAIL[ifs_detail_idx], ifs.instance_count],
 			func(): _step_ifs_detail(1),
@@ -582,10 +617,6 @@ func _build_menu() -> void:
 			func(): _reset_ifs(),
 			false, _vis_ifs),
 
-		WristMenu.Item.new("make", "SHAPE",
-			func(): return FractalTree.SHAPE_NAMES[tree_shape_idx],
-			func(): _cycle_tree_shape(1),
-			false, _vis_tree).stepping(func(d: int): _cycle_tree_shape(d)),
 		WristMenu.Item.new("make", "SEED",
 			func(): return "#%d" % tree.seed_value,
 			func(): tree.reseed(),
@@ -626,23 +657,6 @@ func _build_menu() -> void:
 				library.next_serial())),
 			false, _vis_flame),
 
-		WristMenu.Item.new("scene", "FLAME",
-			func(): return library.bulbs[bulb_idx].get("name", "?") if bulb_mode else library.name_at(preset_idx),
-			func():
-				if bulb_mode:
-					_load_bulb(bulb_idx + 1)
-				else:
-					_morph_to_preset(preset_idx + 1),
-			false, _vis_cloud).stepping(func(d: int):
-				if bulb_mode:
-					_load_bulb(bulb_idx + d)
-				else:
-					_morph_to_preset(preset_idx + d)).gallery(
-			func(): return bulb_idx if bulb_mode else preset_idx,
-			func(): return library.bulbs.size() if bulb_mode else library.count(),
-			func(i: int): return PresetLibrary.palette_of(
-				library.bulbs[wrapi(i, 0, maxi(1, library.bulbs.size()))] if bulb_mode else library.at(i))
-			).as_card("make"),
 		WristMenu.Item.new("scene", "DRIFT",
 			func(): return "on" if _drift else "off",
 			func(): _drift = not _drift; _drift_hold = 0.0,
@@ -826,11 +840,6 @@ func _build_menu() -> void:
 			func(): _step_detail(1),
 			false, func(): return not ifs_mode).stepping(func(d: int): _step_detail(d)).slider(
 			func(): return render_idx, RENDER_STEPS.size()),
-		WristMenu.Item.new("look", "SET",
-			func(): return ground.formula_name(),
-			func(): ground.set_formula(ground.formula + 1),
-			false, func(): return ground_mode).stepping(
-			func(d: int): ground.set_formula(ground.formula + d)),
 		WristMenu.Item.new("look", "JULIA",
 			func(): return "from here" if ground.julia else "off",
 			func():
@@ -972,17 +981,17 @@ func _build_menu() -> void:
 			func(): return "on" if _env().glow_enabled else "off",
 			func(): _env().glow_enabled = not _env().glow_enabled).toggle(
 			func(): return _env().glow_enabled).minor(),
-		# Application actions live together instead of being mixed into scene controls.
-		WristMenu.Item.new("app", "PASSTHRU",
-			func(): return passthru_label,
-			func(): _set_passthrough(not passthrough)).toggle(func(): return passthrough),
-		WristMenu.Item.new("app", "HELP",
-			func(): return "controls", func(): help.open()),
-		# A hold. The menu is driven by a ray and a trigger, and a single stray pull should
-		# not end the session; the ring on the tile fills for a second before this runs.
+		# The bottom bar, at every level, in the order Sam asked for. EXIT is a hold: the menu
+		# is driven by a ray and a trigger, and a single stray pull should not end the
+		# session; the ring fills for a second before this runs.
 		WristMenu.Item.new("app", "EXIT",
 			func(): return "hold to quit",
-			func(): get_tree().quit()).hold(),
+			func(): get_tree().quit()).hold().in_bar(),
+		WristMenu.Item.new("app", "PASSTHRU",
+			func(): return passthru_label,
+			func(): _set_passthrough(not passthrough)).toggle(func(): return passthrough).in_bar(),
+		WristMenu.Item.new("app", "HELP",
+			func(): return "controls", func(): help.open()).in_bar(),
 	]
 	menu.title = func():
 		if ifs_mode:
@@ -1065,7 +1074,6 @@ func _build_menu() -> void:
 	menu.rotation_degrees = Vector3(-62.0, 0.0, 0.0)
 	left_hand.add_child(menu)
 	menu.setup(xr_camera, right_hand, left_hand, xr_origin)
-	menu.pin_changed.connect(_save_menu_pinned)
 	# The floating readout is retired: it was a debug tool that sat in the view whether
 	# or not it was wanted. Status now lives on the wrist with everything else.
 	hud.visible = false
@@ -2187,10 +2195,6 @@ func _process_frame(delta: float) -> void:
 			_help_pending = false
 			_mark_help_seen()
 			help.open()
-		# Restored here and not in _ready: the float rests relative to the head, which is
-		# still at the origin until tracking lands.
-		if _menu_pinned_saved():
-			menu.set_pinned(true, true)
 	help.update(delta)
 	_menu_active = menu.update(delta)
 	if _xr_focused:
@@ -2763,7 +2767,10 @@ func _fmt_time(s: float) -> String:
 
 
 ## First-run state lives in user://, which survives an update but not an uninstall. One key,
-## one file: anything more would be a settings system nobody asked for.
+## one file: anything more would be a settings system nobody asked for. The menu's pin used to
+## live here too and is gone on purpose: a launch that opened the panel floating wherever the
+## last session left it put it somewhere arbitrary. The menu always starts on the wrist; an old
+## file's stale menu_pinned key is never read.
 const STATE_PATH := "user://state.cfg"
 
 
@@ -2772,20 +2779,6 @@ func _help_seen() -> bool:
 	if cfg.load(STATE_PATH) != OK:
 		return false
 	return bool(cfg.get_value("ui", "seen_help", false))
-
-
-func _menu_pinned_saved() -> bool:
-	var cfg := ConfigFile.new()
-	if cfg.load(STATE_PATH) != OK:
-		return false
-	return bool(cfg.get_value("ui", "menu_pinned", false))
-
-
-func _save_menu_pinned(on: bool) -> void:
-	var cfg := ConfigFile.new()
-	cfg.load(STATE_PATH)
-	cfg.set_value("ui", "menu_pinned", on)
-	cfg.save(STATE_PATH)
 
 
 func _mark_help_seen() -> void:

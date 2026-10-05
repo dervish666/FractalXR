@@ -25,11 +25,20 @@ class_name WristMenu
 ## a hold-to-confirm ring. The fractal updates live under a drag because every step runs
 ## the item's own closure the moment it happens.
 ##
-## WEAR OR PIN. The menu button flies the panel off the forearm to a lazy-follow float
-## 0.5 m out and a little below the eye line. It stays put while you look around and
-## eases back in front of you over half a second once your heading drifts past 38
-## degrees. Grip on it to move it; that becomes the new resting spot. Press again and
-## it flies home to the arm. Pinned, either hand's ray drives it.
+## PICTURES. Each mode's fractal chooser is a page of picture buttons, one per flame,
+## bulb, family, species or shape, twelve to a page at most with page arrows past that. The
+## pictures come from one baked atlas (art/thumbs, tools/thumb_bake.sh): loaded once, cut
+## with AtlasTexture regions, never rendered at runtime. An item the bake has not seen (a
+## flame bred this session) says "not baked" on its button instead of showing nothing.
+##
+## THE BAR. EXIT, PASSTHRU and HELP sit in a fixed bar along the bottom at every level, the
+## way the mode rail sits along the top, so quitting is never a hunt through cards.
+##
+## WEAR OR PIN. The menu button flies the panel off the forearm to one fixed spot: low and
+## to the right of where you are looking, close enough to reach, turned to face you. It is
+## worked out from the head at the moment of the press, every time, and then the panel is
+## world-locked: it never follows your gaze. Grip on it to move it; it stays where you let
+## go. Press again and it flies home to the arm. Pinned, either hand's ray drives it.
 ##
 ## Hit testing does NOT synthesise mouse events. The controller ray is intersected with
 ## the front plane, converted to viewport pixels, and tested against each control's
@@ -39,7 +48,9 @@ class_name WristMenu
 ## ADDING A SETTING is one entry in the spec passed to build(): a section, a label, a
 ## closure that reads the current value, a closure that advances it, then chains for the
 ## kind: .toggle(is_on), .slider(index, count), .gallery(index, count, swatch_of),
-## .hold(), .minor() (behind MORE), .as_card(companion_section) (its own top card).
+## .pictures(group, index, count, name_of, choose) (a picture page; give it .as_card()),
+## .hold(), .minor() (behind MORE), .as_card(companion_section) (its own top card),
+## .in_bar() (the fixed bottom bar instead of a card).
 ## An item with .stepping() and no kind is a carousel; one with neither is a button.
 ##
 ## Budget: two layers, ~45 canvas items, a redraw only on the widget whose state moved,
@@ -66,12 +77,13 @@ const HOLD_S := 1.1
 const STICK_DEAD := 0.6
 const STEP_FIRST_S := 0.42
 const STEP_REPEAT_S := 0.24
-## The float: where it rests, when it gives chase, how long the chase and the flights take.
-const FLOAT_OUT := 0.52
-const FLOAT_DROP := 0.10
-const FOLLOW_DEG := 38.0
-const FOLLOW_DIST := 0.45
-const FOLLOW_S := 0.5
+## The float: where a press of the menu button sends the panel, from the head at that moment.
+## Forward along the level gaze, to the right, below the eyes; then turned to face the head.
+## Sam, 2026-10-05: "always go from the wrist to lower right, but not too far". No follow: it
+## stays where it was put.
+const FLOAT_FWD := 0.40
+const FLOAT_RIGHT := 0.18
+const FLOAT_DROP := 0.22
 const FLY_S := 0.4
 
 const FONT_PATH := "res://fonts/SpaceGrotesk-VF.ttf"
@@ -88,6 +100,22 @@ const FIELD_SIZE := Vector2i(360, 92)
 const FIELD_POINTS := 26000
 const FIELD_RECT := Rect2(Vector2(70, 0), Vector2(680, 150))
 const HEADER_H := 74.0
+## Row heights. The bottom bar took 82 px from the stage, so the control rows gave some back:
+## ground's LOOK with MORE open is the tallest level and has to clear the bar.
+const ROW_H := 90
+const MINOR_H := 78
+const BAR_H := 68
+const CARD_H := 150
+const CARD_H_MAX := 240
+const GALLERY_CARD_H := 224
+## The picture page: four across, three down, so a picture is about 150 px (3.7 cm at arm's
+## length). A mode with more than twelve splits evenly over pages (13 is 7 + 6, not 12 + 1).
+const GRID_COLS := 4
+const PER_PAGE := 12
+const PICK_H := 206
+const PAGER_H := 52
+const THUMBS_PNG := "res://art/thumbs/thumbs.png"
+const THUMBS_JSON := "res://art/thumbs/thumbs.json"
 
 const LABEL := Color("#EDF1F8")
 const DIM := Color(0.62, 0.68, 0.78, 0.8)
@@ -105,7 +133,7 @@ const MODE_TINT := {
 	"ifs": Color("#6FB8FF"),
 }
 
-enum Kind { ACTION, TOGGLE, SLIDER, CAROUSEL, HOLD, CARD, STATION, BACK, MORE }
+enum Kind { ACTION, TOGGLE, SLIDER, CAROUSEL, HOLD, CARD, STATION, BACK, MORE, GRID, PICK, PAGE }
 
 signal pin_changed(pinned: bool)
 
@@ -127,6 +155,10 @@ class Item:
 	var swatch: Callable
 	var primary := true
 	var card_of := ""      # non-empty: this item is its own top card, with that section inside
+	var group := ""        # pictures: the atlas group its thumbnails live under
+	var name_of: Callable  # pictures: i -> the entry's name (also its atlas key)
+	var choose: Callable   # pictures: i -> select entry i
+	var bar := false       # lives in the fixed bottom bar
 	func _init(sec: String, l: String, r: Callable, a: Callable, w := false,
 			vis := Callable()) -> void:
 		section = sec
@@ -159,6 +191,20 @@ class Item:
 		index = idx
 		count_fn = count
 		swatch = swatch_of
+		return self
+	## A page of picture buttons, one per entry. name_of(i) names entry i and keys its
+	## thumbnail in the atlas under `grp`; choose(i) selects it.
+	func pictures(grp: String, idx: Callable, count: Callable, names: Callable,
+			pick: Callable) -> Item:
+		kind = Kind.GRID
+		group = grp
+		index = idx
+		count_fn = count
+		name_of = names
+		choose = pick
+		return self
+	func in_bar() -> Item:
+		bar = true
 		return self
 	func hold() -> Item:
 		kind = Kind.HOLD
@@ -193,6 +239,10 @@ class Widget extends Control:
 	var big := false
 	var swatches: Array = []     # Array[PackedColorArray]
 	var swatch_cur := -1
+	var pic := false             # a card that shows a picture (the gallery's)
+	var tex: Texture2D           # the picture, or null for "not baked"
+	var strip: Array = []        # a gallery card's preview of the next few pictures
+	var dir := 0                 # a page arrow's direction
 	var _sb := StyleBoxFlat.new()
 	static var _f600: Font
 	static var _f500: Font
@@ -246,6 +296,12 @@ class Widget extends Control:
 				_draw_back()
 			Kind.MORE:
 				_draw_more()
+			Kind.PICK:
+				_draw_pick()
+			Kind.PAGE:
+				_draw_page()
+			Kind.GRID:
+				pass
 			_:
 				_draw_action()
 
@@ -275,13 +331,33 @@ class Widget extends Control:
 	func _draw_card() -> void:
 		_body(22, 6)
 		var pad := 20.0
-		draw_string(_f600, Vector2(pad, 40.0), label, HORIZONTAL_ALIGNMENT_LEFT, size.x - 2 * pad,
-			27, LABEL)
-		var y := 70.0
-		for l in lines:
-			draw_string(_f500, Vector2(pad, y), l, HORIZONTAL_ALIGNMENT_LEFT, size.x - 2 * pad - 30.0,
-				17, VALUE_INK)
-			y += 23.0
+		if pic:
+			# The gallery's card: the current fractal's picture, its name, and the next few
+			# pictures as a hint of the page inside.
+			var side := size.y - 30.0
+			_picture(Rect2(Vector2(15.0, 15.0), Vector2(side, side)), tex, true)
+			pad = side + 36.0
+			draw_string(_f600, Vector2(pad, 50.0), label, HORIZONTAL_ALIGNMENT_LEFT, size.x - pad - 20.0,
+				30, LABEL)
+			var ly := 82.0
+			for l in lines:
+				draw_string(_f500, Vector2(pad, ly), l, HORIZONTAL_ALIGNMENT_LEFT, size.x - pad - 20.0,
+					17, VALUE_INK)
+				ly += 23.0
+			var ts := 66.0
+			for k in strip.size():
+				var r := Rect2(Vector2(pad + k * (ts + 8.0), size.y - 15.0 - ts), Vector2(ts, ts))
+				if r.end.x > size.x - 48.0:
+					break
+				_picture(r, strip[k], false)
+		else:
+			draw_string(_f600, Vector2(pad, 40.0), label, HORIZONTAL_ALIGNMENT_LEFT, size.x - 2 * pad,
+				27, LABEL)
+			var y := 70.0
+			for l in lines:
+				draw_string(_f500, Vector2(pad, y), l, HORIZONTAL_ALIGNMENT_LEFT, size.x - 2 * pad - 30.0,
+					17, VALUE_INK)
+				y += 23.0
 		if swatch_cur >= 0 and swatch_cur < swatches.size():
 			_bar(Rect2(Vector2(pad, size.y - 24.0), Vector2(size.x - 2 * pad - 36.0, 10.0)),
 				swatches[swatch_cur], 1.0)
@@ -411,6 +487,46 @@ class Widget extends Control:
 		draw_polyline(PackedVector2Array([Vector2(26, cy - 8), Vector2(18, cy), Vector2(26, cy + 8)]), c, 3.0, true)
 		draw_string(_f600, Vector2(36.0, cy + 6.0), label, HORIZONTAL_ALIGNMENT_LEFT, size.x - 40.0, 17, c)
 
+	## One picture button: the thumbnail, the name under it, and the current one framed in
+	## the mode's hue.
+	func _draw_pick() -> void:
+		_body(14, 4)
+		var pad := 8.0
+		var side := minf(size.x - 2.0 * pad, size.y - 44.0)
+		var pr := Rect2(Vector2((size.x - side) * 0.5, pad), Vector2(side, side))
+		_picture(pr, tex, false)
+		if chosen:
+			draw_rect(pr.grow(3.0), hue, false, 3.0, true)
+		var c := hue.lerp(Color.WHITE, 0.4) if chosen else VALUE_INK.lerp(LABEL, hover)
+		draw_string(_f600 if chosen else _f500, Vector2(4.0, size.y - 13.0), label,
+			HORIZONTAL_ALIGNMENT_CENTER, size.x - 8.0, 18, c)
+
+	func _draw_page() -> void:
+		_body(16, 16)
+		var cy := size.y * 0.5
+		var c := hue.lerp(Color.WHITE, hover)
+		var x := 26.0 if dir < 0 else size.x - 26.0
+		var s := -1.0 if dir < 0 else 1.0
+		draw_polyline(PackedVector2Array([Vector2(x - 8.0 * s, cy - 10), Vector2(x, cy),
+			Vector2(x - 8.0 * s, cy + 10)]), c, 3.0, true)
+		draw_string(_f600, Vector2(0, cy + 6.0), label, HORIZONTAL_ALIGNMENT_CENTER, size.x, 17, c)
+
+	## A thumbnail, or a placeholder that says why there is none. An empty button would read
+	## as a fractal that draws nothing.
+	func _picture(r: Rect2, t: Texture2D, big_text: bool) -> void:
+		if t != null:
+			draw_texture_rect(t, r, false)
+			var e := line
+			e.a = 0.7
+			draw_rect(r, e, false, 1.0, true)
+			return
+		draw_rect(r, Color(0, 0, 0, 0.35))
+		var e := line
+		e.a = 0.9
+		draw_rect(r, e, false, 1.5, true)
+		draw_string(_f500, Vector2(r.position.x, r.get_center().y + 5.0), "not baked",
+			HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 15 if big_text else 13, DIM)
+
 	func _draw_more() -> void:
 		var cy := size.y * 0.5
 		var c := DIM.lerp(LABEL, hover)
@@ -452,6 +568,7 @@ class Backdrop extends Control:
 	var stops := PackedColorArray()
 	var spine_t := 1.0
 	var nodes := PackedFloat32Array()
+	var bar_y := -1.0
 	func _draw() -> void:
 		var s := size
 		var c := WristMenu.CUT
@@ -461,6 +578,11 @@ class Backdrop extends Control:
 		var ring := outline.duplicate()
 		ring.append(outline[0])
 		draw_polyline(ring, line, 1.5, true)
+		# A hairline over the bottom bar, so it reads as the panel's floor and not one more card.
+		if bar_y > 0.0:
+			var l := line
+			l.a = 0.9
+			draw_line(Vector2(WristMenu.MARGIN_L, bar_y), Vector2(s.x - WristMenu.MARGIN_R, bar_y), l, 1.0, true)
 		var t0 := tint
 		t0.a = 0.95
 		var t1 := tint
@@ -573,7 +695,10 @@ var _foot_label: Label
 var _crumb_label: Label
 var _rail: HBoxContainer
 var _stage: Control
-var _top: GridContainer
+var _top: VBoxContainer         # the top level: wide gallery cards over a grid of the rest
+var _top_wide: VBoxContainer
+var _top_grid: GridContainer
+var _bar: HBoxContainer
 var _sub: VBoxContainer
 var _back_btn: Widget
 var _boxes: Dictionary = {}    # level key -> {box, wide, grid_a, more, grid_b, section}
@@ -584,6 +709,9 @@ var _tiles: Array[Control] = []    # the hit targets: every widget, card, statio
 var _tile_item: Array[int] = []    # item index for each tile, or -1
 var _tile_kind: Array[int] = []
 var _tile_key: Array[String] = []  # card level key for cards
+var _tile_slot: Array[int] = []    # a picture button's slot on its page
+var _grid_box: Dictionary = {}     # pictures item index -> {slots, pager, page_label}
+var _page: Dictionary = {}         # pictures item index -> page showing
 var _hover: Array[float] = []
 var _pulse: Array[float] = []
 var _quad: MeshInstance3D
@@ -634,15 +762,17 @@ var _worn_local := Transform3D()
 var _fly_t := 1.0
 var _fly_from := Transform3D()
 var _fly_home := false
-var _float_local := Transform3D()
-var _follow_t := 1.0
-var _follow_from := Transform3D()
+var _fly_to := Transform3D()
 var _hold_hand: XRController3D
 var _hold_off := Transform3D()
 
 static var _base_font: Font
 static var _fonts: Dictionary = {}
 static var _field_tex: ImageTexture
+static var _thumb_tex: Texture2D
+static var _thumb_idx: Dictionary = {}
+static var _thumb_cache: Dictionary = {}
+static var _thumb_loaded := false
 
 
 func setup(head: Node3D, right: XRController3D, left: XRController3D = null,
@@ -653,8 +783,6 @@ func setup(head: Node3D, right: XRController3D, left: XRController3D = null,
 	_origin = origin
 	_ptr = right
 	_worn_local = transform
-	_float_local = Transform3D(Basis(Vector3.RIGHT, deg_to_rad(10.0)),
-		Vector3(0.0, -FLOAT_DROP, -FLOAT_OUT))
 	_derive_theme()
 	_build_viewports()
 	_build_quads()
@@ -716,11 +844,11 @@ func set_pinned(on: bool, instant: bool) -> void:
 		_reparent(_origin)
 		global_transform = g
 		_fly_from = g
+		_fly_to = float_target()
 		_fly_home = false
 		_fly_t = 1.0 if instant else 0.0
-		_follow_t = 1.0
 		if instant:
-			global_transform = _float_target()
+			global_transform = _fly_to
 	else:
 		_hold_hand = null
 		_fly_from = global_transform
@@ -754,43 +882,36 @@ func _land_home() -> void:
 	transform = _worn_local
 
 
-## Where the float rests: the stored offset hung off a yaw-only frame at the head, so it
-## never tilts with a nod and is always a little below the eyes.
-func _float_target() -> Transform3D:
+## Where a float lands: off a yaw-only frame at the head, so a nod at the moment of the press
+## does not throw it, and turned so its face (+z) looks back at the eyes, tilt included.
+func float_target() -> Transform3D:
 	var h := _head.global_transform
 	var fwd := -h.basis.z
 	fwd.y = 0.0
 	if fwd.length_squared() < 1e-6:
 		fwd = Vector3.FORWARD
-	var yaw := Basis.looking_at(fwd.normalized(), Vector3.UP)
-	return Transform3D(yaw, h.origin) * _float_local
+	fwd = fwd.normalized()
+	var right := fwd.cross(Vector3.UP).normalized()
+	var at := h.origin + fwd * FLOAT_FWD + right * FLOAT_RIGHT + Vector3.DOWN * FLOAT_DROP
+	return Transform3D(Basis.looking_at(at - h.origin, Vector3.UP), at)
 
 
-func _yaw_frame() -> Transform3D:
-	var h := _head.global_transform
-	var fwd := -h.basis.z
-	fwd.y = 0.0
-	if fwd.length_squared() < 1e-6:
-		fwd = Vector3.FORWARD
-	return Transform3D(Basis.looking_at(fwd.normalized(), Vector3.UP), h.origin)
-
-
-## Flights, the lazy follow and the grip hold. Runs every frame while pinned or in flight.
+## Flights and the grip hold. Runs every frame while pinned or in flight. Nothing else moves
+## a floated panel: it is world-locked where the press or the last grip put it.
 func _tick_float(delta: float) -> void:
 	if _fly_t < 1.0:
 		_fly_t = minf(1.0, _fly_t + delta / FLY_S)
 		var k := _fly_t * _fly_t * (3.0 - 2.0 * _fly_t)
-		var to := (_left.global_transform * _worn_local) if _fly_home else _float_target()
+		var to := (_left.global_transform * _worn_local) if _fly_home else _fly_to
 		global_transform = _fly_from.interpolate_with(to, k)
 		if _fly_t >= 1.0 and _fly_home:
 			_land_home()
 		return
 	if not _pinned:
 		return
-	# A grip on the panel takes it along; letting go leaves it there and remembers.
+	# A grip on the panel takes it along; letting go leaves it there.
 	var held := _hold_hand
 	if held != null and not (_tracked(held) and held.is_button_pressed("grip_click")):
-		_float_local = _yaw_frame().affine_inverse() * global_transform
 		_hold_hand = null
 		held = null
 	if held == null:
@@ -803,26 +924,6 @@ func _tick_float(delta: float) -> void:
 				break
 	if held != null:
 		global_transform = held.global_transform * _hold_off
-		_follow_t = 1.0
-		return
-	# The chase: only once you have turned well away, and then in one smooth half second.
-	var want := _float_target()
-	if _follow_t >= 1.0:
-		var h := _head.global_transform
-		var to_panel := global_transform.origin - h.origin
-		var fwd := -h.basis.z
-		to_panel.y = 0.0
-		fwd.y = 0.0
-		var ang := 0.0
-		if to_panel.length_squared() > 1e-6 and fwd.length_squared() > 1e-6:
-			ang = rad_to_deg(to_panel.normalized().angle_to(fwd.normalized()))
-		if ang > FOLLOW_DEG or global_transform.origin.distance_to(want.origin) > FOLLOW_DIST:
-			_follow_t = 0.0
-			_follow_from = global_transform
-	if _follow_t < 1.0:
-		_follow_t = minf(1.0, _follow_t + delta / FOLLOW_S)
-		var k := _follow_t * _follow_t * (3.0 - 2.0 * _follow_t)
-		global_transform = _follow_from.interpolate_with(want, k)
 
 
 static func _lum(c: Color) -> float:
@@ -945,6 +1046,39 @@ static func _make_field() -> ImageTexture:
 			img.set_pixel(px, py, Color(1, 1, 1, clampf(a * mx * my, 0.0, 1.0)))
 	_field_tex = ImageTexture.create_from_image(img)
 	return _field_tex
+
+
+## The baked picture for one entry, as a region of the one atlas, or null if the bake never
+## saw it. The atlas and its index load once per run; each region is cut once and cached.
+static func thumb(group: String, name: String) -> Texture2D:
+	if not _thumb_loaded:
+		_thumb_loaded = true
+		_load_thumbs()
+	var key := "%s/%s" % [group, name.to_lower()]
+	if _thumb_cache.has(key):
+		return _thumb_cache[key]
+	var t: AtlasTexture = null
+	var g: Dictionary = _thumb_idx.get(group, {})
+	var r: Array = g.get(name.to_lower(), [])
+	if _thumb_tex != null and r.size() == 4:
+		t = AtlasTexture.new()
+		t.atlas = _thumb_tex
+		t.region = Rect2(float(r[0]), float(r[1]), float(r[2]), float(r[3]))
+	else:
+		print("[menu] no baked thumbnail for %s (re-run tools/thumb_bake.sh)" % key)
+	_thumb_cache[key] = t
+	return t
+
+
+static func _load_thumbs() -> void:
+	_thumb_tex = load(THUMBS_PNG) if ResourceLoader.exists(THUMBS_PNG) else null
+	var txt := FileAccess.get_file_as_string(THUMBS_JSON)
+	var parsed = JSON.parse_string(txt) if txt != "" else null
+	if _thumb_tex == null or not (parsed is Dictionary):
+		push_warning("[menu] thumbnail atlas missing (%s, %s): every picture reads 'not baked'" % [
+			THUMBS_PNG, THUMBS_JSON])
+		return
+	_thumb_idx = (parsed as Dictionary).get("groups", {})
 
 
 # --- pointer -----------------------------------------------------------------
@@ -1122,14 +1256,32 @@ func _build_viewports() -> void:
 	_stage.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	col.add_child(_stage)
 
+	# The bar: fixed along the bottom at every level, outside the stage, so no zoom moves it.
+	_bar = HBoxContainer.new()
+	_bar.add_theme_constant_override("separation", 12)
+	col.add_child(_bar)
+	for i in items.size():
+		if items[i].bar:
+			var bw := _widget(i, _kind_of(items[i]))
+			bw.custom_minimum_size = Vector2(0, BAR_H)
+			bw.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			_bar.add_child(bw)
+
 	# Top level: the cards. One per section with controls, plus any item promoted to a
 	# card of its own (a gallery), which takes its companion section's controls inside.
-	_top = GridContainer.new()
-	_top.columns = 2
-	_top.add_theme_constant_override("h_separation", 12)
-	_top.add_theme_constant_override("v_separation", 12)
+	# A picture gallery's card runs the full width above the rest.
+	_top = VBoxContainer.new()
+	_top.add_theme_constant_override("separation", 12)
 	_top.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	_stage.add_child(_top)
+	_top_wide = VBoxContainer.new()
+	_top_wide.add_theme_constant_override("separation", 12)
+	_top.add_child(_top_wide)
+	_top_grid = GridContainer.new()
+	_top_grid.columns = 2
+	_top_grid.add_theme_constant_override("h_separation", 12)
+	_top_grid.add_theme_constant_override("v_separation", 12)
+	_top.add_child(_top_grid)
 	var absorbed: Array[String] = []
 	for i in items.size():
 		if items[i].card_of != "" and not absorbed.has(items[i].card_of):
@@ -1137,7 +1289,7 @@ func _build_viewports() -> void:
 	var order: Array[String] = []
 	for i in items.size():
 		var it := items[i]
-		if it.section == MODE_SECTION:
+		if it.section == MODE_SECTION or it.bar:
 			continue
 		var key := "item:%d" % i if it.card_of != "" else it.section
 		if it.card_of == "" and absorbed.has(it.section):
@@ -1146,10 +1298,16 @@ func _build_viewports() -> void:
 			order.append(key)
 	for key in order:
 		var card := _widget(-1, Kind.CARD)
-		card.custom_minimum_size = Vector2(0, 150)
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		_tile_key[_tiles.size() - 1] = key
-		_top.add_child(card)
+		var gi := int(key.substr(5)) if key.begins_with("item:") else -1
+		if gi >= 0 and items[gi].kind == Kind.GRID:
+			card.pic = true
+			card.custom_minimum_size = Vector2(0, GALLERY_CARD_H)
+			_top_wide.add_child(card)
+		else:
+			card.custom_minimum_size = Vector2(0, CARD_H)
+			_top_grid.add_child(card)
 		_cards.append(card)
 		_card_keys.append(key)
 
@@ -1194,28 +1352,139 @@ func _build_viewports() -> void:
 			sec = items[wide_item].card_of
 		_boxes[key] = {"box": box, "wide": wide, "grid_a": ga, "more": more, "grid_b": gb,
 			"section": sec, "wide_item": wide_item}
-		if wide_item >= 0:
+		if wide_item >= 0 and items[wide_item].kind == Kind.GRID:
+			wide.add_child(_build_pictures(wide_item))
+		elif wide_item >= 0:
 			var w := _widget(wide_item, _kind_of(items[wide_item]))
 			w.big = true
 			w.custom_minimum_size = Vector2(0, 140)
 			wide.add_child(w)
 		for i in items.size():
 			var it := items[i]
-			if it.section != sec or it.section == MODE_SECTION or i == wide_item or it.card_of != "":
+			if it.section != sec or it.section == MODE_SECTION or i == wide_item or it.card_of != "" \
+					or it.bar:
 				continue
 			var w := _widget(i, _kind_of(it))
 			if it.primary:
-				w.custom_minimum_size = Vector2(0, 100)
+				w.custom_minimum_size = Vector2(0, ROW_H)
 				w.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 				ga.add_child(w)
 			else:
-				w.custom_minimum_size = Vector2(0, 86)
+				w.custom_minimum_size = Vector2(0, MINOR_H)
 				w.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 				gb.add_child(w)
 
 	_ripple = Ripple.new()
 	_ripple.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_root.add_child(_ripple)
+
+
+## A picture page: PER_PAGE button slots in a grid, then the page arrows. The slots are made
+## once; a refresh only re-points them at the entries of the page showing. The host is the
+## item's widget (so the item's visibility hides the page) but not a hit target itself.
+func _build_pictures(item: int) -> Control:
+	var host := Widget.new()
+	host.kind = Kind.GRID
+	while _widgets.size() <= item:
+		_widgets.append(null)
+	_widgets[item] = host
+	host.custom_minimum_size = Vector2(0, (PER_PAGE / GRID_COLS) * PICK_H
+		+ (PER_PAGE / GRID_COLS - 1) * 10 + 10 + PAGER_H)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	v.set_anchors_preset(Control.PRESET_FULL_RECT)
+	host.add_child(v)
+	var grid := GridContainer.new()
+	grid.columns = GRID_COLS
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	v.add_child(grid)
+	var slots: Array[Widget] = []
+	for k in PER_PAGE:
+		var w := _widget(-1, Kind.PICK)
+		_tile_item[_tiles.size() - 1] = item
+		_tile_slot[_tiles.size() - 1] = k
+		w.custom_minimum_size = Vector2(0, PICK_H)
+		w.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_child(w)
+		slots.append(w)
+	# The arrows sit at the bottom of the page, under the thumb's reach, not over the grid.
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	v.add_child(spacer)
+	var pager := HBoxContainer.new()
+	pager.add_theme_constant_override("separation", 12)
+	v.add_child(pager)
+	var arrows: Array[Widget] = []
+	for d in [-1, 1]:
+		var a := _widget(-1, Kind.PAGE)
+		_tile_item[_tiles.size() - 1] = item
+		_tile_slot[_tiles.size() - 1] = d
+		a.dir = d
+		a.label = "PREV" if d < 0 else "NEXT"
+		a.custom_minimum_size = Vector2(170, PAGER_H)
+		arrows.append(a)
+	var lbl := _label("", 17, VALUE_INK, 600)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl.size_flags_vertical = Control.SIZE_FILL
+	pager.add_child(arrows[0])
+	pager.add_child(lbl)
+	pager.add_child(arrows[1])
+	_grid_box[item] = {"slots": slots, "pager": pager, "page_label": lbl}
+	return host
+
+
+func _pages_of(n: int) -> int:
+	return maxi(1, ceili(float(n) / float(PER_PAGE)))
+
+
+## Entries per page: spread evenly, so thirteen is seven and six rather than twelve and one.
+func _per_page(n: int) -> int:
+	return maxi(1, ceili(float(n) / float(_pages_of(n))))
+
+
+func _page_of_current(item: int) -> int:
+	var it := items[item]
+	return clampi(int(it.index.call()) / _per_page(_count_of(it)), 0, _pages_of(_count_of(it)) - 1)
+
+
+func _flip_page(item: int, d: int) -> void:
+	var n := _pages_of(_count_of(items[item]))
+	_page[item] = wrapi(int(_page.get(item, 0)) + d, 0, n)
+
+
+## Point a picture page's slots at the page showing. Redraws only the slots that changed.
+func _face_pictures(item: int) -> void:
+	var it := items[item]
+	var g: Dictionary = _grid_box[item]
+	var n := _count_of(it)
+	var pages := _pages_of(n)
+	var per := _per_page(n)
+	var p := clampi(int(_page.get(item, _page_of_current(item))), 0, pages - 1)
+	_page[item] = p
+	var cur := int(it.index.call())
+	var slots: Array[Widget] = g["slots"]
+	for k in slots.size():
+		var w := slots[k]
+		var j := p * per + k
+		var show := k < per and j < n
+		if w.visible != show:
+			w.visible = show
+		if not show:
+			continue
+		var nm := str(it.name_of.call(j))
+		var t := thumb(it.group, nm)
+		var lab := nm.capitalize()
+		var ch := j == cur
+		if w.label != lab or w.tex != t or w.chosen != ch:
+			w.label = lab
+			w.tex = t
+			w.chosen = ch
+			w.queue_redraw()
+	(g["pager"] as Control).visible = pages > 1
+	(g["page_label"] as Label).text = "PAGE %d OF %d" % [p + 1, pages]
 
 
 func _kind_of(it: Item) -> int:
@@ -1236,6 +1505,7 @@ func _widget(item: int, kind: int) -> Widget:
 	_tile_item.append(item)
 	_tile_kind.append(kind)
 	_tile_key.append("")
+	_tile_slot.append(0)
 	_hover.append(0.0)
 	_pulse.append(0.0)
 	return w
@@ -1516,7 +1786,8 @@ func _scrub(delta: float) -> void:
 	if _hovered < 0:
 		return
 	var i := _tile_item[_hovered]
-	if i < 0 or not items[i].step.is_valid():
+	var paging := _tile_kind[_hovered] == Kind.PICK or _tile_kind[_hovered] == Kind.PAGE
+	if i < 0 or not (paging or items[i].step.is_valid()):
 		return
 	_wants_stick = true
 	var x := 0.0
@@ -1535,7 +1806,11 @@ func _scrub(delta: float) -> void:
 		return
 	else:
 		_step_timer = STEP_REPEAT_S
-	items[i].step.call(dir)
+	if paging:
+		# On a picture page the stick turns pages; picking stays with the trigger.
+		_flip_page(i, dir)
+	else:
+		items[i].step.call(dir)
 	_pulse[_hovered] = 1.0
 	_haptic(0.3, 0.012)
 	_refresh()
@@ -1592,6 +1867,13 @@ func activate() -> void:
 			_tick_drag(_pointer_pixel(_ptr), 0.0)
 		Kind.HOLD:
 			return   # the ring does it
+		Kind.PICK:
+			var it := items[i]
+			var j := int(_page.get(i, 0)) * _per_page(_count_of(it)) + _tile_slot[_hovered]
+			if j != int(it.index.call()):
+				it.choose.call(j)
+		Kind.PAGE:
+			_flip_page(i, _tile_slot[_hovered])
 		Kind.CAROUSEL:
 			if items[i].step.is_valid():
 				var r := w.get_global_rect()
@@ -1633,8 +1915,17 @@ func _go_level(key: String, at: Vector2, zoom_in: bool) -> void:
 		(_boxes[k]["box"] as Control).visible = k == key
 	_sub.visible = key != ""
 	_top.visible = true
+	_open_page(key)
 	_refresh()
 	_animate(0.0)
+
+
+## Entering a picture page shows the page the current fractal is on.
+func _open_page(key: String) -> void:
+	if key.begins_with("item:"):
+		var gi := int(key.substr(5))
+		if items[gi].kind == Kind.GRID:
+			_page[gi] = _page_of_current(gi)
 
 
 func _refresh() -> void:
@@ -1662,13 +1953,16 @@ func _refresh() -> void:
 			card.label = str(it.read.call())
 			card.lines.append("%d of %d" % [int(it.index.call()) + 1, _count_of(it)]
 				if it.index.is_valid() else it.label.capitalize())
-			_feed_swatches(card, it)
+			if it.kind == Kind.GRID:
+				_face_gallery_card(card, it)
+			else:
+				_feed_swatches(card, it)
 		for i in items.size():
 			var it := items[i]
 			if it.section != sec or i == wide_item or it.card_of != "" or not _widgets[i].visible:
 				continue
 			any = true
-			if card.lines.size() < 3:
+			if card.lines.size() < _card_lines(card):
 				var v := str(it.read.call())
 				card.lines.append(("%s  %s" % [it.label.capitalize(), v]) if v != "" else it.label.capitalize())
 			if card.swatch_cur < 0 and it.swatch.is_valid():
@@ -1684,6 +1978,7 @@ func _refresh() -> void:
 		(box["more"] as Widget).visible = minors > 0
 		(box["more"] as Widget).label = "LESS" if _more else "MORE"
 		gb.visible = minors > 0 and _more
+	_fit_cards()
 	# Widget faces.
 	for i in items.size():
 		var w := _widgets[i]
@@ -1704,6 +1999,10 @@ func _refresh() -> void:
 				_feed_swatches(w, it)
 			Kind.HOLD:
 				w.sub = v
+			Kind.GRID:
+				if w.is_visible_in_tree():
+					_face_pictures(i)
+				continue
 			Kind.STATION:
 				pass
 			_:
@@ -1725,6 +2024,50 @@ func _refresh() -> void:
 		var name: String = items[box["wide_item"]].label if box["wide_item"] >= 0 else sec
 		_crumb_label.text = "%s  ›  %s" % [_mode.to_upper(), name.to_upper()]
 	_layout_dirty()
+
+
+## The gallery card: the current entry's name and picture, and the next few pictures along.
+func _face_gallery_card(card: Widget, it: Item) -> void:
+	var n := _count_of(it)
+	var cur := int(it.index.call())
+	var nm := str(it.name_of.call(cur))
+	card.label = nm.capitalize()
+	card.lines.append(it.label)
+	card.tex = thumb(it.group, nm)
+	card.strip.clear()
+	for k in mini(5, n - 1):
+		var j := (cur + 1 + k) % n
+		card.strip.append(thumb(it.group, str(it.name_of.call(j))))
+
+
+## How many state lines a card has room for.
+func _card_lines(card: Widget) -> int:
+	return clampi(int((card.custom_minimum_size.y - 84.0) / 23.0) + 1, 3, 5)
+
+
+## Let the top level's cards take the stage's height instead of leaving a third of the
+## panel empty: the grid's rows grow (up to CARD_H_MAX) into what the gallery card leaves.
+func _fit_cards() -> void:
+	var stage_h := _stage.size.y
+	if stage_h < 100.0:
+		return
+	var wide_h := 0.0
+	var small := 0
+	for c in _cards.size():
+		if not _cards[c].visible:
+			continue
+		if _cards[c].pic:
+			wide_h += GALLERY_CARD_H + 12.0
+		else:
+			small += 1
+	var rows := ceili(small / 2.0)
+	if rows == 0:
+		return
+	var h := clampf(floorf((stage_h - wide_h - 12.0 * (rows - 1)) / rows), CARD_H, CARD_H_MAX)
+	for c in _cards.size():
+		var card := _cards[c]
+		if not card.pic and card.custom_minimum_size.y != h:
+			card.custom_minimum_size = Vector2(0, h)
 
 
 func _count_of(it: Item) -> int:
@@ -1781,6 +2124,7 @@ func _sync_back() -> void:
 			last_y = r.position.y
 			nodes.append(r.position.y + minf(r.size.y * 0.5, 40.0))
 	_shadows.queue_redraw()
+	_backdrop.bar_y = _bar.get_global_rect().position.y - 7.0 if _bar.visible else -1.0
 	_backdrop.nodes = nodes
 	_backdrop.queue_redraw()
 	_back_dirty = true
@@ -1956,6 +2300,15 @@ func debug_level(key: String, settled := true, t := 1.0) -> void:
 	_sub.visible = key != ""
 	_top.visible = true
 	_zoom_t = 1.0 if settled else t
+	_open_page(key)
+	_refresh()
+	_sync_back()
+	_animate(0.0)
+
+
+## For the shot tool: show a picture gallery's page p (wraps).
+func debug_page(item: int, p: int) -> void:
+	_page[item] = wrapi(p, 0, _pages_of(_count_of(items[item])))
 	_refresh()
 	_sync_back()
 	_animate(0.0)

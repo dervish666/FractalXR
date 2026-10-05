@@ -6,6 +6,20 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Changed
+- **Choose a fractal by its picture.** Every mode's chooser (flame presets, bulbs, ground
+  families, the 13 tree species, IFS shapes) is now a full-width card showing the current
+  fractal's picture, and inside it a page of picture buttons, one per entry, the current one
+  framed in the mode's hue. Twelve at most to a page, with PREV/NEXT (and the right stick)
+  past that. The pictures are baked once through the real engine by `godot/tools/thumb_bake.sh`
+  into one atlas; nothing renders at runtime. The SET, tree SHAPE and IFS SHAPE carousels
+  are gone, replaced by the galleries.
+- **EXIT is no longer hidden in a card.** A fixed bar along the bottom of the wrist menu
+  carries EXIT (still a hold), PASSTHRU and HELP at every level; the APP card is gone. The
+  top-level cards grow into the panel's height instead of leaving the bottom third empty.
+- **The floating menu stays where it is put.** The menu button sends the panel from the wrist
+  to one fixed spot, low and to the right of your view and within reach, worked out from
+  where you are looking at that moment. It no longer chases your gaze, and the panel no
+  longer opens floating on the next launch: it always starts on the wrist.
 - **The wrist menu is a zoomable panel of real controls with real depth.** Two
   composition layers 12 mm apart: the glass behind (facet silhouette, the live palette
   as a spine, title, breadcrumb, footer, and a soft shadow under every control) and the

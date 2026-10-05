@@ -462,9 +462,9 @@ func _shapes(main) -> void:
 	main._reset_ifs()
 	for i in 10:
 		await process_frame
-	var shape_tile = _visible_tile(main, "SHAPE")
+	var shape_tile = _visible_tile(main, "SHAPES", "pick")
 	if shape_tile == null:
-		_ok("shape tile", false, "no SHAPE tile visible in the make section while in IFS")
+		_ok("shape tile", false, "no SHAPES gallery visible while in IFS")
 		return
 	var first_name: String = str(shape_tile.read.call())
 	_ok("shape tile", first_name == FractalIFS.preset_name(main.ifs_preset_idx),
