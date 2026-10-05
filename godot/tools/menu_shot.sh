@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 mkdir -p "$PROJ/.spike-out"
 "$GODOT" $GODOT_FLAGS --headless --import >/dev/null 2>&1 || true
-( sleep 420; pkill -9 -f "Godot --xr-mode off --path $PROJ" 2>/dev/null ) &
+( sleep 900; pkill -9 -f "Godot --xr-mode off --path $PROJ" 2>/dev/null ) &
 WATCHDOG=$!
 # Under set -e a failing Godot run skips the kill below, and four minutes later the
 # orphaned watchdog pkills whatever run of this project is in flight. The trap fires

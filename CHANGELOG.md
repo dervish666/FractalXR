@@ -39,6 +39,28 @@ All notable changes to FractalXR are documented here. Format based on
   shows the new scheme, with the menu button drawn and each stick's click named.
 
 ### Fixed
+- **A flame morph costs a fraction of what it did.** Every morph frame rebuilt the
+  in-between genome as Dictionaries, re-encoded it, applied the palette twice when a theme
+  blend ran alongside, and restyled the whole wrist menu each time; on the headset that was
+  most of a 12-15 ms `proc_ms`. The morph is now decomposed once at its start and sampled
+  into a reused flat buffer, the palette is applied at most once a frame, the menu restyles
+  at most every 100 ms (the last colour always lands), and the morph finishes on the
+  authored genome rather than an interpolated copy. `tools/morph_cost.sh` times it and
+  checks the new path encodes the same 224 floats as the old one.
+- Changing DETAIL, entering GROUND, ENTER or the marcher no longer throws a burst of
+  "All textures in a framebuffer should be the same size" errors. The eye buffer size is
+  now committed between frames, so the render buffers and the OpenXR swapchains agree.
+- Passthrough works in builds made from a git worktree. The Meta vendors plugin is
+  gitignored, so those APKs shipped without alpha blend and every passthrough request was
+  refused; `tools/build.sh` now copies the plugin from the main checkout or stops. The
+  refusal log line prints the offered blend modes.
+- The wrist menu opens on its cards. A fresh panel read as already zoomed into a card,
+  so the cards faded out and an empty level showed.
+- The wrist menu no longer goes blank for good a few seconds after opening a card. The
+  zoom pivot compounded every frame until it overflowed to NaN, which hid the cards in
+  every mode until restart.
+- The menu's back plane keeps one swapchain. It used to create a new one on every redraw,
+  several a second while the panel was up.
 - The first-launch help card is now hidden the moment the session loses focus, as the
   wrist menu already was; an open card drew over the Quest system menu.
 - Grip in GROUND no longer drags the hidden flame along with the field, so the flame
