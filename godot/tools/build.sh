@@ -11,6 +11,22 @@
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 MODE=${1:-debug}
+# The Meta vendors plugin (FB passthrough and friends) is gitignored, so a git worktree has
+# no addons/ and exported an APK where passthrough could only ever be refused (2026-10-04
+# headset log: eight "start_passthrough() refused", mr=off throughout). Copy the main
+# checkout's plugin in, or stop.
+VENDORS="addons/godotopenxrvendors"
+if [ ! -d "$PROJ/$VENDORS" ]; then
+	MAIN_PROJ="$(cd "$(git -C "$PROJ" rev-parse --path-format=absolute --git-common-dir)/.." && pwd)/godot"
+	if [ -d "$MAIN_PROJ/$VENDORS" ]; then
+		mkdir -p "$PROJ/addons"
+		cp -R "$MAIN_PROJ/$VENDORS" "$PROJ/$VENDORS"
+		echo "[build] copied $VENDORS from $MAIN_PROJ"
+	else
+		echo "[build] $VENDORS is missing: no passthrough, no Meta extensions. See README (godot_openxr_vendors)." >&2
+		exit 1
+	fi
+fi
 mkdir -p "$PROJ/build"
 EXTRA=""
 [ -d "$PROJ/android/build" ] || EXTRA="--install-android-build-template"

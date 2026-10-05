@@ -288,6 +288,20 @@ var _base_exposure := 0.32
 var _morph_from: Dictionary = {}
 var _morph_to: Dictionary = {}
 var _morph_t := 1.0
+## The running transition, decomposed once at its start, and the flat genome it writes into
+## every frame. See Morph.Plan: interpolating Dictionaries per frame was the morph's cost.
+var _morph_plan: Morph.Plan = null
+var _morph_flat := PackedFloat32Array()
+## Set by anything that changes the palette mid-frame; _process applies it once at the end.
+## A morph with a theme blend running asked for it twice a frame.
+var _palette_dirty := false
+## The wrist menu restyles its whole panel per palette. A morph or theme blend recolours every
+## frame for seconds; ten restyles a second is indistinguishable and a fraction of the cost.
+## A palette held back by the throttle is pending until it lands, so a blend's last colour
+## always reaches the panel.
+const MENU_RESTYLE_MS := 100
+var _menu_pal_at_ms := -100000
+var _menu_pal_pending: Array = []
 var _drift := true
 var _drift_hold := 0.0
 var morph_idx := 0
@@ -494,6 +508,7 @@ func _load_preset(i: int) -> bool:
 	_morph_from = preset
 	_morph_to = preset
 	_morph_t = 1.0
+	_morph_plan = null
 	var src := FlameSource.new(preset)
 	src.iterations = ITER_STEPS[iter_idx]
 	src.update_mod = STABILITY[stability_idx]
@@ -1057,7 +1072,10 @@ func _build_menu() -> void:
 
 
 func _apply_tone(preset: Dictionary) -> void:
-	var tone := PresetLibrary.tone_of(preset)
+	_apply_tone_settings(PresetLibrary.tone_of(preset))
+
+
+func _apply_tone_settings(tone: Dictionary) -> void:
 	tonemap.set_tone(tone)
 	_base_exposure = float(tone["exposure"])
 	_apply_exposure()
@@ -1073,6 +1091,7 @@ func _morph_to_preset(i: int) -> void:
 	_morph_from = _current_genome()
 	_morph_from_idx = _from_idx
 	_morph_to = library.at(preset_idx)
+	_morph_plan = Morph.plan(_morph_from, _morph_to)
 	_morph_t = 0.0
 	_converge = CONVERGE_FRAMES
 
@@ -1090,7 +1109,7 @@ func _step_detail(d: int) -> void:
 	if march.is_on():
 		render_idx = MARCH_RENDER_IDX
 	if xr != null:
-		xr.render_target_size_multiplier = MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx]
+		_set_eye_scale(MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx])
 
 
 
@@ -1481,7 +1500,7 @@ func _set_ground_mode(on: bool) -> void:
 		if render_idx == GROUND_RENDER_IDX:
 			render_idx = _render_idx_saved
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		_set_eye_scale(RENDER_STEPS[render_idx])
 
 
 ## Point at the ground and pull: glide until that spot is under you.
@@ -1669,7 +1688,7 @@ func _enter_inside() -> void:
 	_inside_slow = 0
 	render_idx = INSIDE_RENDER_IDX
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		_set_eye_scale(RENDER_STEPS[render_idx])
 	var p := _bulb.find_hollow()
 	var d := maxf(_bulb.de(p), 1e-4)
 	var local := (p - cloud.center) * cloud.fit
@@ -1713,7 +1732,32 @@ func _leave_inside() -> void:
 	_inside = false
 	render_idx = _inside_render_saved
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		_set_eye_scale(RENDER_STEPS[render_idx])
+
+
+## The eye buffer scale, applied between frames rather than when it is asked for. Godot
+## sizes the XR viewport's render buffers by polling get_render_target_size() in the root
+## viewport's internal process (Viewport::_check_xr_size), but OpenXR recreates its
+## swapchains at draw time (OpenXRAPI::pre_draw_viewport). A multiplier written from
+## _process, after the root had already polled, drew one frame with new-size swapchain
+## images against old-size render buffers: the "All textures in a framebuffer should be the
+## same size" burst on every DETAIL, ground, ENTER and march change. Written from
+## frame_post_draw, the next frame's poll and its draw both see the new size.
+var _eye_scale_pending := -1.0
+
+
+func _set_eye_scale(m: float) -> void:
+	if xr == null:
+		return
+	if _eye_scale_pending < 0.0:
+		RenderingServer.frame_post_draw.connect(_commit_eye_scale, CONNECT_ONE_SHOT)
+	_eye_scale_pending = m
+
+
+func _commit_eye_scale() -> void:
+	if xr != null and _eye_scale_pending > 0.0:
+		xr.render_target_size_multiplier = _eye_scale_pending
+	_eye_scale_pending = -1.0
 
 
 func _apply_foveation() -> void:
@@ -1899,12 +1943,22 @@ func _tick_morph(delta: float) -> void:
 		# The old two-second convergence meant two seconds of every particle re-rolling
 		# after each transition, which read as a churn before it went still.
 		_converge = SETTLE_FRAMES
-	var g := Morph.interpolate(_morph_from, _morph_to, Morph.smoothstep_t(_morph_t))
-	_apply_tone(g)
 	var src := cloud.source as FlameSource
+	if _morph_t >= 1.0 or _morph_plan == null:
+		# Land on the real genome, not an interpolated copy of it: everything that reads
+		# the preset afterwards (breeding, the next morph's start) sees the authored one.
+		_morph_plan = null
+		_apply_tone(_morph_to)
+		if src != null:
+			src.set_preset(_morph_to)
+	else:
+		var k := Morph.smoothstep_t(_morph_t)
+		_apply_tone_settings(_morph_plan.tone_at(k))
+		if src != null:
+			_morph_plan.sample(k, _morph_flat)
+			src.set_frame(_morph_flat, _morph_plan.n, _morph_plan.palette_at(k), _morph_plan.name)
 	if src != null:
-		src.set_preset(g)
-		_apply_palette()
+		_palette_dirty = true
 		RenderingServer.call_on_render_thread(src.update_params)
 
 
@@ -2028,7 +2082,9 @@ func _set_passthrough(on: bool) -> void:
 		elif xr.is_passthrough_supported():
 			if not xr.start_passthrough():
 				passthru_label = "n/a"
-				print("[xr] passthrough: start_passthrough() refused")
+				# Godot's is_passthrough_supported() is find() cast to bool, true exactly when
+				# alpha blend is NOT offered, so this branch is where "unsupported" lands.
+				print("[xr] passthrough: start_passthrough() refused (modes=%s; on Quest the vendors plugin provides alpha blend)" % str(modes))
 				return
 			print("[xr] passthrough on via start_passthrough")
 		else:
@@ -2105,6 +2161,12 @@ var _proc_frames := 0
 func _process(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()
 	_process_frame(delta)
+	# After every early return in _process_frame, so whatever recoloured this frame lands.
+	if _palette_dirty:
+		_palette_dirty = false
+		_apply_palette()
+	if not _menu_pal_pending.is_empty():
+		_push_menu_palette(_menu_pal_pending)
 	var us := Time.get_ticks_usec() - t0
 	_proc_us_sum += us
 	_proc_us_max = maxi(_proc_us_max, us)
@@ -2117,7 +2179,7 @@ func _process_frame(delta: float) -> void:
 	if _theme_blend < 1.0:
 		# Match the shape transition, so colour and form arrive together.
 		_theme_blend = minf(1.0, _theme_blend + delta / MORPH_STEPS[morph_idx])
-		_apply_palette()
+		_palette_dirty = true
 	if not _placed and _setup_done and xr_camera.global_transform.origin.length_squared() > 1e-6:
 		_placed = true
 		_recenter()
@@ -2429,7 +2491,7 @@ func _apply_palette() -> void:
 				Morph.smoothstep_t(_theme_blend)))
 		pal = mixed
 	cloud.override_palette(pal)
-	menu.set_palette(pal)
+	_push_menu_palette(pal)
 	march.set_palette(pal)
 	# This runs every morph and theme-blend frame, so only the modes on screen are
 	# recoloured. Entering ground or tree calls this, so each arrives in the current theme.
@@ -2443,6 +2505,16 @@ func _apply_palette() -> void:
 	# Entering IFS calls this, so it always arrives wearing the current theme.
 	if ifs_mode:
 		ifs.set_palette(_ifs_colours(pal))
+
+
+func _push_menu_palette(pal: Array) -> void:
+	var now := Time.get_ticks_msec()
+	if now - _menu_pal_at_ms < MENU_RESTYLE_MS:
+		_menu_pal_pending = pal
+		return
+	_menu_pal_at_ms = now
+	_menu_pal_pending = []
+	menu.set_palette(pal)
 
 
 ## The shared palette travels as Vector3 rgb, straight into shader parameters. FractalIFS
@@ -2511,7 +2583,7 @@ func _apply_march_budget() -> void:
 		_march_render_saved = render_idx
 	render_idx = MARCH_RENDER_IDX
 	if xr != null:
-		xr.render_target_size_multiplier = MARCH_RENDER_SCALE
+		_set_eye_scale(MARCH_RENDER_SCALE)
 
 
 func _restore_march_budget() -> void:
@@ -2521,7 +2593,7 @@ func _restore_march_budget() -> void:
 	render_idx = _march_render_saved
 	_march_render_saved = -1
 	if xr != null:
-		xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
+		_set_eye_scale(RENDER_STEPS[render_idx])
 
 
 ## Outside the explicit ENTER path the user can still fill both eye buffers by bringing a
