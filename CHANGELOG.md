@@ -85,6 +85,39 @@ All notable changes to FractalXR are documented here. Format based on
   than stepping the gallery behind the panel.
 
 ### Added
+- **The flame at scale: GALAXY, ECHOES and a flame SKY.** Three tiles on FLAME's SCENE card,
+  and SKY on the SCENE card in every mode (so IFS and GROUND now have a SCENE card).
+  - **GALAXY** grows the living flame round you over 8 s, to an RMS radius of 6 m (about
+    24 m across) with its centre 3 m ahead and 0.4 m below the eyes, so the dense middle is
+    never at the head. Spin and drift go off on the way in and come back on the way out
+    (a spin turned back on inside runs at a quarter rate, level), points within 0.6 m of the
+    eye fade out, and per-point brightness rises to at least 0.12, because from inside the
+    same particles cover three times the screen. Press again to shrink back to arm's length
+    over the same 8 s; X or CENTRE puts it back at once; a grip takes over mid-grow.
+  - **ECHOES** (off, four, eight) hangs copies of the living flame round the room, lanterns
+    3 m out to giants 20-40 m out, under the IFS echoes' comfort rules: 1.2 m clear of the
+    head, clear of the floor, out of a 28 degree cone round the line to the hero, and still.
+    Each echo is the hero's own point material on a smaller vertex buffer, reading a
+    block-strided sample of the live particles, so morphs and palettes reach every echo for
+    free. All echoes together draw at most 262,144 points, a quarter of the hero's 1.05M;
+    one out of view is culled. They hide with the flame (bulb, splats, other modes, GALAXY).
+  - **TO SKY** bakes the flame on show into a 2560x1280 HDR equirect, seen from the flame's
+    own centre, and **SKY** hangs it behind GROUND, TREE and IFS (not FLAME, not BULB, and
+    passthrough wins). The bake runs 65,536 walkers through the unchanged `chaos.glsl`,
+    splats 24M samples by direction over about 200 frames, then resolves them with flam3
+    log-density, the curve the live flame on Quest never gets. Static once baked, it fades
+    in over 2 s. It is compute on the RenderingDevice with no viewport or camera, so the XR
+    stereo camera cannot pick it up: the job `renderer.xr.enabled` did in the web build.
+  - Desktop cost, three runs on an Apple M1 Pro through MoltenVK, mono 1280x800
+    (`tools/flame_scale_cost.sh`; under Metal neither GPU timer reports anything): hero draw
+    2.2 / 3.3-3.4 / 4.1-4.5 ms at 629K / 1.05M / 1.47M points, so linear in points; ECHOES
+    0 to +0.3 ms, inside the run-to-run noise of about 0.3 ms; GALAXY 2.8-3.1 ms against the
+    hero's 3.3-3.4 from the same particles; the bake 0.3-0.6 ms of GPU a frame for 198 frames,
+    plus two one-time frames of 10-15 ms; the sky in steady state inside the noise. None of
+    this is a headset number. Guesses from README phase 2, which found the Quest's point draw
+    vertex-bound: echoes add about a quarter of the hero's draw (their share of its points),
+    GALAXY draws about what the hero does, and the bake adds 3-5 ms a frame for about 3 s.
+    Shots and checks: `tools/flame_scale_shot.sh`.
 - **TREE grows a forest.** Entering TREE sows a grove of 16 trees around the hero's trunk,
   0.75-1.6 m out, tall inside and knee-high at the rim, sprouting one after another from
   the hero outward over about 15 s. Thirteen species now, on the SHAPE tile and in the

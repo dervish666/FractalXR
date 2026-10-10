@@ -99,6 +99,15 @@ var help := HelpCard.new()
 
 var xr: OpenXRInterface = null
 var cloud := ParticleCloud.new()
+# The flame at scale: GALAXY (stand inside it), ECHOES (copies round the room) and the SKY it
+# can be baked into for the other modes. scripts/core/flame_galaxy.gd, flame_echoes.gd,
+# flame_sky.gd; the glue is _tick_flame_scale() and the functions after it.
+var galaxy := FlameGalaxy.new()
+var flame_echoes := FlameEchoes.new()
+var flame_sky := FlameSky.new()
+var sky_on := false
+var _galaxy_saved := {}
+var _near_fade := 0.0
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
 ## so it shares grabs and framing; SURFACE picks splats or a step budget.
 var march := BulbMarch.new()
@@ -455,6 +464,9 @@ func _ready() -> void:
 	add_child(ground)
 	add_child(orbit)
 	add_child(plant_marker)
+	cloud.add_child(flame_echoes)
+	flame_echoes.setup(cloud)
+	flame_sky.setup(_env())
 
 	if not library.load_all():
 		_fail("presets: %s" % library.load_error)
@@ -672,6 +684,29 @@ func _build_menu() -> void:
 		WristMenu.Item.new("scene", "CENTRE",
 			func(): return "reset", func(): _recenter(); cloud.request_measure(),
 			false, _vis_grab),
+		# The flame at scale. GALAXY grows it round you, ECHOES hangs copies of it round the
+		# room, TO SKY bakes it into the sky that GROUND, TREE and IFS wear, and SKY, on this
+		# card in every mode, hangs or hides it. Not in the bottom bar: a fourth item there cut
+		# PASSTHRU to PASS and EXIT's "hold to quit" to "hold to q".
+		WristMenu.Item.new("scene", "GALAXY",
+			func(): return "inside" if galaxy.active else "off",
+			func(): _toggle_galaxy(),
+			false, _vis_flame).toggle(func(): return galaxy.active),
+		WristMenu.Item.new("scene", "ECHOES",
+			func(): return "off" if flame_echoes.count() == 0 else "%s · %s" % [
+				flame_echoes.step_name(), _fmt_count(flame_echoes.point_total())],
+			func(): _step_flame_echoes(1),
+			false, _vis_flame).stepping(func(d: int): _step_flame_echoes(d)),
+		WristMenu.Item.new("scene", "TO SKY",
+			func():
+				if flame_sky.baking:
+					return "baking %d%%" % int(flame_sky.progress * 100.0)
+				return "baked" if flame_sky.ready else "this flame",
+			func(): _bake_sky(),
+			false, _vis_flame),
+		WristMenu.Item.new("scene", "SKY",
+			func(): return _sky_label(),
+			func(): _toggle_sky()).toggle(func(): return sky_on),
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
@@ -1132,6 +1167,8 @@ func _set_mode(kind: String) -> void:
 	if bulb_mode == want_bulb and ground_mode == want_ground and tree_mode == want_tree \
 			and ifs_mode == want_ifs:
 		return
+	# First, before bulb mode swaps the brightness out: the galaxy puts back what it changed.
+	_leave_galaxy(false)
 	if ground_mode and not want_ground:
 		_set_ground_mode(false)
 	if tree_mode and not want_tree:
@@ -1970,6 +2007,114 @@ func _tick_morph(delta: float) -> void:
 		RenderingServer.call_on_render_thread(src.update_params)
 
 
+# --- The flame at scale: GALAXY, ECHOES, SKY -------------------------------------------------
+
+## Once a frame in every mode, before any of them returns early: the galaxy's ease and near
+## fade, and the sky's bake steps and visibility. The echoes see to their own visibility.
+func _tick_flame_scale(delta: float) -> void:
+	if galaxy.is_moving():
+		# A grip takes over from the ease where it stands, and a mode change ends it.
+		if (grab != null and grab.is_grabbing()) or bulb_mode or ground_mode or tree_mode or ifs_mode:
+			galaxy.stop()
+		else:
+			cloud.global_transform = galaxy.step(delta)
+	var fade := FlameGalaxy.NEAR_FADE_M if galaxy.active or galaxy.is_moving() else 0.0
+	if fade != _near_fade:
+		_near_fade = fade
+		cloud.set_near_fade(fade)
+	flame_echoes.suppressed = galaxy.active or galaxy.is_moving()
+	# The sky hangs behind the modes that are not the flame itself. Bulb is left out on budget
+	# (13.9 ms measured, at the line already), and passthrough always wins: the room is the sky.
+	flame_sky.sync(sky_on and (ground_mode or tree_mode or ifs_mode) and not passthrough, delta)
+
+
+func _toggle_galaxy() -> void:
+	if galaxy.active:
+		_leave_galaxy(true)
+	else:
+		_enter_galaxy()
+
+
+## Into the flame: spin and drift off, brightness up, then the grow. What it changed is put back
+## by _leave_galaxy, which every recentre and mode change also runs.
+func _enter_galaxy() -> void:
+	if galaxy.active or bulb_mode or ground_mode or tree_mode or ifs_mode:
+		return
+	galaxy.active = true
+	_galaxy_saved = {"spin": spin, "drift": _drift, "bright": bright_idx}
+	spin = false
+	_drift = false
+	_drift_hold = 0.0
+	bright_idx = maxi(bright_idx, BRIGHT_STEPS.find(FlameGalaxy.BRIGHT))
+	_apply_point_look()
+	var from := cloud.global_transform
+	if grab != null:
+		grab.reset(from)
+	galaxy.begin(from, FlameGalaxy.target(xr_camera.global_transform, from.basis,
+		cloud.target_rms * cloud.target_fit))
+
+
+## `ease_out` shrinks the flame back to arm's length ahead, over the time it took to grow. A
+## recentre or a mode change passes false and puts the cloud where it wants it.
+func _leave_galaxy(ease_out: bool) -> void:
+	if not galaxy.active:
+		if not ease_out:
+			galaxy.stop()
+		return
+	galaxy.active = false
+	spin = bool(_galaxy_saved.get("spin", spin))
+	_drift = bool(_galaxy_saved.get("drift", _drift))
+	bright_idx = int(_galaxy_saved.get("bright", bright_idx))
+	_apply_point_look()
+	if ease_out:
+		var from := cloud.global_transform
+		galaxy.begin(from, Transform3D(from.basis.orthonormalized(), _home_transform().origin))
+	else:
+		galaxy.stop()
+
+
+## Hang the echoes round the head as it is now, the hero where _recenter puts it.
+func _place_flame_echoes() -> void:
+	if flame_echoes.step == 0:
+		return
+	var cam := xr_camera.global_transform
+	var fwd := -cam.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 1e-4:
+		fwd = Vector3.FORWARD
+	fwd = fwd.normalized()
+	flame_echoes.place(Transform3D(Basis.looking_at(fwd, Vector3.UP), cam.origin),
+		xr_origin.global_position.y - cam.origin.y, Vector3(0.0, -HOME_DROP, -HOME_DISTANCE))
+
+
+func _step_flame_echoes(d: int) -> void:
+	var was := flame_echoes.step
+	flame_echoes.set_step(flame_echoes.step + d)
+	if was == 0 and flame_echoes.step > 0:
+		_place_flame_echoes()
+
+
+## TO SKY: bake the flame on show into the sky, and switch the sky on.
+func _bake_sky() -> void:
+	if flame_sky.request_bake(cloud, _theme_palette(), COLOUR_CYCLES[colour_idx]):
+		sky_on = true
+
+
+## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds.
+func _toggle_sky() -> void:
+	sky_on = not sky_on
+	if sky_on and not flame_sky.ready and not flame_sky.baking:
+		_bake_sky()
+
+
+func _sky_label() -> String:
+	if flame_sky.baking:
+		return "baking %d%%" % int(flame_sky.progress * 100.0)
+	if not sky_on:
+		return "off"
+	return "on" if flame_sky.ready else "no flame"
+
+
 func _fail(msg: String) -> void:
 	_status = "FAILED: %s" % msg
 	push_error(_status)
@@ -2120,6 +2265,7 @@ func _set_passthrough(on: bool) -> void:
 
 
 func _recenter() -> void:
+	_leave_galaxy(false)
 	var t := _home_transform()
 	if tree_mode:
 		# Trunk base on the floor, a few strides ahead, unit scale.
@@ -2151,6 +2297,7 @@ func _recenter() -> void:
 		grab.reset(t)
 	else:
 		cloud.global_transform = t
+	_place_flame_echoes()
 
 
 func _current_eye_res() -> Vector2i:
@@ -2199,6 +2346,7 @@ func _process_frame(delta: float) -> void:
 	_menu_active = menu.update(delta)
 	if _xr_focused:
 		_run_guard(delta)
+	_tick_flame_scale(delta)
 	# _set_mode leaves bulb mode before IFS starts, so _bulb is already null here. The guard
 	# is written out anyway: breathing and marching a surface nobody is drawing is pure cost,
 	# and the ordering that makes it unreachable lives in another function.
@@ -2242,6 +2390,9 @@ func _process_frame(delta: float) -> void:
 			# The hero turns on its own trunk and the forest stands still. Spinning the cloud
 			# orbited every planted tree around the hero, sweeping trunks through the viewer.
 			tree.rotate_y(AMBIENT_SPIN * delta)
+		elif galaxy.active:
+			# Inside it, a turn is the whole view turning: a quarter rate, level, no tumble.
+			cloud.rotate_y(AMBIENT_SPIN * FlameGalaxy.SPIN_MUL * delta)
 		else:
 			cloud.rotate_y(AMBIENT_SPIN * delta)
 			cloud.rotate_object_local(Vector3.RIGHT, AMBIENT_TILT * delta)
@@ -2789,5 +2940,6 @@ func _mark_help_seen() -> void:
 
 
 func _exit_tree() -> void:
+	RenderingServer.call_on_render_thread(flame_sky.cleanup)
 	RenderingServer.call_on_render_thread(cloud.cleanup)
 	RenderingServer.call_on_render_thread(ground.cleanup)

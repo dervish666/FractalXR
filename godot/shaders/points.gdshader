@@ -48,6 +48,19 @@ uniform vec3 pal1;
 uniform vec3 pal2;
 uniform vec3 pal3;
 uniform vec3 pal4;
+// GALAXY: points closer than this to the eye fade out, metres; 0 is off. A fixed-pixel point
+// a hand's width from the eyes has a disparity no one can fuse, and inside a 30 m flame
+// there are always a few.
+uniform float near_fade = 0.0;
+// Flame ECHOES (scripts/core/flame_echoes.gd). An echo is this same material on a smaller
+// vertex buffer, so it reads the hero's live state image. It draws every echo_stride-th block
+// of 64 particles, offset by echo_offset blocks: a sample spread over the whole cloud, so it
+// changes the way the hero does while moving and not in one slab, and still reads texels in
+// runs for the cache. echo_gain pays back the particles it skips. The hero leaves all three
+// at their defaults, which is the old path exactly.
+instance uniform int echo_stride = 1;
+instance uniform int echo_offset = 0;
+instance uniform float echo_gain = 1.0;
 
 varying vec3 v_col;
 
@@ -73,12 +86,19 @@ vec3 palette(float t) {
 
 void vertex() {
 	int i = VERTEX_ID;
+	if (echo_stride > 1) {
+		i = (i >> 6) * (echo_stride << 6) + (i & 63) + (echo_offset << 6);
+	}
 	vec4 s = texelFetch(state_tex, ivec2(i % tex_size, i / tex_size), 0);
 	// self-compare NaN check; mobile isnan() is unreliable
 	bool bad = !(s.x == s.x) || !(s.y == s.y) || !(s.z == s.z);
 	vec3 p = (s.xyz - cloud_center) * cloud_fit;
 	VERTEX = bad ? vec3(0.0, 0.0, 1e9) : p;
-	v_col = palette(s.w) * brightness;
+	v_col = palette(s.w) * brightness * echo_gain;
+	if (near_fade > 0.0) {
+		float eye = length((MODELVIEW_MATRIX * vec4(p, 1.0)).xyz);
+		v_col *= smoothstep(near_fade * 0.4, near_fade, eye);
+	}
 
 	float px = point_size;
 	if (splat_mode) {
