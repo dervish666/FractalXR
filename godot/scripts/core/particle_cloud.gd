@@ -141,6 +141,9 @@ var bake_ready := false
 ## Framing is eased toward these rather than snapped, so a re-measure never pops.
 var target_center := Vector3.ZERO
 var target_fit := 1.0
+## RMS radius of the last measurement, in state units before the fit. GALAXY sizes the flame
+## from it: rms * fit is how big the cloud is at scale 1.
+var target_rms := 1.0
 ## Bumped whenever a measurement lands, so callers can tell a fresh result from a stale one.
 var measure_generation := 0
 
@@ -809,6 +812,23 @@ func is_hidden() -> bool:
 	return _hidden
 
 
+## The point-path material. Flame echoes draw with this very instance, so every palette,
+## brightness, framing and band change reaches them with no copying.
+func point_material() -> ShaderMaterial:
+	return _material
+
+
+## True while a flame is on screen as single-pixel points: the only state echoes can copy.
+## A bulb, a splatted flame and a hidden cloud all answer false.
+func flame_drawn() -> bool:
+	return not _hidden and not _splat and source != null and source.id == &"flame"
+
+
+## Fade points within `m` metres of the eye (0 = off). Point path only; GALAXY uses it.
+func set_near_fade(m: float) -> void:
+	_material.set_shader_parameter("near_fade", maxf(0.0, m))
+
+
 func request_seed() -> void:
 	_needs_seed = true
 
@@ -917,6 +937,7 @@ func _on_measure(raw: PackedByteArray, gen: int) -> void:
 		return
 
 	target_center = c
+	target_rms = radius
 	# Shrink only, never magnify. Normalising every preset up to a unit radius spread a
 	# fixed point budget over more screen area, and thinner points read as lower
 	# resolution: that is the "degrades after any change" effect, not foveation and not
