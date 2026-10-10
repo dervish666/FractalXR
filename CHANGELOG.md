@@ -85,6 +85,22 @@ All notable changes to FractalXR are documented here. Format based on
   than stepping the gallery behind the panel.
 
 ### Added
+- **TREE avenues.** Two new entries in TREE's MAKE card, beside SOW. AVENUE sows two rows
+  of trees from your feet to 50 m down the way you face, 2.5-3 m either side of the path
+  and 3-4 m apart. They sprout as a wave rolling away from you, and each crown's colour
+  steps along the theme with distance, so a colour wave rolls down the rows too. The hero
+  steps out of the path; SOW brings it and the grove back. MIX picks the species: the
+  mixed bag, or the SPECIES tile's one kind for the whole avenue ("sakura rows").
+  WALK makes the avenue endless: hold either trigger and it glides toward you at 0.3 m/s,
+  easing in and out over half a second, level and straight, and letting go stops it.
+  You never move; the rows do. Trees sprout as they come within 25 m, wither once they
+  are behind you, and by 5 m behind they are moved to the far end and regrown. A pool of
+  30 trees is built once when WALK starts and never rebuilt, so the walk itself adds no
+  build cost. A tunnel vignette darkens the edges of the view while you glide and clears
+  when you stop (`scripts/xr/comfort_vignette.gd`, written so another mode can reuse it).
+  WALK off keeps the avenue where you stopped and lets its far end grow in. On the
+  desktop, G stands in for the held trigger. `godot/tools/avenue_shot.sh` checks and
+  shoots both from the viewer's position.
 - **TREE grows a forest.** Entering TREE sows a grove of 16 trees around the hero's trunk,
   0.75-1.6 m out, tall inside and knee-high at the rim, sprouting one after another from
   the hero outward over about 15 s. Thirteen species now, on the SHAPE tile and in the
