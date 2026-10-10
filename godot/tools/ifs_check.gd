@@ -67,6 +67,11 @@ func _init() -> void:
 	_echoes(ifs)
 	_echo_layout()
 	_echo_life(ifs)
+	_room_clear(ifs)
+	_family(ifs)
+	_family_nodes(ifs)
+	_clip(ifs)
+	await _dive()
 	_land(ifs)
 	await _grab_suspend()
 	_editor_setup()
@@ -1030,6 +1035,404 @@ func _echo_life(ifs: FractalIFS) -> void:
 			+ "mm+material agree=%s, advance() %.1f us/frame, tiers skipped when off=%s caught up=%s") % [
 			lay.size(), counts[0], counts[1], counts[2], counts[3], fastest, str(distinct), worst, ctl,
 			changed, start.size(), str(agree), per_frame_us, str(skipped), str(caught)])
+
+
+## SIZE room puts the construction origin at the eyes. For every preset at the rung it opens at,
+## the nearest beam to that point, at the scale main.gd works out for a standing (1.6 m) and a
+## seated (1.1 m) eye, has to lie outside the clip sphere, or the first frame in room size is
+## already cutting a beam at your face. The scale is recomputed here from the rule, not read
+## from main. The control asks the same of a point on a beam.
+func _room_clear(ifs: FractalIFS) -> void:
+	var lines := PackedStringArray()
+	var ok := true
+	for p in FractalIFS.PRESETS.size():
+		ifs.set_preset(p)
+		_planes(ifs)
+		ifs.detail = ifs.preset_detail()
+		ifs.build(false)
+		var r := ifs.clear_radius_at(Vector3.ZERO)
+		var worst := INF
+		var widths: Array[float] = []
+		for eye_h in [1.6, 1.1]:
+			var span := maxf(ifs.bounds.size.x, ifs.bounds.size.y)
+			var below := maxf(-ifs.bounds.position.y, 0.25)
+			# main.gd's rule: eye height over the reach below the centre, 2.4-4 m, raised until the
+			# nearest beam is 0.36 m out.
+			var u := clampf(float(eye_h) / below * span, 2.4, 4.0) / span
+			u = minf(maxf(u, 0.36 / r), 4.0 / span)
+			worst = minf(worst, r * u)
+			widths.append(u * span)
+		ok = ok and worst >= FractalIFS.HEAD_CLIP
+		lines.append("%s %.2f m (%.1f/%.1f m wide)" % [FractalIFS.preset_name(p), worst, widths[0],
+			widths[1]])
+	_defaults(ifs)
+	ifs.build(false)
+	var ctl := ifs.clear_radius_at(Vector3(0.0, 1.0, 1.0))
+	_ok("room clear", ok and ctl == 0.0,
+		"nearest beam to the eyes, standing/seated worst, clip %.2f m: %s; on-beam control %.3f" % [
+			FractalIFS.HEAD_CLIP, ", ".join(lines), ctl])
+
+
+## FAMILY, for every preset, tabletop and room size:
+##   - Exact: every record is a relative by the maps. Walking up from the hero, some choice of
+##     child index per generation has to send every sibling record onto a child map and every
+##     ancestor frame onto the identity. Recovered here by search, not read from the layout.
+##   - Comfortable: every echo clears HEAD_CLEAR, keeps its centre above the floor and, at the
+##     table, stays out of the sight cone; every ancestor frame passes frame_clear.
+##   - Not empty, and quick enough to run on a recentre.
+## Controls: a record nudged by a centimetre must fail exactness, and a frame round the eyes
+## must fail the clearance.
+func _family(ifs: FractalIFS) -> void:
+	var floor_y := -1.6
+	var lines := PackedStringArray()
+	var ok := true
+	var worst_ms := 0.0
+	var ctl_exact := ""
+	for p in FractalIFS.PRESETS.size():
+		ifs.set_preset(p)
+		_planes(ifs)
+		ifs.detail = ifs.preset_detail()
+		ifs.build(false)
+		var maps := ifs.child_maps_now(false)
+		var span := maxf(ifs.bounds.size.x, ifs.bounds.size.y)
+		var parts := PackedStringArray()
+		var syms := _check_syms(ifs)
+		var app_syms := ifs.symmetries()
+		var syms_agree := syms.size() == app_syms.size()
+		for k in mini(syms.size(), app_syms.size()):
+			syms_agree = syms_agree and _xf_near(syms[k], app_syms[k])
+		ok = ok and syms_agree
+		parts.append("%d symmetries%s" % [syms.size(), "" if syms_agree else " (APP SAYS %d)" % app_syms.size()])
+		for room in [false, true]:
+			var w := 0.6
+			var hero := Transform3D(Basis.from_scale(Vector3.ONE * (0.6 / span)),
+				Vector3(0.0, -0.28, -0.8))
+			if room:
+				var below := maxf(-ifs.bounds.position.y, 0.25)
+				w = clampf(1.6 / below * span, 2.4, 4.0)
+				hero = Transform3D(Basis.from_scale(Vector3.ONE * (w / span)), Vector3.ZERO)
+			var t0 := Time.get_ticks_usec()
+			var lay := IfsEchoes.family_layout(floor_y, hero, maps, ifs.beams, w, room, syms)
+			worst_ms = maxf(worst_ms, float(Time.get_ticks_usec() - t0) * 0.001)
+			var exact := _family_exact(lay, hero, maps, syms)
+			var bad := 0
+			var frames := 0
+			var kids := 0
+			var smax := 0.0
+			for rec in lay:
+				var pos: Vector3 = rec["pos"]
+				if int(rec["tier"]) < 0:
+					frames += 1
+					if not IfsEchoes.frame_clear(rec["xf"], ifs.beams, hero.origin, w, room):
+						bad += 1
+					continue
+				kids += 1
+				smax = maxf(smax, float(rec["s"]))
+				var r := float(rec["r"])
+				var d := pos.length()
+				if d - r < IfsEchoes.HEAD_CLEAR or pos.y < floor_y + IfsEchoes.FLOOR_CLEAR:
+					bad += 1
+				if not room and rad_to_deg(pos.normalized().angle_to(hero.origin.normalized())) \
+						< IfsEchoes.SIGHT_CONE_DEG + rad_to_deg(asin(clampf(r / d, 0.0, 1.0))):
+					bad += 1
+			ok = ok and exact and bad == 0 and kids > 0
+			parts.append("%s %d+%d frames to %.1fx%s%s" % ["room" if room else "table", kids, frames,
+				smax, "" if exact else " NOT EXACT", "" if bad == 0 else " %d BAD" % bad])
+			if p == 0 and not room and lay.size() > 1:
+				var nudged := lay.duplicate(true)
+				var x: Transform3D = nudged[1]["xf"]
+				nudged[1]["xf"] = x.translated(Vector3(0.01, 0.0, 0.0))
+				ctl_exact = "refused" if not _family_exact(nudged, hero, maps, syms) else "ACCEPTED"
+		lines.append("%s: %s" % [FractalIFS.preset_name(p), ", ".join(parts)])
+	_defaults(ifs)
+	ifs.build(false)
+	var ctl_frame := not IfsEchoes.frame_clear(Transform3D(Basis.from_scale(Vector3.ONE * 0.3),
+		Vector3(0.0, 0.0, -0.3)), ifs.beams, Vector3(0.0, -0.28, -0.8), 0.6, false)
+	_ok("family layout", ok and ctl_exact == "refused" and ctl_frame and worst_ms < 50.0,
+		"%s | slowest layout %.1f ms | 1 cm nudge %s, frame round the eyes refused=%s" % [
+			" | ".join(lines), worst_ms, ctl_exact, str(ctl_frame)])
+
+
+## True when some child index per generation explains every record; see _family.
+static func _family_exact(lay: Array, hero: Transform3D, maps: Array[Transform3D],
+		syms: Array[Transform3D]) -> bool:
+	var by_up := {}
+	var top := 0
+	for rec in lay:
+		var g := int(rec["up"])
+		top = maxi(top, g)
+		if not by_up.has(g):
+			by_up[g] = []
+		(by_up[g] as Array).append(rec)
+	return _exact_from(hero.affine_inverse(), 1, top, by_up, maps, syms)
+
+
+static func _exact_from(v: Transform3D, g: int, top: int, by_up: Dictionary,
+		maps: Array[Transform3D], syms: Array[Transform3D]) -> bool:
+	if g > top:
+		return true
+	var recs: Array = by_up.get(g, [])
+	for vs in syms.size() * maps.size():
+		var vj := maps[vs % maps.size()] * syms[vs / maps.size()].affine_inverse() * v
+		var all := true
+		for rec in recs:
+			var x: Transform3D = vj * (rec["xf"] as Transform3D)
+			if int(rec["tier"]) < 0:
+				all = all and _xf_near(x, Transform3D.IDENTITY)
+			else:
+				var hit := false
+				for m in maps:
+					hit = hit or _xf_near(x, m)
+				all = all and hit
+			if not all:
+				break
+		if all and _exact_from(vj, g + 1, top, by_up, maps, syms):
+			return true
+	return false
+
+
+## The check's own opinion of which default-plane mirrors the tree is invariant under: each must
+## permute the child maps and carry the seed's vertices onto its vertices (an isometry that keeps
+## the vertices keeps the edges). Compared with FractalIFS.symmetries() rather than trusted.
+static func _check_syms(ifs: FractalIFS) -> Array[Transform3D]:
+	var r1 := FractalIFS.reflection(FractalIFS.DEFAULT_N1, 0.0)
+	var r2 := FractalIFS.reflection(FractalIFS.DEFAULT_N2, 0.0)
+	var maps := ifs.child_maps_now(false)
+	var verts: Array = FractalIFS.FRAME_VERTS[String(FractalIFS.PRESETS[ifs.preset]["seed"])]
+	var out: Array[Transform3D] = [Transform3D.IDENTITY]
+	for s in [r1, r2, r2 * r1]:
+		var ok := true
+		for m in maps:
+			var hit := false
+			for k in maps:
+				hit = hit or _xf_near((s as Transform3D) * m, k)
+			ok = ok and hit
+		for v in verts:
+			var hit := false
+			for w in verts:
+				hit = hit or ((s as Transform3D) * (v as Vector3)).distance_to(w as Vector3) < 1e-5
+			ok = ok and hit
+		if ok:
+			out.append(s)
+	return out
+
+
+static func _xf_near(a: Transform3D, b: Transform3D) -> bool:
+	const E := 1e-4
+	return a.origin.distance_to(b.origin) < E and a.basis.x.distance_to(b.basis.x) < E \
+		and a.basis.y.distance_to(b.basis.y) < E and a.basis.z.distance_to(b.basis.z) < E
+
+
+## FAMILY through real echo nodes: each draws its record's own transform with none of the life,
+## an ancestor frame draws the root tier (one instance, the hero's own root), the root tier is
+## uploaded only while one is showing, and switching layout folds what is up, waits, then places
+## the other layout and grows it, with the clock running for it even with MOTION off.
+func _family_nodes(ifs: FractalIFS) -> void:
+	_defaults(ifs)
+	ifs.build(false)
+	var echoes := IfsEchoes.new()
+	ifs.add_child(echoes)
+	echoes.setup(ifs)
+	echoes.family = true
+	var anchor := Transform3D(Basis(), Vector3(0.0, 1.6, 0.0))
+	var unit := 0.6 / 2.06
+	echoes.place(anchor, -1.6, unit, 0.6, Vector3(0.0, -0.28, -0.8),
+		Transform3D(Basis.from_scale(Vector3.ONE * unit), Vector3(0.0, -0.28, -0.8)))
+	var n := echoes.count()
+	var placed := true
+	var still := true
+	var roots := 0
+	var root_ok := true
+	var hero: MultiMesh = ifs.get_node("Frames").multimesh
+	for i in n:
+		var m: MultiMeshInstance3D = echoes.nodes()[i]
+		var rec: Dictionary = echoes.placements[i]
+		placed = placed and m.transform.is_equal_approx(rec["xf"] as Transform3D)
+		still = still and float(m.get_instance_shader_parameter(&"echo_live")) == 0.0
+		if int(rec["tier"]) < 0:
+			roots += 1
+			root_ok = root_ok and m.multimesh == ifs.echo_multimesh(-1) \
+				and m.multimesh.instance_count == 1 and m.multimesh.buffer == hero.buffer.slice(0, 20)
+	var live_on := ifs.root_live
+	# Switch back to the scatter: fold, then the other layout at the swap's end.
+	ifs.ambient = false
+	echoes.set_family(false)
+	var folding := echoes.is_relayouting() and echoes.placements.size() == n
+	var t := 0.0
+	while echoes.is_relayouting() and t < 20.0:
+		echoes.advance(1.0 / 72.0)
+		t += 1.0 / 72.0
+	var swapped: bool = not echoes.family and echoes.count() == mini(int(IfsEchoes.STEPS[echoes.step]),
+		IfsEchoes.MAX_ECHOES) and not ifs.root_live
+	var grow: Vector2 = echoes.nodes()[0].get_instance_shader_parameter(&"echo_swap")
+	var growing := absf(grow.y - echoes.echo_t) < 1e-3
+	var busy := echoes._busy_until > echoes.echo_t
+	ifs.remove_child(echoes)
+	echoes.free()
+	_defaults(ifs)
+	ifs.build(false)
+	_ok("family nodes", n > 0 and placed and still and roots > 0 and root_ok and live_on and folding
+			and swapped and growing and busy,
+		("%d echoes, %d ancestor frames: own transforms=%s still=%s root tier=%s live=%s | to scatter: "
+			+ "folded first=%s, placed after %.1f s=%s, growing=%s, clock held on with MOTION off=%s") % [
+			n, roots, str(placed), str(still), str(root_ok), str(live_on), str(folding), t,
+			str(swapped), str(growing), str(busy)])
+
+
+## The room and dive shader: a second compile with the clip and the dissolve, the tabletop one
+## left without a discard. Also composes with the cull probe, and goes back on release.
+func _clip(ifs: FractalIFS) -> void:
+	var base := ifs.material().shader
+	ifs.set_clip(true)
+	var clip := ifs.material().shader
+	var has: bool = clip != base and clip.code.contains("discard") and clip.code.contains("dive_fade") \
+		and clip.code.contains("head_clip") and not base.code.contains("discard")
+	ifs.set_cull_disabled(true)
+	var both: bool = ifs.material().shader.code.contains("cull_disabled") \
+		and ifs.material().shader.code.contains("discard")
+	ifs.set_cull_disabled(false)
+	ifs.set_clip(false)
+	var back := ifs.material().shader == base
+	_ok("clip shader", has and both and back,
+		"variant compiled with clip+dissolve=%s, with cull probe=%s, tabletop restored=%s" % [
+			str(has), str(both), str(back)])
+
+
+## DIVE, headless, on its own sculpture under its own grab target:
+##   - A step lands exactly: the chosen child ends where the hero was and as big, the product of
+##     grab target and IFS node is old hero x map (mirror and turn included), and size never
+##     drifts over repeated steps.
+##   - It never rebuilds: build_serial is unchanged across a step, and the dissolve is a flag in
+##     the hero's buffer only, the echo tiers clean.
+##   - The motion is a homothety about a still pivot, and a step takes about log2(K) / OCT_S.
+##   - A grab mid-step is carried; a rebuild mid-step puts the step back.
+## The control: the same step about the hero's centre instead of the pivot misses by metres.
+func _dive() -> void:
+	var lines := PackedStringArray()
+	var ok := true
+	for p in [0, 4]:
+		var cloud := Node3D.new()
+		root.add_child(cloud)
+		# In the tree before anything reads a global transform.
+		await process_frame
+		var f := FractalIFS.new()
+		cloud.add_child(f)
+		f.set_preset(p)
+		f.ambient = false
+		f.build(false)
+		var unit := 0.6 / maxf(f.bounds.size.x, f.bounds.size.y)
+		cloud.global_transform = Transform3D(Basis.from_scale(Vector3.ONE * unit),
+			Vector3(0.0, 1.32, -0.8))
+		var dive := IfsDive.new()
+		dive.setup(f, cloud)
+		dive.set_on(true)
+		var maps := f.child_maps_now(true)
+		var flags_ok := true
+		var land_err := 0.0
+		var basis_err := 0.0
+		var pivot_err := 0.0
+		var secs := 0.0
+		var us := 0.0
+		var frames := 0
+		var rebuilt := false
+		var mirrored := 0
+		var first_clear := 0.0
+		var ctl_miss := 0.0
+		var hero_size0 := pow(absf((cloud.global_transform * f.transform).basis.determinant()), 1.0 / 3.0)
+		# Three steps, each aimed at a different child, so a plain and a mirrored map both land.
+		for aim in [1, 3, 6]:
+			var hero0 := cloud.global_transform * f.transform
+			var eye := Vector3(0.0, 1.6, 0.0)
+			var head := Transform3D(Basis.looking_at(hero0 * maps[aim].origin - eye, Vector3.UP), eye)
+			if not dive.begin(head):
+				flags_ok = false
+				break
+			var j := dive.target()
+			if aim == 1:
+				first_clear = dive.min_clear(hero0, maps[j], dive._k, dive._pivot, eye)
+			var serial := f.build_serial
+			var buf: PackedFloat32Array = f.get_node("Frames").multimesh.buffer
+			var kept := 0
+			for i in f.instance_count:
+				kept += 1 if buf[i * 20 + 19] == 2.0 else 0
+			var tier: PackedFloat32Array = f.echo_multimesh(1).buffer
+			var tier_clean := true
+			for i in f.echo_multimesh(1).instance_count:
+				tier_clean = tier_clean and tier[i * 20 + 19] == 0.0
+			var want_kept := f.level_ends[f.levels_built - 1]
+			flags_ok = flags_ok and kept == want_kept and tier_clean
+			var base := cloud.global_transform
+			var piv := dive._pivot
+			var k := dive._k
+			var tc := hero0 * maps[j].origin
+			ctl_miss = maxf(ctl_miss, (hero0.origin + (tc - hero0.origin) * k).distance_to(hero0.origin))
+			var t := 0.0
+			while dive.steps < [1, 3, 6].find(aim) + 1 and t < 60.0:
+				var t0 := Time.get_ticks_usec()
+				dive.tick(1.0 / 72.0, true, head)
+				us += float(Time.get_ticks_usec() - t0)
+				frames += 1
+				t += 1.0 / 72.0
+				if dive.in_step() and dive.progress() > 0.3 and dive.progress() < 0.32:
+					var moved := cloud.global_transform * base.affine_inverse()
+					pivot_err = maxf(pivot_err, (moved * piv).distance_to(piv))
+			secs = maxf(secs, t)
+			rebuilt = rebuilt or f.build_serial != serial
+			# The trigger was still held on the landing frame, so the next step began at once.
+			# Nothing has moved yet; drop it so the checks below see the landed state.
+			if dive.in_step():
+				dive.cancel()
+			var hero1 := cloud.global_transform * f.transform
+			land_err = maxf(land_err, hero1.origin.distance_to(hero0.origin))
+			var want_b := hero0.basis * (maps[j].basis * k)
+			basis_err = maxf(basis_err, maxf((hero1.basis.x - want_b.x).length(),
+				maxf((hero1.basis.y - want_b.y).length(), (hero1.basis.z - want_b.z).length())))
+			if f.transform.basis.determinant() < 0.0:
+				mirrored += 1
+			var after: PackedFloat32Array = f.get_node("Frames").multimesh.buffer
+			var cleared := true
+			for i in f.instance_count:
+				cleared = cleared and after[i * 20 + 19] == 0.0
+			flags_ok = flags_ok and cleared
+			# The next step aims from the new hero, whose children are the new maps' images.
+			maps = f.child_maps_now(true)
+		var size1 := pow(absf((cloud.global_transform * f.transform).basis.determinant()), 1.0 / 3.0)
+		# Carried by a grab, then put back by a rebuild.
+		var eye2 := Vector3(0.0, 1.6, 0.0)
+		var head2 := Transform3D(Basis.looking_at(cloud.global_transform.origin - eye2, Vector3.UP), eye2)
+		var carried := false
+		var put_back := false
+		if dive.begin(head2):
+			var start := cloud.global_transform
+			for i in 300:
+				dive.tick(1.0 / 72.0, true, head2)
+			cloud.global_transform = cloud.global_transform.translated(Vector3(0.5, 0.0, 0.0))
+			for i in 3:
+				dive.tick(1.0 / 72.0, true, head2)
+			carried = dive.in_step() and dive._base.origin.distance_to(start.origin + Vector3(0.5, 0.0, 0.0)) < 1e-4
+			f.build(false)
+			# Released, so the tick that puts the step back does not also begin the next one.
+			dive.tick(1.0 / 72.0, false, head2)
+			put_back = not dive.in_step() \
+				and cloud.global_transform.origin.distance_to(start.origin + Vector3(0.5, 0.0, 0.0)) < 1e-4
+		dive.cancel()
+		f.depth = 1.5
+		var refuses := not dive.begin(head2)
+		cloud.remove_child(f)
+		f.free()
+		cloud.queue_free()
+		var step_ok := land_err < 1e-4 and basis_err < 1e-4 and absf(size1 - hero_size0) < 1e-5 \
+			and pivot_err < 1e-4 and not rebuilt and flags_ok and carried and put_back and refuses \
+			and ctl_miss > 0.05
+		ok = ok and step_ok
+		lines.append(("%s: landed within %.7f m, basis %.7f, size drift %.7f over 3 steps (%d mirrored), "
+			+ "pivot still to %.7f m, rebuilt=%s, flags=%s, longest step %.1f s, tick %.1f us, first "
+			+ "child clears the eyes by %.2f m, grab carried=%s, rebuild put back=%s, DEPTH 1.5 refused=%s, "
+			+ "control about the centre misses by %.2f m") % [FractalIFS.preset_name(p), land_err,
+			basis_err, absf(size1 - hero_size0), mirrored, pivot_err, str(rebuilt), str(flags_ok), secs,
+			us / maxf(float(frames), 1.0), first_clear, str(carried), str(put_back), str(refuses),
+			ctl_miss])
+	_ok("dive", ok, " | ".join(lines))
 
 
 ## An edit lands in place (audit 2026-10-04): a release, UNDO, cancel or DETAIL step must not

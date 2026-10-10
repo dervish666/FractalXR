@@ -101,6 +101,35 @@ All notable changes to FractalXR are documented here. Format based on
   WALK off keeps the avenue where you stopped and lets its far end grow in. On the
   desktop, G stands in for the held trigger. `godot/tools/avenue_shot.sh` checks and
   shoots both from the viewer's position.
+- **IFS DIVE: fly into a copy of the sculpture, for ever.** Turn DIVE on (MAKE card) and hold
+  either trigger: the sculpture swells slowly about a still point near where you look until
+  the copy you were looking at is the size and in the place the hero was, then that copy
+  becomes the hero and the next step begins inside it. Each step is a pure radial expansion
+  with no turn, eased in and out over half a second, at 0.12 octaves a second (a FRAMES step
+  takes about 13 s). The frames being left behind darken and dissolve in the first 40% of
+  the step; the copy's own frames glide from their colours as a child to their colours as the
+  hero, so the re-root changes nothing on screen. No rebuild during a step: the motion is the
+  grab target's transform, the dissolve a flag written once into the hero's buffer, the
+  re-root a transform swap, and only the new deepest generation grows in. The echoes stay put
+  as the fixed reference. A grip mid-step carries the step with your hand; any edit, SHAPE,
+  DETAIL or MOTION press puts the step back; DEPTH returns to 1x, because a stretched
+  sculpture is not a copy of its children. RESET puts the pose back.
+- **IFS SIZE room: stand inside the sculpture.** The LOOK card's SIZE tile switches between
+  the tabletop and room size, where the sculpture's centre (its clearest point, checked per
+  preset) sits at your eyes and its lowest beam on the floor, about 3.2 m across for a
+  standing eye and never under 2.4 m. Room size and the dive draw with a second shader that cuts away any
+  beam within 0.3 m of the eye, so nothing passes through your head; the tabletop shader is
+  unchanged and pays nothing for it.
+- **IFS LAYOUT family: echoes where the sculpture's own maps put its relatives.** The LOOK
+  card's LAYOUT tile switches the echoes from the seeded scatter to the hero's family: its
+  siblings in its parent, its parent's siblings in the grandparent, up to an ancestor about
+  twenty times the hero, with each ancestor's own frame drawn dim around them. The room is
+  then literally the next generations out, and in room size you stand in one corner of
+  something tens of metres across. The layout keeps the echo comfort rules (HEAD_CLEAR, the
+  sight cone, nothing underfoot) and family echoes hold still. Switching LAYOUT, or changing
+  SHAPE while on family, folds the echoes away and grows the new layout back. `godot/tools/ifs_family_shot.sh`
+  captures all three; `godot/tools/ifs_check.sh` checks the family is exact to the maps, the
+  dive lands to a micron and never rebuilds, and room size starts clear of the clip sphere.
 - **TREE grows a forest.** Entering TREE sows a grove of 16 trees around the hero's trunk,
   0.75-1.6 m out, tall inside and knee-high at the rim, sprouting one after another from
   the hero outward over about 15 s. Thirteen species now, on the SHAPE tile and in the

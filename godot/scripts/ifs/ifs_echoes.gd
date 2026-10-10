@@ -25,6 +25,14 @@ class_name IfsEchoes
 ## nothing per echo per frame: the only per-echo work is a shape swap, two writes once every
 ## few minutes. Rates follow the ambient-motion rule, about four times slower than first
 ## instinct: nothing here should be seen moving, only found to have moved.
+##
+## FAMILY is the other layout. Instead of the seeded scatter, the echoes sit exactly where the
+## sculpture's own child maps put the hero's relatives: its siblings in its parent, its parent's
+## siblings in the grandparent, and so on up to an ancestor about twenty times the hero, with
+## each ancestor's own frame drawn alone around them. The room is then literally the next
+## generations out, and the hero is visibly one corner of something huge. Family echoes hold
+## still, no spin, drift, swell or swap, because a sibling that turns is no longer where the
+## map put it, and because they are the dive's fixed reference.
 
 ## Echo counts. Sam called MANY rock solid and asked for more, then for a lot more, so LOTS
 ## now opens and SWARM and HOST go past it. Each count is a prefix of the next, so stepping up
@@ -115,6 +123,35 @@ const SWAP_SPAN := 2.4
 ## Far from any echo_t the shader will see: the "never" of a swap time.
 const NEVER := 1.0e9
 
+## FAMILY. Generations up from the hero: as many as keep the largest drawn relative (an aunt
+## one level under the top ancestor) at or under FAMILY_S_MAX hero widths, the scatter's own
+## ceiling, and never fewer than two. FRAMES (0.35) goes up three: aunts at 2.9x and 8.2x, the
+## top frame at 23x. CROSS (0.5) goes up four.
+const FAMILY_S_MAX := 12.0
+const FAMILY_MIN_UP := 2
+const FAMILY_MAX_UP := 5
+## An ancestor's frame is drawn only if every beam keeps this far from the eyes (metres, beam
+## surface) and none crosses the line from the eyes to the hero. Larger than HEAD_CLEAR's
+## spirit for a sculpture because a frame is a handful of long bars, any one of which can pass
+## close by while the frame's centre is metres away.
+const FRAME_CLEAR := 0.5
+## An ancestor's frame is one bar per edge many times the hero's size, and at the table its
+## near bars run behind the hero: drawn at echo gain they outshone it. Dim, so they read as the
+## scaffold the copies hang in and the hero stays the brightest thing in view.
+const FRAME_GAIN := 0.32
+## Palette turns per generation up, negative so the colour runs on outward from the hero's
+## root the way it runs inward through the hero.
+const FAMILY_PHASE := -0.18
+## A family echo does nothing on its own: these are the life fields place() reads.
+const STILL := {
+	"spin_axis": Vector3.UP, "spin_w": 0.0, "wander": Vector3.ZERO, "wander_w": 0.0,
+	"swell": 0.0, "swell_w": 0.0, "t_off": 0.0, "drift": 0.0, "swap_every": 0.0,
+	"swap_first": 0.0, "shape0": -1,
+}
+## Room size: scatter echoes keep this far outside the sphere of a hero you stand inside, so
+## no copy sits in among its beams.
+const ROOM_MARGIN := 0.5
+
 var step := DEFAULT_STEP
 ## One record per placed echo, in placement order: pos and basis in the anchor's frame, the
 ## width multiple, the distance, the tier and the two shader values. Published for the checks.
@@ -137,6 +174,22 @@ var _next_any := INF
 var _unit := 1.0
 static var _layout_key: Array = []
 static var _layout_val: Array = []
+static var _family_key: Array = []
+static var _family_val: Array = []
+## FAMILY on, or the seeded scatter.
+var family := false
+## The last place() call, so a relayout can run it again with the maps as they are by then.
+var _anchor := Transform3D()
+var _floor_y := 0.0
+var _width_m := 0.6
+var _hero := Vector3.ZERO
+var _hero_xf := Transform3D()
+var _room_r := 0.0
+## echo_t at which a fold started by relayout() has finished and the new layout grows in, and
+## the echo_t until which the clock runs with MOTION off so the fold and the regrowth finish.
+var _relayout_at := INF
+var _busy_until := -INF
+var _placed := false
 
 
 func _init() -> void:
@@ -222,7 +275,22 @@ func instance_total() -> int:
 ## anchor's frame, `unit` the hero's metres per construction unit and `width_m` the hero's
 ## width in metres, so an echo of size s is s times the hero as it arrived. `hero` is the
 ## hero's centre in the anchor's frame, for the sight cone.
-func place(anchor: Transform3D, floor_y: float, unit: float, width_m: float, hero: Vector3) -> void:
+##
+## `hero_xf` is the hero's whole transform in the anchor's frame, construction units to
+## metres, which FAMILY lays the relatives out from; null means the tabletop pose, `unit` at
+## `hero`. `room_r` is nonzero when the hero is room size with the eyes inside it: the radius of
+## the sphere the scatter keeps out of, and the reason neither layout has a sight line to keep.
+func place(anchor: Transform3D, floor_y: float, unit: float, width_m: float, hero: Vector3,
+		hero_xf: Variant = null, room_r := 0.0) -> void:
+	_anchor = anchor
+	_floor_y = floor_y
+	_width_m = width_m
+	_hero = hero
+	_hero_xf = hero_xf if hero_xf is Transform3D \
+		else Transform3D(Basis.from_scale(Vector3.ONE * unit), hero)
+	_room_r = room_r
+	_relayout_at = INF
+	_placed = true
 	global_transform = anchor
 	_unit = unit
 	# The layout is pure, so a recentre at the same floor reuses the last one. At HOST it
@@ -230,11 +298,28 @@ func place(anchor: Transform3D, floor_y: float, unit: float, width_m: float, her
 	# Floor rounded up to 10 cm, the conservative way: a floor that is really lower only adds
 	# clearance, and a recentre a few centimetres taller or shorter hits the cache.
 	var fy := ceilf(floor_y * 10.0 - 1e-4) / 10.0
-	var key := [fy, width_m, hero]
-	if key != _layout_key:
-		_layout_key = key
-		_layout_val = layout(fy, width_m, hero)
-	placements = _layout_val
+	if family:
+		var maps: Array[Transform3D] = []
+		var syms: Array[Transform3D] = [Transform3D.IDENTITY]
+		var beams: Array = []
+		if _ifs != null:
+			maps = _ifs.child_maps_now(false)
+			syms = _ifs.symmetries()
+			beams = _ifs.beams
+		# The hero's own width, which is not the tabletop one in room size.
+		var hero_w := width_m * pow(absf(_hero_xf.basis.determinant()), 1.0 / 3.0) \
+			/ maxf(unit, 1e-6)
+		var fkey := [fy, _hero_xf, maps, syms, hero_w, room_r]
+		if fkey != _family_key:
+			_family_key = fkey
+			_family_val = family_layout(fy, _hero_xf, maps, beams, hero_w, room_r > 0.0, syms)
+		placements = _family_val
+	else:
+		var key := [fy, width_m, hero, room_r]
+		if key != _layout_key:
+			_layout_key = key
+			_layout_val = layout(fy, width_m, hero, room_r)
+		placements = _layout_val
 	_next_any = INF
 	for i in _nodes.size():
 		var m := _nodes[i]
@@ -246,7 +331,8 @@ func place(anchor: Transform3D, floor_y: float, unit: float, width_m: float, her
 		var life: Dictionary = p["life"]
 		m.set_instance_shader_parameter(&"echo_phase", float(p["phase"]))
 		m.set_instance_shader_parameter(&"echo_gain", float(p["gain"]))
-		m.set_instance_shader_parameter(&"echo_live", 1.0)
+		# A family echo is drawn exactly where its map put it: none of the world-space life.
+		m.set_instance_shader_parameter(&"echo_live", 0.0 if p.has("xf") else 1.0)
 		m.set_instance_shader_parameter(&"echo_centre", anchor * (p["pos"] as Vector3))
 		# The life is drawn in the anchor's frame; the shader works in world space.
 		var spin: Vector3 = anchor.basis * (life["spin_axis"] as Vector3)
@@ -274,6 +360,11 @@ func _wear(i: int, shape: int) -> void:
 	_shape[i] = shape
 	m.multimesh = shape_multimesh(shape, int(p["tier"]))
 	m.material_override = shape_material(shape)
+	if p.has("xf"):
+		# FAMILY: the map's own transform, mirror and all, and nothing moves it.
+		m.transform = p["xf"] as Transform3D
+		m.extra_cull_margin = 0.0
+		return
 	var k := 1.0
 	if shape >= 0:
 		k = minf(1.0, hero_reach() / corner(m.multimesh.custom_aabb))
@@ -304,7 +395,9 @@ static func corner(box: AABB) -> float:
 func _process(delta: float) -> void:
 	if _ifs == null or count() == 0 or not is_visible_in_tree():
 		return
-	advance(delta if _ifs.ambient else 0.0)
+	# A relayout's fold and regrowth run on the echoes' clock, so it keeps going with MOTION
+	# off until they finish; a family echo has no life for the extra seconds to show.
+	advance(delta if (_ifs.ambient or echo_t < _busy_until) else 0.0)
 
 
 ## One step of the echoes' clock, public so a check can drive it without frames.
@@ -317,6 +410,12 @@ func advance(dt: float) -> void:
 			f.material().set_shader_parameter(&"brightness", bright)
 	for mat in _materials():
 		mat.set_shader_parameter(&"echo_t", echo_t)
+	if echo_t >= _relayout_at:
+		# Everything has folded into its root: put the new layout down and grow it out from now.
+		_place_again()
+		for i in count():
+			_nodes[i].set_instance_shader_parameter(&"echo_swap", Vector2(NEVER, echo_t))
+		return
 	if echo_t < _next_any:
 		return
 	_next_any = INF
@@ -363,11 +462,54 @@ static func _unit_hash(i: int, t: float) -> float:
 
 func _apply() -> void:
 	var n := count()
+	var roots := false
 	for i in _nodes.size():
 		_nodes[i].visible = i < n
+		if i < n and int(placements[i]["tier"]) < 0:
+			roots = true
 	# With nothing drawing them, the hero's rebuilds skip the echo tiers altogether.
 	if _ifs != null:
 		_ifs.set_echoes_live(n > 0)
+		_ifs.set_root_live(roots)
+
+
+func layout_name() -> String:
+	return "family" if family else "scatter"
+
+
+## FAMILY on or off. The echoes in view fold away and the other layout grows in.
+func set_family(on: bool) -> void:
+	if on == family:
+		return
+	family = on
+	relayout()
+
+
+## Lay the echoes out again, for a change the placement depends on: FAMILY on or off, or a
+## SHAPE whose maps put the relatives somewhere else. What is in view folds into its root over
+## the swap's span, the new layout is placed, and it grows back out, so nothing jumps. Waits out
+## a SHAPE morph (2 s) before it reads the maps, because the fold takes longer than the morph.
+func relayout() -> void:
+	if not _placed:
+		return
+	var n := count()
+	if n == 0:
+		_place_again()
+		return
+	for i in n:
+		_nodes[i].set_instance_shader_parameter(&"echo_swap", Vector2(echo_t, -NEVER))
+		_next[i] = INF
+	_next_any = INF
+	_relayout_at = echo_t + SWAP_SPAN + SWAP_GROW_S + 0.1
+	_busy_until = _relayout_at + SWAP_SPAN + SWAP_GROW_S + 0.1
+
+
+func is_relayouting() -> bool:
+	return _relayout_at < INF
+
+
+func _place_again() -> void:
+	place(_anchor, _floor_y, _unit, _width_m, _hero, _hero_xf, _room_r)
 
 
 func nodes() -> Array[MultiMeshInstance3D]:
@@ -377,7 +519,7 @@ func nodes() -> Array[MultiMeshInstance3D]:
 ## The placement itself, pure and seeded, so a check can run it without a scene. Two groups:
 ## each rung's echoes are placed around the smaller rung's, so FEW is exactly the first part
 ## of MANY, MANY of LOTS, and stepping up adds echoes without moving any.
-static func layout(floor_y: float, width_m: float, hero: Vector3) -> Array:
+static func layout(floor_y: float, width_m: float, hero: Vector3, room_r := 0.0) -> Array:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = SEED
 	var out: Array = []
@@ -405,7 +547,7 @@ static func layout(floor_y: float, width_m: float, hero: Vector3) -> Array:
 		sizes.sort()
 		sizes.reverse()
 		for s in sizes:
-			var rec := _fit(rng, s, floor_y, width_m, hero_dir, at, rad)
+			var rec := _fit(rng, s, floor_y, width_m, hero_dir, at, rad, room_r)
 			if not rec.is_empty():
 				out.append(rec)
 				at.append(rec["pos"] as Vector3)
@@ -483,7 +625,8 @@ static func radius_of(s: float, width_m: float) -> float:
 
 
 static func _fit(rng: RandomNumberGenerator, s: float, floor_y: float, width_m: float,
-		hero_dir: Vector3, at: PackedVector3Array, rad: PackedFloat32Array) -> Dictionary:
+		hero_dir: Vector3, at: PackedVector3Array, rad: PackedFloat32Array,
+		room_r := 0.0) -> Dictionary:
 	var r := radius_of(s, width_m)
 	for t in TRIES:
 		var d := clampf(D_MIN * pow(s / S_MIN, DIST_POW) * rng.randf_range(DIST_JITTER.x, DIST_JITTER.y),
@@ -502,7 +645,7 @@ static func _fit(rng: RandomNumberGenerator, s: float, floor_y: float, width_m: 
 		if axis.length() < 1e-3:
 			axis = Vector3.UP
 		var basis := Basis(axis.normalized(), rng.randf_range(0.0, TAU))
-		if _violates(pos, r, floor_y, hero_dir, at, rad):
+		if _violates(pos, r, floor_y, hero_dir, at, rad, room_r):
 			continue
 		var shell := log(d / D_MIN) / log(D_MAX / D_MIN)
 		return {
@@ -515,28 +658,169 @@ static func _fit(rng: RandomNumberGenerator, s: float, floor_y: float, width_m: 
 
 
 ## Every comfort rule, as one predicate a check can also hand a bad placement to.
-static func violates(pos: Vector3, r: float, floor_y: float, hero_dir: Vector3, placed: Array) -> bool:
+static func violates(pos: Vector3, r: float, floor_y: float, hero_dir: Vector3, placed: Array,
+		room_r := 0.0) -> bool:
 	var at := PackedVector3Array()
 	var rad := PackedFloat32Array()
 	for q in placed:
 		at.append(q["pos"] as Vector3)
 		rad.append(float(q["r"]))
-	return _violates(pos, r, floor_y, hero_dir, at, rad)
+	return _violates(pos, r, floor_y, hero_dir, at, rad, room_r)
 
 
+## With `room_r` set the hero surrounds the eyes: the echo has to clear that sphere instead, and
+## there is no line to the hero for the cone to keep clear.
 static func _violates(pos: Vector3, r: float, floor_y: float, hero_dir: Vector3,
-		at: PackedVector3Array, rad: PackedFloat32Array) -> bool:
+		at: PackedVector3Array, rad: PackedFloat32Array, room_r := 0.0) -> bool:
 	var d := pos.length()
 	if d - r < HEAD_CLEAR:
 		return true
 	if pos.y - r < floor_y + FLOOR_CLEAR:
 		return true
-	# The cone widens by the echo's own angular radius, so no part of it enters the cone.
-	var off := rad_to_deg(pos.normalized().angle_to(hero_dir))
-	if off < SIGHT_CONE_DEG + rad_to_deg(asin(clampf(r / d, 0.0, 1.0))):
+	if room_r > 0.0:
+		if d - r < room_r + ROOM_MARGIN:
+			return true
+	elif _in_cone(pos, r, d, hero_dir):
 		return true
 	for k in at.size():
 		var lim := (r + rad[k]) * 1.1
 		if pos.distance_squared_to(at[k]) < lim * lim:
 			return true
 	return false
+
+
+## The sight cone: the cone widens by the echo's own angular radius, so no part of it enters.
+static func _in_cone(pos: Vector3, r: float, d: float, hero_dir: Vector3) -> bool:
+	var off := rad_to_deg(pos.normalized().angle_to(hero_dir))
+	return off < SIGHT_CONE_DEG + rad_to_deg(asin(clampf(r / d, 0.0, 1.0)))
+
+
+## FAMILY placement, pure and deterministic so a check can run it without a scene. `hero` is
+## the hero's transform in the anchor's frame (eyes at the origin), construction units to
+## metres; `maps` the child maps; `beams` the seed frame's beams, for the ancestor frames'
+## clearance; `width_m` the hero's width in metres; `room` that the eyes are inside the hero.
+##
+## It climbs one generation at a time. At each step it tries the hero's current ancestor as
+## every child of a parent in turn, parent = node * map_j^-1, and keeps the choice whose parent
+## frame stays clear of the eyes and of the sight line and lets the most of the parent's other
+## children through the comfort rules (HEAD_CLEAR and the sight cone, as the scatter; for the
+## floor, the centre must stand above it, since a relative's place is the map's and not ours).
+## Greedy from the hero outward, so the near family decides first. Records come out nearest
+## generation first, each ancestor's frame ahead of its children, so FEW is the close family
+## and each rung of the ladder adds the generation outside it.
+static func family_layout(floor_y: float, hero: Transform3D, maps: Array[Transform3D],
+		beams: Array, width_m: float, room: bool,
+		syms: Array[Transform3D] = [Transform3D.IDENTITY]) -> Array:
+	var out: Array = []
+	var b := maps.size()
+	if b < 2:
+		return out
+	var c := pow(absf(maps[0].basis.determinant()), 1.0 / 3.0)
+	var u := pow(absf(hero.basis.determinant()), 1.0 / 3.0)
+	if c <= 1e-3 or c >= 0.999 or u <= 0.0:
+		return out
+	var up := clampi(1 + int(floorf(log(FAMILY_S_MAX) / log(1.0 / c) + 1e-6)),
+		FAMILY_MIN_UP, FAMILY_MAX_UP)
+	var hero_c := hero.origin
+	var hero_dir := hero_c.normalized() if hero_c.length() > 1e-4 else Vector3.FORWARD
+	var node := hero
+	# Each candidate parent is node * s * map_j^-1 for a symmetry s of the tree (see
+	# FractalIFS.symmetries): node * s draws exactly what node draws, so its parent is as true
+	# a parent as node's own. Several (s, j) land the same centre with the same children, so
+	# each centre is scored once.
+	var cands: Array[Transform3D] = []
+	var cand_j := PackedInt32Array()
+	for s in syms:
+		for j in b:
+			cands.append(s * maps[j].affine_inverse())
+			cand_j.append(j)
+	for g in range(1, up + 1):
+		var best := -INF
+		var best_parent := Transform3D()
+		var best_kids: Array = []
+		var best_frame := false
+		var seen := {}
+		for ci in cands.size():
+			var parent := node * cands[ci]
+			var at := parent.origin.snapped(Vector3.ONE * 1e-3)
+			if seen.has(at):
+				continue
+			seen[at] = true
+			# Child j of this parent is node * s, which draws what node draws.
+			var j := cand_j[ci]
+			var kids: Array = []
+			for i in b:
+				if i == j:
+					continue
+				var rec := _relative(parent * maps[i], u, width_m, g - 1)
+				if not _family_violates(rec["pos"], float(rec["r"]), floor_y, hero_dir, room):
+					kids.append(rec)
+			var frame_ok := frame_clear(parent, beams, hero_c, width_m, room)
+			var score := float(kids.size()) + (float(b) if frame_ok else 0.0) \
+				+ (0.5 if parent.origin.y > floor_y else 0.0)
+			if score > best:
+				best = score
+				best_parent = parent
+				best_kids = kids
+				best_frame = frame_ok
+		if best_frame:
+			var fr := _relative(best_parent, u, width_m, g)
+			fr["tier"] = -1
+			fr["gain"] = FRAME_GAIN
+			best_kids.push_front(fr)
+		# `up` is the climb a record came from: its parent is the hero's g-th ancestor.
+		for rec in best_kids:
+			rec["up"] = g
+			rec["life"] = STILL
+		out.append_array(best_kids)
+		node = best_parent
+	return out
+
+
+## One relative's record: the echo's transform as the map gives it, and the numbers the rest of
+## the echo code reads. `gen` is how many generations its root sits above the hero's.
+static func _relative(xf: Transform3D, u: float, width_m: float, gen: int) -> Dictionary:
+	var s := pow(absf(xf.basis.determinant()), 1.0 / 3.0) / u
+	var pos := xf.origin
+	var d := maxf(pos.length(), 1e-3)
+	var shell := clampf(log(maxf(d, D_MIN) / D_MIN) / log(D_MAX / D_MIN), 0.0, 1.0)
+	return {
+		"xf": xf, "pos": pos, "basis": xf.basis, "s": s, "d": d, "r": radius_of(s, width_m),
+		"tier": 1 if s * width_m / d >= TIER_ANGLE else 0,
+		"phase": FAMILY_PHASE * float(gen), "gain": lerpf(GAIN_NEAR, GAIN_FAR, shell),
+	}
+
+
+static func _family_violates(pos: Vector3, r: float, floor_y: float, hero_dir: Vector3,
+		room: bool) -> bool:
+	var d := pos.length()
+	if d - r < HEAD_CLEAR:
+		return true
+	if pos.y < floor_y + FLOOR_CLEAR:
+		return true
+	return not room and _in_cone(pos, r, d, hero_dir)
+
+
+## Whether an ancestor's frame, drawn alone at `xf`, keeps every beam FRAME_CLEAR from the eyes
+## and, with the hero out in front, off the line from the eyes to the hero's near side. Beams
+## are capsules, both cross-section half-extents summed into the radius, as clear_radius_at.
+static func frame_clear(xf: Transform3D, beams: Array, hero_c: Vector3, width_m: float,
+		room: bool) -> bool:
+	var k := pow(absf(xf.basis.determinant()), 1.0 / 3.0)
+	var sight := 0.0 if room else maxf(hero_c.length() - 0.5 * width_m, 0.0)
+	var dir := hero_c.normalized() if hero_c.length() > 1e-4 else Vector3.FORWARD
+	for beam in beams:
+		var bb: Basis = beam[2]
+		var h: Vector3 = beam[1]
+		var mid: Vector3 = beam[0]
+		var a := xf * (mid - bb.z * h.z)
+		var e := xf * (mid + bb.z * h.z)
+		var rad := k * (h.x + h.y)
+		if FractalIFS._point_to_segment(Vector3.ZERO, a, e) - rad < FRAME_CLEAR:
+			return false
+		if sight > 0.0:
+			for q in range(1, 9):
+				var p := dir * (sight * float(q) / 8.0)
+				if FractalIFS._point_to_segment(p, a, e) - rad < 0.05:
+					return false
+	return true
