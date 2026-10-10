@@ -36,7 +36,7 @@ class_name Forest
 ## reads as trees, not a hedge (avenue_shot.sh shoots it from where you stand).
 ##
 ## WALK is the same rows with a held trigger. The viewer never moves: the avenue's root
-## slides toward you along the path, at a held speed only, eased in and out over half a
+## slides toward you along the path, at a held speed only, eased in and out over a
 ## second, level and straight, so letting go stops it. A fixed pool of trees is built once.
 ## A tree sprouts as it comes within 25 m, withers once it is behind you, and by 5 m behind
 ## it is hidden, moved to the far end of its row and left waiting to sprout again. Moving a
@@ -81,10 +81,11 @@ const AVENUE_CAP_FAR := 700       # branches at the far end of a standing avenue
 const AVENUE_PHASE_SPAN := 0.8    # palette turns over AVENUE_LEN, as ifs_echoes' PHASE_SPAN
 const AVENUE_PHASE_JITTER := 0.06
 const WALK_PER_ROW := 15          # a pool of 30 trees, built once for the walk, never rebuilt
-## Held speed. Instinct said a stroll, about 1.2 m/s; the ambient-motion rule is a quarter of
-## instinct, and 0.3 m/s still crosses one 3.5 m tree gap every twelve seconds.
-const WALK_SPEED := 0.3
-const WALK_EASE_S := 0.5          # seconds from still to full speed, and back
+## Held speed: a slow stroll, under the 1.3 m/s of a normal walk. 0.3 m/s read as too slow
+## in the headset. The glide is constant, straight, held and level under a vignette, which is
+## where steady speed near walking pace is tolerated; the ramp is what has to stay gentle.
+const WALK_SPEED := 1.0
+const WALK_EASE_S := 1.0          # seconds from still to full speed, and back: 1 m/s², 0.5 m to stop
 const WALK_SPROUT := 25.0         # metres ahead at which a waiting tree sprouts
 const WALK_WITHER := 1.5          # metres behind you at which a grown tree starts to wither
 const WALK_RECYCLE := 5.0         # metres behind you by which it goes to the far end

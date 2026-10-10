@@ -91,8 +91,8 @@ All notable changes to FractalXR are documented here. Format based on
   steps along the theme with distance, so a colour wave rolls down the rows too. The hero
   steps out of the path; SOW brings it and the grove back. MIX picks the species: the
   mixed bag, or the SPECIES tile's one kind for the whole avenue ("sakura rows").
-  WALK makes the avenue endless: hold either trigger and it glides toward you at 0.3 m/s,
-  easing in and out over half a second, level and straight, and letting go stops it.
+  WALK makes the avenue endless: hold either trigger and it glides toward you at 1.0 m/s,
+  easing in and out over a second, level and straight, and letting go stops it.
   You never move; the rows do. Trees sprout as they come within 25 m, wither once they
   are behind you, and by 5 m behind they are moved to the far end and regrown. A pool of
   30 trees is built once when WALK starts and never rebuilt, so the walk itself adds no
