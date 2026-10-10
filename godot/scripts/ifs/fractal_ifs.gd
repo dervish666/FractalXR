@@ -76,6 +76,11 @@ const RAMP_W := 256
 ## at. Deeper than 2 buys nothing: a third-generation beam on a room-sized echo is under a
 ## pixel wide and, with MSAA off, would crawl rather than read.
 const ECHO_LEVELS := [1, 2]
+## Room size and the dive draw with a second compiled shader (see _apply_shader): beams inside
+## HEAD_CLIP metres of the eye are cut away, so a sculpture you stand inside never puts a beam
+## through your face, and the dive can dissolve the frames it is leaving behind. The tabletop
+## shader stays the one without a discard in it, so the mode that ships today pays nothing.
+const HEAD_CLIP := 0.3
 
 ## The three seed frames, as vertices in construction units and the edge pairs between them.
 ## All three sit in the same [-1, 1] box. The cube's edges are listed in long-axis order
@@ -209,6 +214,21 @@ var _mmi: MultiMeshInstance3D
 ## same build() and pointed at the same seed mesh, so every edit, breath and morph reaches them
 ## with no second rebuild path. See IfsEchoes for why this is not the hero's own MultiMesh.
 var _echo_mm: Array[MultiMesh] = []
+## The root frame alone, one instance: what the family layout draws for the hero's ancestors,
+## whose children are already drawn as echoes of their own. Fed by the same upload as the tiers.
+var _root_mm: MultiMesh
+var root_live := false
+## The dive: the child the hero is being re-rooted into, -1 when none. While it is set the
+## hero's own buffer (never the echo tiers) carries 1.0 in the spare custom channel for every
+## frame outside that child's subtree, which the clip shader dissolves by `dive_fade`.
+var dive_target := -1
+var _branch := 0
+## Bumped by every build(), so the dive can tell its maps went stale under it.
+var build_serial := 0
+var _clip := false
+var _nocull := false
+var _shader_clip: Shader
+var _shader_clip_nocull: Shader
 ## Whether any echo draws the tiers. IfsEchoes sets it from its count; true by default so a
 ## FractalIFS without echoes attached still publishes them, as every check expects.
 var echoes_live := true
@@ -288,6 +308,10 @@ func _init() -> void:
 		em.use_colors = true
 		em.use_custom_data = true
 		_echo_mm.append(em)
+	_root_mm = MultiMesh.new()
+	_root_mm.transform_format = MultiMesh.TRANSFORM_3D
+	_root_mm.use_colors = true
+	_root_mm.use_custom_data = true
 	set_preset(0)
 	visible = false
 
@@ -347,6 +371,7 @@ func _set_mesh(m: ArrayMesh) -> void:
 	_mmi.multimesh.mesh = m
 	for em in _echo_mm:
 		em.mesh = m
+	_root_mm.mesh = m
 
 
 ## The echo tiers: the first generations of the hero's buffer. The AABB goes on the
@@ -368,6 +393,17 @@ func _upload_echo_tiers() -> void:
 		if em.instance_count != n:
 			em.instance_count = n
 		em.buffer = buf if n == instance_count else buf.slice(0, n * 20)
+	if root_live:
+		_upload_root()
+
+
+func _upload_root() -> void:
+	if instance_count == 0:
+		return
+	_root_mm.custom_aabb = level_bounds[0]
+	if _root_mm.instance_count != 1:
+		_root_mm.instance_count = 1
+	_root_mm.buffer = _last_buf.slice(0, 20)
 
 
 func set_echoes_live(on: bool) -> void:
@@ -376,9 +412,180 @@ func set_echoes_live(on: bool) -> void:
 		_upload_echo_tiers()
 
 
+## Whether a family-layout ancestor frame draws the root tier. Off, a rebuild skips it.
+func set_root_live(on: bool) -> void:
+	root_live = on
+	if on:
+		_upload_root()
+
+
 ## The MultiMesh an echo of tier `tier` draws. Views only: nothing outside build() writes it.
+## A negative tier is the root frame on its own.
 func echo_multimesh(tier: int) -> MultiMesh:
+	if tier < 0:
+		return _root_mm
 	return _echo_mm[clampi(tier, 0, _echo_mm.size() - 1)]
+
+
+## The child maps exactly as build() composes them: the same plane fallback, and the banked rule
+## or, with `breathed`, the live one with the ambient offset in it. What the family layout reads
+## (banked, so the room does not breathe) and what the dive re-roots by (live, held still).
+func child_maps_now(breathed: bool) -> Array[Transform3D]:
+	var pl := _planes_now()
+	return child_maps(pl[0], pl[1], pl[2], pl[3], live_base() if breathed else live_maps())
+
+
+## The two planes as build() uses them, a rejected one replaced by its default.
+func _planes_now() -> Array:
+	var n1 := plane1_normal
+	var d1 := plane1_offset
+	var n2 := plane2_normal
+	var d2 := plane2_offset
+	if not valid_plane(n1, d1):
+		n1 = DEFAULT_N1
+		d1 = 0.0
+	if not valid_plane(n2, d2):
+		n2 = DEFAULT_N2
+		d2 = 0.0
+	return [n1.normalized(), d1, n2.normalized(), d2]
+
+
+## The mirror-group elements the whole drawn tree is invariant under: each permutes the child
+## maps and carries the seed frame onto itself. With the default planes that is all four for
+## the cube and octahedron seeds, and only the half-turn for a tetrahedron, which one mirror
+## turns into its dual. Edited planes usually leave just the identity. The family layout may
+## stand the hero in for itself under any of these, which is what lets its parent hang above
+## it as well as below: without them the parent's centre is hero(-offset / contraction)
+## whichever reflection made the child, and FRAMES' offsets all point up.
+func symmetries() -> Array[Transform3D]:
+	var pl := _planes_now()
+	var r1 := reflection(pl[0], pl[1])
+	var r2 := reflection(pl[2], pl[3])
+	var maps := child_maps_now(false)
+	var out: Array[Transform3D] = [Transform3D.IDENTITY]
+	for s in [r1, r2, r2 * r1]:
+		if _permutes(s, maps) and _keeps_seed(s):
+			out.append(s)
+	return out
+
+
+static func _permutes(s: Transform3D, maps: Array[Transform3D]) -> bool:
+	for m in maps:
+		var sm := s * m
+		var hit := false
+		for k in maps:
+			if _xf_close(sm, k):
+				hit = true
+				break
+		if not hit:
+			return false
+	return true
+
+
+func _keeps_seed(s: Transform3D) -> bool:
+	for beam in beams:
+		var bb: Basis = beam[2]
+		var h: Vector3 = beam[1]
+		var c: Vector3 = beam[0]
+		var a := s * (c - bb.z * h.z)
+		var b := s * (c + bb.z * h.z)
+		var hit := false
+		for o in beams:
+			var ob: Basis = o[2]
+			var oh: Vector3 = o[1]
+			var oc: Vector3 = o[0]
+			var oa := oc - ob.z * oh.z
+			var oe := oc + ob.z * oh.z
+			if (a.distance_to(oa) < 1e-4 and b.distance_to(oe) < 1e-4) \
+					or (a.distance_to(oe) < 1e-4 and b.distance_to(oa) < 1e-4):
+				hit = true
+				break
+		if not hit:
+			return false
+	return true
+
+
+static func _xf_close(a: Transform3D, b: Transform3D) -> bool:
+	return a.origin.distance_to(b.origin) < 1e-4 and a.basis.x.distance_to(b.basis.x) < 1e-4 \
+		and a.basis.y.distance_to(b.basis.y) < 1e-4 and a.basis.z.distance_to(b.basis.z) < 1e-4
+
+
+var _clear_key: Array = []
+var _clear_val := 0.0
+
+
+## Clearance at the construction origin, the point room size puts at the eyes. Cached on the
+## shape's own parameters, ignoring the breath (a few percent), so it is one walk per shape and
+## not one per recentre: STAR's walk measured 20 ms on the Mac.
+func centre_clearance() -> float:
+	var key := [preset, plane1_normal, plane1_offset, plane2_normal, plane2_offset, depth,
+		levels_built, morph_t >= 1.0]
+	if key != _clear_key:
+		_clear_key = key
+		_clear_val = clear_radius_at(Vector3.ZERO)
+	return _clear_val
+
+
+## Mark every frame of the hero for the dive, or clear the marks with -1: 2.0 in the spare
+## custom channel for child `j`'s subtree, which glides to its new colours, and 1.0 for the rest,
+## which dissolves. One upload of the hero's buffer, never a rebuild, and the echo tiers keep the
+## clean one, so no echo dissolves or recolours with it.
+func set_dive_target(j: int) -> void:
+	dive_target = j
+	if instance_count > 0:
+		_mmi.multimesh.buffer = _dive_flagged(_last_buf) if j >= 0 else _last_buf
+	_mat.set_shader_parameter("dive_lvl", _norm_l)
+	set_dive_fade(0.0)
+	set_dive_colour(Vector3.ZERO, 1.0, 0.0)
+
+
+func set_dive_fade(f: float) -> void:
+	_mat.set_shader_parameter(&"dive_fade", f)
+
+
+## The colour glide. `centre` is the chosen child's centre in world space and `norm` turns a
+## world distance from it into the radius coordinate that frame will have once the child is the
+## hero; `mix` runs 0 to 1 over the step, and the re-root lands on exactly those colours.
+func set_dive_colour(centre: Vector3, norm: float, mix: float) -> void:
+	_mat.set_shader_parameter(&"dive_centre", centre)
+	_mat.set_shader_parameter(&"dive_norm", norm)
+	_mat.set_shader_parameter(&"dive_mix", mix)
+
+
+## 1 / the outermost frame's distance from the centre, the radius coordinate's normaliser.
+func radius_norm() -> float:
+	return _norm_r
+
+
+## Level k holds its frames grouped by their level-1 ancestor, branch^(k-1) to a group in map
+## order, because build() walks parents in order and appends every child map for each. So a
+## subtree is one contiguous run per level and needs no record of who made whom.
+func _dive_flagged(src: PackedFloat32Array) -> PackedFloat32Array:
+	var buf := src.duplicate()
+	var run := 1
+	for k in range(0, levels_built + 1):
+		var lo := 0 if k == 0 else level_ends[k - 1]
+		var keep0 := -1
+		if k > 0:
+			keep0 = lo + dive_target * run
+		for i in range(lo, level_ends[k]):
+			buf[i * 20 + 19] = 2.0 if (k > 0 and i >= keep0 and i < keep0 + run) else 1.0
+		if k > 0:
+			run *= _branch
+	return buf
+
+
+## Grow in only the deepest generation, out of the frames already drawn: what a dive re-root
+## adds, since the copy it zoomed into had one generation fewer than a hero draws.
+func grow_deepest() -> void:
+	if levels_built > 0:
+		_grow_levels_from(levels_built)
+
+
+## The room-size and dive shader on or off. See HEAD_CLIP.
+func set_clip(on: bool) -> void:
+	_clip = on
+	_apply_shader()
 
 
 ## The hero's material, which echoes share so the palette, the drift, the grow-in and the seed
@@ -742,12 +949,14 @@ func build(grow := true) -> int:
 		buf[j + 19] = 0.0
 
 	var mm := _mmi.multimesh
+	_branch = branch
+	build_serial += 1
 	# Only when the count changes: each assignment reallocates the RenderingServer buffer,
 	# and breathing rebuilds every frame at a constant count.
 	if mm.instance_count != instance_count:
 		mm.instance_count = instance_count
 	if instance_count > 0:
-		mm.buffer = buf
+		mm.buffer = buf if dive_target < 0 else _dive_flagged(buf)
 	# MultiMesh instances are not culled individually, and an auto AABB would be recomputed
 	# from the buffer anyway. Publishing ours makes the bounds check mean something. Grown
 	# from the parent origins, every instance stays inside its finished box, so the bound a
@@ -887,10 +1096,74 @@ func set_cull_disabled(on: bool) -> void:
 	# A render_mode is compile-time, so the other setting is a second compiled shader rather
 	# than a property. It is the same source with one word changed, built the first time the
 	# probe asks for it, so there is no second file to keep in step and the app never pays.
-	if on and _shader_nocull == null:
-		_shader_nocull = Shader.new()
-		_shader_nocull.code = _shader.code.replace("cull_back", "cull_disabled")
-	_mat.shader = _shader_nocull if on else _shader
+	_nocull = on
+	_apply_shader()
+
+
+func _apply_shader() -> void:
+	if _clip:
+		if _nocull:
+			if _shader_clip_nocull == null:
+				_shader_clip_nocull = _variant(true, true)
+			_mat.shader = _shader_clip_nocull
+		else:
+			if _shader_clip == null:
+				_shader_clip = _variant(true, false)
+			_mat.shader = _shader_clip
+	elif _nocull:
+		if _shader_nocull == null:
+			_shader_nocull = _variant(false, true)
+		_mat.shader = _shader_nocull
+	else:
+		_mat.shader = _shader
+	_mat.set_shader_parameter("head_clip", HEAD_CLIP)
+
+
+## The clip variant is the tabletop source with three insertions: the uniforms, the dive's dim
+## at the end of vertex(), and two discards at the top of fragment(). A discard costs a tiler
+## its early depth test for the whole draw, which is why it lives here and not in the file.
+## Compiled the first time room size or the dive asks for it: one hitch on that press, not at
+## launch. If the tabletop source ever stops matching an anchor, say so and keep that shader.
+func _variant(clip: bool, nocull: bool) -> Shader:
+	var code := _shader.code
+	if nocull:
+		code = code.replace("cull_back", "cull_disabled")
+	if clip:
+		var anchors := [
+			["void vertex() {", "uniform float head_clip = 0.3;\nuniform float dive_fade = 0.0;\n"
+				+ "uniform float dive_mix = 0.0;\nuniform vec3 dive_centre = vec3(0.0);\n"
+				+ "uniform float dive_norm = 1.0;\nuniform float dive_lvl = 0.0;\n"
+				+ "varying float v_outer;\n\nvoid vertex() {"],
+			["\t\t+ echo_life.w * echo_t;", "\t\t+ echo_life.w * echo_t;\n"
+				+ "\t// The dive's colour glide: a frame of the copy being zoomed into (custom w 2)\n"
+				+ "\t// slides from its colour as a child to its colour as the hero, one level up and\n"
+				+ "\t// measured from the copy's centre, so the re-root recolours nothing.\n"
+				+ "\tif (INSTANCE_CUSTOM.w > 1.5) {\n"
+				+ "\t\tfloat r_new = length(MODEL_MATRIX[3].xyz - dive_centre) * dive_norm;\n"
+				+ "\t\tfloat u_old = mix(level * level_gain, radius * radius_gain, radius_mix);\n"
+				+ "\t\tfloat u_new = mix((level - dive_lvl) * level_gain, r_new * radius_gain, radius_mix);\n"
+				+ "\t\t// The ramp is cyclic, so go the short way round it.\n"
+				+ "\t\tfloat du = u_new - u_old;\n"
+				+ "\t\tv_u += (du - floor(du + 0.5)) * dive_mix;\n\t}"],
+			["\tv_shade = UV.x * echo_gain * (1.0 + echo_glow * swell);",
+				"\tv_shade = UV.x * echo_gain * (1.0 + echo_glow * swell);\n"
+				+ "\t// The dive's dissolve: frames outside the copy (custom w 1) darken and screen\n"
+				+ "\t// out together, so they leave without moving through the viewer.\n"
+				+ "\tv_outer = abs(INSTANCE_CUSTOM.w - 1.0) < 0.5 ? dive_fade : 0.0;\n"
+				+ "\tv_shade *= 1.0 - v_outer;"],
+			["void fragment() {", "void fragment() {\n"
+				+ "\tif (length(VERTEX) < head_clip) { discard; }\n"
+				+ "\tif (v_outer > 0.0 && fract(52.9829189 * fract(dot(FRAGCOORD.xy,"
+				+ " vec2(0.06711056, 0.00583715)))) < v_outer) { discard; }"],
+		]
+		for a in anchors:
+			if code.count(String(a[0])) != 1:
+				push_error("[ifs] clip shader: anchor not found once: %s" % a[0])
+				return _shader
+			code = code.replace(String(a[0]), String(a[1]))
+	var s := Shader.new()
+	s.code = code
+	return s
 
 
 ## [centre, half-extents, frame] for every edge of a seed polyhedron. The frame's z column is

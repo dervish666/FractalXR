@@ -182,6 +182,14 @@ var ifs_edit := IfsEditor.new()
 ## ECHOES: view-only copies of the sculpture scattered through the room at many sizes. Under
 ## the IFS node so they hide with it, but anchored to the head at entry, not to the grab.
 var ifs_echoes := IfsEchoes.new()
+## DIVE: hold a trigger to fly into one copy of the sculpture, re-rooting for ever.
+var ifs_dive := IfsDive.new()
+## SIZE: room puts the sculpture around you, its clearest point at your eyes and its lowest
+## beam on the floor, so the width follows your eye height inside IFS_ROOM_M.
+var ifs_room := false
+const IFS_ROOM_M := Vector2(2.4, 4.0)
+## The nearest beam to the eyes when room size opens: the clip radius plus a head's sway.
+const IFS_ROOM_CLEAR := 0.36
 ## Tabletop framing. The IFS is real geometry in construction units, so its scale comes from
 ## its own published bounds rather than from the particle cloud's measured extent, which
 ## describes a flame that is not being drawn.
@@ -452,6 +460,7 @@ func _ready() -> void:
 	ifs_edit.setup(ifs)
 	ifs.add_child(ifs_echoes)
 	ifs_echoes.setup(ifs)
+	ifs_dive.setup(ifs, cloud)
 	add_child(ground)
 	add_child(orbit)
 	add_child(plant_marker)
@@ -606,8 +615,16 @@ func _build_menu() -> void:
 		# the other direction, which is why it clears the undo.
 		WristMenu.Item.new("make", "EDIT",
 			func(): return "handles on" if ifs_edit.guides_on else "handles off",
-			func(): ifs_edit.set_guides(not ifs_edit.guides_on),
+			func():
+				# The handles and the dive both want the trigger; the one turned on last has it.
+				if not ifs_edit.guides_on and ifs_dive.on:
+					_set_ifs_dive(false)
+				ifs_edit.set_guides(not ifs_edit.guides_on),
 			false, _vis_ifs).toggle(func(): return ifs_edit.guides_on),
+		WristMenu.Item.new("make", "DIVE",
+			func(): return ("hold trigger · %d" % ifs_dive.steps) if ifs_dive.on else "off",
+			func(): _set_ifs_dive(not ifs_dive.on),
+			false, _vis_ifs).toggle(func(): return ifs_dive.on),
 		WristMenu.Item.new("make", "UNDO",
 			func(): return "last edit" if ifs_edit.has_undo() else "nothing yet",
 			func(): ifs_edit.undo(),
@@ -796,6 +813,16 @@ func _build_menu() -> void:
 					ifs_echoes.step_name(), ifs_echoes.count()],
 			func(): ifs_echoes.set_step(ifs_echoes.step + 1),
 			false, _vis_ifs).stepping(func(d: int): ifs_echoes.set_step(ifs_echoes.step + d)),
+		# Where the echoes stand: the seeded scatter, or where the sculpture's own maps put its
+		# relatives, so the room is the next generations out.
+		WristMenu.Item.new("look", "LAYOUT",
+			func(): return ifs_echoes.layout_name(),
+			func(): ifs_echoes.set_family(not ifs_echoes.family),
+			false, _vis_ifs).toggle(func(): return ifs_echoes.family),
+		WristMenu.Item.new("look", "SIZE",
+			func(): return "room" if ifs_room else "table",
+			func(): _set_ifs_room(not ifs_room),
+			false, _vis_ifs).toggle(func(): return ifs_room),
 		WristMenu.Item.new("look", "BAKE",
 			func():
 				if cloud.is_baking():
@@ -1011,6 +1038,8 @@ func _build_menu() -> void:
 			# as much mid-drag as knowing what your hand is holding.
 			if ifs_edit.is_editing():
 				return ifs_edit.status()
+			if ifs_dive.in_step():
+				return "diving %d%%" % int(ifs_dive.progress() * 100.0)
 			if ifs.is_morphing():
 				return "morphing %d%%" % int(ifs.morph_t * 100.0)
 			# A capped build is the one thing here worth interrupting for: it means the rung
@@ -1197,6 +1226,7 @@ func _set_ifs_mode(on: bool) -> void:
 		# reset with the destination's own framing, and the particle cloud is re-measured for
 		# whatever is about to draw it.
 		ifs_edit.cancel()
+		ifs_dive.reset()
 		ifs.settle()
 		ifs_detail_idx = _ifs_detail_idx(ifs.detail)
 		grab.suspended = false
@@ -1219,6 +1249,9 @@ func _step_ifs_detail(d: int) -> void:
 ## Front-to-back stretch. Deliberately not a rebuild of the world transform: DEPTH has to
 ## feel different from grabbing the sculpture and pulling it wider.
 func _step_ifs_depth(d: int) -> void:
+	# A stretched sculpture is no longer a copy of its children, so it cannot be dived.
+	if ifs_dive.on:
+		_set_ifs_dive(false)
 	ifs_depth_idx = wrapi(ifs_depth_idx + d, 0, IFS_DEPTH.size())
 	ifs.depth = IFS_DEPTH[ifs_depth_idx]
 	ifs.land_edit()
@@ -1267,6 +1300,9 @@ func _cycle_ifs_preset(d: int) -> void:
 	# as they always did: those are the user's, and a two second fade of them would read as lag.
 	ifs.begin_morph(ifs_preset_idx)
 	_reset_ifs_shape()
+	# The relatives stand where the new rule's maps put them: fold, move, grow back.
+	if ifs_echoes.family:
+		ifs_echoes.relayout()
 
 
 ## Ambient life for the sculpture: the contraction breathes a few percent and the twist turns,
@@ -1278,6 +1314,41 @@ func _toggle_ifs_motion() -> void:
 	if not ifs.ambient:
 		ifs.build(false)
 		ifs_edit.refresh()
+
+
+## SIZE. Room size reframes at once, the way RESET does; the clip shader goes on with it so no
+## beam is drawn through your head.
+func _set_ifs_room(on: bool) -> void:
+	ifs_room = on
+	ifs.set_clip(ifs_room or ifs_dive.on)
+	_recenter()
+
+
+## DIVE. Turning it on hands the trigger from the handles to the dive and puts DEPTH back to
+## 1x; turning it off puts back the step in progress.
+func _set_ifs_dive(on: bool) -> void:
+	if on:
+		ifs_edit.set_guides(false)
+		if ifs_depth_idx != 0:
+			_step_ifs_depth(-ifs_depth_idx)
+	ifs_dive.set_on(on)
+	ifs.set_clip(ifs_room or ifs_dive.on)
+
+
+## Room size: the construction origin, the clearest point of every preset (a grid search found
+## none clearer), at the eyes, and the lowest beam on the floor, so the scale is the eye height
+## over how far the shape reaches below its centre, kept inside IFS_ROOM_M. Never so small that
+## a beam starts inside the clip sphere: CROSS seated needs that (tools/ifs_check.sh).
+func _ifs_room_scale(eye_h: float) -> float:
+	var span := maxf(ifs.bounds.size.x, ifs.bounds.size.y)
+	if span < 1e-3:
+		span = 2.0 * FractalIFS.SEED_HALF
+	var below := maxf(-ifs.bounds.position.y, 0.25)
+	var u := clampf(maxf(eye_h, 0.5) / below * span, IFS_ROOM_M.x, IFS_ROOM_M.y) / span
+	var c := ifs.centre_clearance()
+	if c > 1e-3:
+		u = minf(maxf(u, IFS_ROOM_CLEAR / c), IFS_ROOM_M.y / span)
+	return u
 
 
 ## The rung index that shows a given recursion depth, so a preset's own default lands on the
@@ -2141,12 +2212,23 @@ func _recenter() -> void:
 		fwd = fwd.normalized()
 		var pos := cam.origin + fwd * IFS_DISTANCE
 		pos.y = cam.origin.y - IFS_DROP
-		t = Transform3D(Basis().scaled(Vector3.ONE * _ifs_scale()), pos)
+		var unit := _ifs_scale()
+		var floor_y := xr_origin.global_position.y - cam.origin.y
+		var room_r := 0.0
+		if ifs_room:
+			unit = _ifs_room_scale(-floor_y)
+			pos = cam.origin
+			room_r = IfsEchoes.corner(ifs.bounds) * unit
+		# The dive's accumulated turn is part of the pose, so it goes back too.
+		ifs_dive.reset()
+		t = Transform3D(Basis().scaled(Vector3.ONE * unit), pos)
 		# The echoes re-anchor with the hero, so a recentre after walking away brings the
-		# room back around you with the hero's line of sight still clear.
-		ifs_echoes.place(Transform3D(Basis.looking_at(fwd, Vector3.UP), cam.origin),
-			xr_origin.global_position.y - cam.origin.y, _ifs_scale(), IFS_WIDTH_M,
-			Vector3(0.0, -IFS_DROP, -IFS_DISTANCE))
+		# room back around you with the hero's line of sight still clear. The scatter keeps the
+		# tabletop sizes in room size too; FAMILY reads the hero's own transform.
+		var anchor := Transform3D(Basis.looking_at(fwd, Vector3.UP), cam.origin)
+		ifs_echoes.place(anchor, floor_y, _ifs_scale(), IFS_WIDTH_M,
+			Vector3.ZERO if ifs_room else Vector3(0.0, -IFS_DROP, -IFS_DISTANCE),
+			anchor.affine_inverse() * t, room_r)
 	if grab != null:
 		grab.reset(t)
 	else:
@@ -2275,8 +2357,15 @@ func _process_frame(delta: float) -> void:
 	# or a SHAPE morph is asking for. Nothing is dispatched, which is what keeps the chaos
 	# game off the GPU while the sculpture is up.
 	if ifs_mode:
-		# A captured handle owns the shape, so the ambient clock stops while it is held.
-		ifs.ambient_hold = ifs_edit.is_editing() or not _xr_focused
+		# DIVE: either trigger, held, while nothing above the sculpture has it. A grip pauses the
+		# dive and carries the step along with the hand.
+		var dive_held: bool = ifs_dive.on and _xr_focused and not help.is_open() \
+			and not _menu_active and not ifs_edit.is_editing() \
+			and (grab == null or not grab.is_grabbing()) and (_trig_held[0] or _trig_held[1])
+		ifs_dive.tick(delta, dive_held, xr_camera.global_transform)
+		# A captured handle owns the shape, so the ambient clock stops while it is held. So does
+		# a dive step: it re-roots by the maps it started with, and a breath would move them.
+		ifs.ambient_hold = ifs_edit.is_editing() or not _xr_focused or ifs_dive.in_step()
 		if ifs.tick(delta):
 			# A morph landed, bringing its preset's own opening rung with it.
 			ifs_detail_idx = _ifs_detail_idx(ifs.detail)
