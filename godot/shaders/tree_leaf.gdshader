@@ -37,6 +37,11 @@ uniform float leaf_hue = 0.0;
 uniform vec3 leaf_tint = vec3(1.0);
 uniform float leaf_mix = 0.0;
 uniform float leaf_shape = 0.0;
+// Where the tree's leaves sit on the ramp, in turns (forest.gd's avenue walks it down the
+// rows). The ramp is not cyclic (pal2 dark end, pal4 bright end), so the phase ping-pongs
+// over it instead of wrapping: 0 is the ramp exactly as before, 0.25 the bright half, 0.75
+// the deep half, and a tree never jumps from white to dark at a seam.
+uniform float palette_phase = 0.0;
 
 vec3 hue_turn(vec3 c, float a) {
 	const vec3 k = vec3(0.57735027);
@@ -67,7 +72,7 @@ vec3 sway(vec3 w, float phase) {
 void vertex() {
 	float birth = INSTANCE_CUSTOM.x;
 	float phase = INSTANCE_CUSTOM.w;
-	v_hue = COLOR.r;
+	v_hue = 1.0 - abs(fract(COLOR.r * 0.5 + palette_phase) * 2.0 - 1.0);
 	// Leaves open after their branch has finished extending.
 	float g = clamp((grow_t - (birth * grow_s + 0.8)) / 1.2, 0.0, 1.0);
 	g = g * g * (3.0 - 2.0 * g);

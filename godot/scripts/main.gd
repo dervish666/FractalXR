@@ -165,6 +165,8 @@ const TREE_DISTANCE := 2.2        # metres in front of the head, on the floor; i
 ## The hero tree stays full-detail. Everything else (the sown grove, planted trees, the
 ## succession, their caps and LOD) is the Forest's: scripts/tree/forest.gd.
 var forest := Forest.new()
+## Head-locked tunnel vignette, driven only by the avenue walk for now (scripts/xr/comfort_vignette.gd).
+var vignette := ComfortVignette.new()
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
 const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
@@ -455,6 +457,7 @@ func _ready() -> void:
 	add_child(ground)
 	add_child(orbit)
 	add_child(plant_marker)
+	xr_camera.add_child(vignette)
 
 	if not library.load_all():
 		_fail("presets: %s" % library.load_error)
@@ -630,6 +633,17 @@ func _build_menu() -> void:
 			func(): return "mixed grove",
 			func(): _sow_grove(),
 			false, _vis_tree),
+		# The avenue: two rows from your feet to 50 m, growing away from you. WALK is the same
+		# rows, endless, gliding toward you while a trigger is held. MIX picks their species.
+		WristMenu.Item.new("make", "AVENUE",
+			func(): return "mixed rows" if forest.plant_mix \
+				else "%s rows" % FractalTree.SHAPE_NAMES[tree_shape_idx],
+			func(): _sow_avenue(false),
+			false, _vis_tree),
+		WristMenu.Item.new("make", "WALK",
+			func(): return "hold trigger" if forest.walking() else "endless avenue",
+			func(): _toggle_walk(),
+			false, _vis_tree).toggle(func(): return forest.walking()),
 		WristMenu.Item.new("make", "MIX",
 			func(): return "species" if forest.plant_mix else "one kind",
 			func(): _toggle_plant_mix(),
@@ -1029,6 +1043,8 @@ func _build_menu() -> void:
 			return ("%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]) \
 					if dbg else ""
 		if tree_mode:
+			if forest.walking():
+				return "walking" if forest.walk_speed > 0.0 else "hold trigger to walk"
 			# At capacity the trigger stops doing anything and the marker goes away, so
 			# say why here rather than leaving the floor silently dead.
 			if not forest.can_plant():
@@ -1159,7 +1175,12 @@ func _set_tree_mode(on: bool) -> void:
 	if not on:
 		plant_marker.hide_marker()
 		plant_marker.update(1.0)
-	tree.visible = on
+		# The walk only advances inside tree mode; leaving mid-glide must not leave the
+		# tunnel drawn over whatever comes next.
+		forest.walk_held = false
+		forest.walk_speed = 0.0
+		vignette.set_motion(0.0)
+	tree.visible = on and forest.layout == Forest.Layout.GROVE
 	forest.visible = on
 	cloud.set_visible_cloud(not on)
 	if on:
@@ -1448,6 +1469,19 @@ func _sow_grove() -> void:
 	forest.sow_grove()
 
 
+## Two rows from your feet down the way you face; the hero steps out of the path.
+func _sow_avenue(walk: bool) -> void:
+	forest.sow_avenue(xr_camera.global_transform, walk, FractalTree.SHAPE_NAMES[tree_shape_idx])
+
+
+## WALK on sows the endless avenue; off stops where you are and lets the far end grow in.
+func _toggle_walk() -> void:
+	if forest.walking():
+		forest.stand_still()
+	else:
+		_sow_avenue(true)
+
+
 ## Planting draws a mixed species each pull, or plants the SHAPE tile's species.
 func _toggle_plant_mix() -> void:
 	forest.set_plant_mix(not forest.plant_mix)
@@ -1459,7 +1493,7 @@ func _toggle_succession() -> void:
 
 
 func _forest_tree_count() -> int:
-	return 1 + forest.tree_count()
+	return (1 if forest.layout == Forest.Layout.GROVE else 0) + forest.tree_count()
 
 
 func _forest_branch_count() -> int:
@@ -1543,7 +1577,8 @@ func _tick_plant_marker(delta: float) -> void:
 	# is not one of them: the trigger only goes to the menu when the ray is actually ON
 	# it (_menu_active), so a ring that vanished whenever the wrist panel was up would
 	# hide from you at the very moment the trigger still plants.
-	var want := tree_mode and not _menu_active and not help.is_open() and forest.can_plant()
+	var want := tree_mode and not _menu_active and not help.is_open() and forest.can_plant() \
+		and not forest.walking()
 	if want:
 		var hit = _hand_floor_hit(right_hand)
 		if hit == null:
@@ -2151,6 +2186,8 @@ func _recenter() -> void:
 		grab.reset(t)
 	else:
 		cloud.global_transform = t
+	if tree_mode:
+		forest.place_avenue(xr_camera.global_transform)
 
 
 func _current_eye_res() -> Vector2i:
@@ -2267,9 +2304,17 @@ func _process_frame(delta: float) -> void:
 		_tick_orbit()
 		return
 	if tree_mode:
+		# The avenue's path runs through where the hero stands, so it steps aside there.
+		tree.visible = forest.layout == Forest.Layout.GROVE
 		tree.tick(delta)
 		_tick_plant_marker(delta)
+		# Either trigger held glides down the walking avenue; G held on the desktop (the
+		# arrows are the right stick there). Only while nothing else owns the trigger, so a
+		# press on the menu never starts a walk.
+		forest.walk_held = forest.walking() and not _menu_active and not help.is_open() \
+			and (_trig_held[0] or _trig_held[1] or Input.is_key_pressed(KEY_G))
 		forest.tick(delta, xr_camera.global_transform.origin)
+		vignette.set_motion(forest.walk_motion())
 		return
 	# The sculpture's only per-frame work: the ambient clocks, and whatever rebuild breathing
 	# or a SHAPE morph is asking for. Nothing is dispatched, which is what keeps the chaos
@@ -2382,7 +2427,8 @@ func _handle_input(delta: float) -> void:
 		elif ground_mode:
 			_ground_teleport(right_hand)
 		elif tree_mode:
-			_plant_tree_from_hand(right_hand)
+			if not forest.walking():   # walking, the trigger is held to glide instead
+				_plant_tree_from_hand(right_hand)
 		elif ifs_mode:
 			# The handles own the trigger here, and they are picked in _ifs_edit_pass before
 			# the grab. Falling through would quietly walk the flame gallery behind the
@@ -2402,7 +2448,8 @@ func _handle_input(delta: float) -> void:
 		elif ground_mode:
 			_ground_teleport(left_hand)
 		elif tree_mode:
-			_regrow_forest()
+			if not forest.walking():
+				_regrow_forest()
 		elif ifs_mode:
 			pass   # same as the right trigger: the handles have it
 		elif bulb_mode:
