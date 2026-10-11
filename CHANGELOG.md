@@ -6,6 +6,26 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **CYCLE: the colours move.** A new tile on the COLOUR card, beside THEME and in every mode,
+  scrolls the palette through each fractal's colour ramp: off, slow (a full cycle in 120 s,
+  about one palette stop every 15 s), medium (48 s), fast (20 s), and slow + themes, which
+  also cross-fades to another theme every minute over 20 s. FLAME and BULB splats scroll each
+  point's palette coordinate, LINES sends the colour up the stacked rings, SOLID scrolls the
+  orbit trap its vertices already carried (no bake change), the marched surface its own,
+  GROUND gets Fractint-style cycling along the escape count, TREE adds it to every tree's
+  palette phase so the avenue's colour rolls along the rows, and IFS adds it on top of its own
+  slow scroll. In FLAME, BULB and GROUND it moves hue and keeps each point's brightness, so a
+  bulb does not dim to a purple blob halfway round; TREE and IFS move along their phase as
+  they already did. Turning it off glides the colour home over a few seconds.
+  One shader global, `colour_cycle`, set once a frame; off by default, and at 0 every shader
+  takes its old path, so nothing changes until it is turned on. With the head still, slow
+  changes 0.03% of the flame's light a frame (fast 0.17%), against the 5.8% head drift already
+  causes (`flame_flicker.sh`). `godot/tools/cycle_shot.sh` checks the clock, shoots a six-phase
+  strip per mode, runs a control that must fail and times every mode off against on.
+- **Seven more themes**, appended so every existing theme keeps its number: Autumn, Lagoon,
+  Sakura, Patina, Peacock, Jungle and Abyss, heavier on greens, earths and metals than the
+  first nineteen, for the trees as much as the flames. Shared with the web build through
+  `src/flame/palettes.ts`, so its Recolor and the breeder pick them up too.
 - **SOLID (spike): the bulb as a lit sculpture.** BULB > LOOK > SURFACE now runs on past the
   march steps to `solid 128`, `solid 192` and `solid 256`. The headset meshes the bulb from
   its own distance estimate (surface nets on a grid of that many cells, four compute passes
