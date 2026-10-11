@@ -27,7 +27,17 @@ const PARTICLE_STEPS := [0.25, 0.35, 0.45, 0.6, 0.15]
 const POINT_STEPS := [1.0, 1.25, 1.5, 2.0]
 # Softer, not tighter. A point that fades across its whole sprite changes weight
 # smoothly as sub-pixel position drifts; a hard-edged one flips on and off.
+# Only the legacy kernel (AA "old") draws with these; the area kernel keeps each step's
+# average brightness from them and nothing else.
 const SHARPNESS := [3.0, 3.0, 3.5, 4.0]
+# AA: the side of the little square each point is drawn as at SIZE 1.0, in pixels
+# (points.gdshader, point_kernel 1). Each point now lands equally bright wherever it falls
+# inside a pixel, which is what stops the flame flickering as the head moves; the side sets
+# how smoothly a point crosses from one pixel to the next. 0.5 is the measured knee
+# (tools/flame_flicker.sh). 0.0 is the crispest and hops; 1.0 is smoothest and softest; -1 is
+# the old kernel, for comparing in the headset.
+const AA_STEPS := [0.5, 0.0, 1.0, -1.0]
+var aa_idx := 0
 # Splat radius in metres, before the cloud's own scale. Bulbs want the larger end: a
 # distance-estimate shell is a surface, and a surface wants overlapping discs.
 const SPLAT_STEPS := [0.006, 0.010, 0.016, 0.026, 0.042, 0.003]
@@ -800,6 +810,12 @@ func _build_menu() -> void:
 			false, _vis_flame).stepping(func(d: int):
 				point_idx = wrapi(point_idx + d, 0, POINT_STEPS.size())
 				_apply_point_look()).slider(func(): return point_idx, POINT_STEPS.size()),
+		WristMenu.Item.new("look", "AA",
+			func(): return "old" if AA_STEPS[aa_idx] < 0.0 else "%.1f px" % AA_STEPS[aa_idx],
+			func(): aa_idx = (aa_idx + 1) % AA_STEPS.size(); _apply_point_look(),
+			false, _vis_flame).stepping(func(d: int):
+				aa_idx = wrapi(aa_idx + d, 0, AA_STEPS.size())
+				_apply_point_look()).minor(),
 		WristMenu.Item.new("colour", "THEME",
 			func():
 				if recolor_on_drift:
@@ -2852,6 +2868,8 @@ func _apply_point_look() -> void:
 	cloud.set_coverage(BULB_COVERAGE[coverage_idx] if bulb_mode else 0.0)
 	cloud.set_point_size(POINT_STEPS[point_idx])
 	cloud.set_sharpness(SHARPNESS[point_idx])
+	cloud.set_point_kernel(0 if AA_STEPS[aa_idx] < 0.0 else 1)
+	cloud.set_aa_width(maxf(0.0, AA_STEPS[aa_idx]))
 	cloud.set_brightness(BRIGHT_STEPS[bright_idx])
 	march.set_palette_cycles(COLOUR_CYCLES[colour_idx])
 	march.set_gain(BRIGHT_STEPS[bright_idx] * MARCH_GAIN)

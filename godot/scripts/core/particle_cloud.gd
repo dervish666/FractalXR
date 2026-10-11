@@ -745,7 +745,36 @@ func get_count() -> int:
 func set_point_size(px: float) -> void:
 	# 1.0 is a hardware floor, not a stylistic choice: a rasterised point covers at
 	# least one fragment. Finer than that needs more pixels or less brightness.
-	_material.set_shader_parameter("point_size", clampf(px, 1.0, 6.0))
+	_point_px = clampf(px, 1.0, 6.0)
+	_material.set_shader_parameter("point_size", _point_px)
+	_push_energy_gain()
+
+
+var _point_px := 1.0
+var _point_sharp := 7.0
+
+
+## How points.gdshader spreads a point over the pixels it covers: 1 the area kernel, 0 the
+## legacy falloff it replaced (kept to compare against; see point_kernel there).
+func set_point_kernel(k: int) -> void:
+	_material.set_shader_parameter("point_kernel", k)
+
+
+## The area kernel's square side at point size 1, in pixels. 0 is a hard one-pixel point.
+func set_aa_width(w: float) -> void:
+	_material.set_shader_parameter("aa_width", clampf(w, 0.0, 2.0))
+
+
+## The legacy kernel's mean deposit per point: its fall^2 = exp(-2 s r^2), cut to the disc of
+## radius px/2, integrated over the plane. That integral is also its average over every
+## sub-pixel phase, so a kernel that deposits exactly this much everywhere draws the same mean
+## brightness. 0.41 at size 1, sharpness 3.
+static func legacy_point_energy(px: float, s: float) -> float:
+	return PI * px * px * (1.0 - exp(-0.5 * s)) / (2.0 * s)
+
+
+func _push_energy_gain() -> void:
+	_material.set_shader_parameter("energy_gain", legacy_point_energy(_point_px, _point_sharp))
 
 
 ## World-space quad splats instead of single-pixel points. Switching primitive means
@@ -783,8 +812,10 @@ func set_opacity(a: float) -> void:
 
 
 func set_sharpness(k: float) -> void:
+	_point_sharp = clampf(k, 1.0, 24.0)
 	for m in _mats:
-		m.set_shader_parameter("sharpness", clampf(k, 1.0, 24.0))
+		m.set_shader_parameter("sharpness", _point_sharp)
+	_push_energy_gain()
 
 
 ## Palette repeats across the equalised range: 1 gives a single gradient, 2 or 3 give
