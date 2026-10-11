@@ -68,6 +68,15 @@ All notable changes to FractalXR are documented here. Format based on
   5.8% with the cloud still, and from 16.6% to 9.2% mid-transition. A new AA tile under
   FLAME > LOOK > MORE sets the square (0.5 px; 0 is crisper and hops, 1 smoother and softer)
   and has the old kernel as "old", to compare in the headset.
+- **Transitions start and land without a fizz.** A transition moved a sixth of the cloud
+  every frame from its first frame to its last, then iterated every particle every frame for
+  half a second as it landed: the most flicker the flame made, just as the shape stops
+  moving. The chaos game now moves fewer particles while the genome moves slowly, one
+  twenty-fourth a frame at either end rising to a sixth through the middle, taken in turn so
+  no particle falls further behind the shape than before, and the landing settles at one
+  twenty-fourth a frame with the framing held still. On the flicker harness the first and
+  last tenth of a transition went from 9.2% and 10.8% of the light changing per frame to 6.3%
+  and 6.4%, and the landing from 18% to 2.7%.
 - **BRIGHT's bottom two detents do something.** The point shader's brightness was floored at
   0.05, so 0.01, 0.02 (the default) and 0.05 all drew at 0.05 and the first two clicks of
   BRIGHT changed nothing. The floor is gone and the default is now 0.05, the value that was
