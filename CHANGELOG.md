@@ -48,8 +48,9 @@ All notable changes to FractalXR are documented here. Format based on
   point's palette coordinate, LINES sends the colour up the stacked rings, SOLID scrolls the
   orbit trap its vertices already carried (no bake change), the marched surface its own,
   GROUND gets Fractint-style cycling along the escape count, TREE adds it to every tree's
-  palette phase so the avenue's colour rolls along the rows, and IFS adds it on top of its own
-  slow scroll. In FLAME, BULB and GROUND it moves hue and keeps each point's brightness, so a
+  palette phase so the avenue's colour rolls along the rows (BARK, the fallen leaves and FLOOR's
+  ground roll with it), and IFS adds it on top of its own slow scroll. The pre-rendered skies
+  are baked colour and stay put. In FLAME, BULB and GROUND it moves hue and keeps each point's brightness, so a
   bulb does not dim to a purple blob halfway round; TREE and IFS move along their phase as
   they already did. Turning it off glides the colour home over a few seconds.
   One shader global, `colour_cycle`, set once a frame; off by default, and at 0 every shader
