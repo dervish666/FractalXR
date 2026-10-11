@@ -27,6 +27,9 @@ uniform vec2 offset = vec2(0.0);    // the plane's centre, in the avenue frame (
 uniform float tile = 4.0;           // metres per pattern tile
 uniform float radius = 24.0;        // metres from the centre where the floor has faded out
 uniform sampler2D pattern : filter_linear_mipmap, repeat_disable, hint_default_black;
+// CYCLE (main.gd, the COLOUR card), in turns: slides the lines along the ramp, ping-ponged as the
+// leaves are (tree_leaf.gdshader), so the ground rolls with the trees above it. 0 is the old path.
+global uniform float colour_cycle;
 
 varying vec2 v_p;
 varying vec2 v_local;
@@ -47,5 +50,7 @@ void fragment() {
 	float fade = 1.0 - smoothstep(radius * 0.45, radius, length(v_local));
 	// Lines in the ramp's middle, the brightest leaning to pal3; the dark between stays black.
 	float line = smoothstep(0.08, 0.45, v);
-	ALBEDO = mix(pal1, mix(pal2, pal3, line), line) * line * fade * gain * brightness;
+	// Where on the ramp a line sits; `line` alone still sets how bright it is.
+	float h = colour_cycle > 0.0 ? 1.0 - abs(fract(line * 0.5 + colour_cycle) * 2.0 - 1.0) : line;
+	ALBEDO = mix(pal1, mix(pal2, pal3, h), h) * line * fade * gain * brightness;
 }
