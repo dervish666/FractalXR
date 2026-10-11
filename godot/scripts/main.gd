@@ -178,7 +178,7 @@ const TREE_DISTANCE := 2.2        # metres in front of the head, on the floor; i
 ## The hero tree stays full-detail. Everything else (the sown grove, planted trees, the
 ## succession, their caps and LOD) is the Forest's: scripts/tree/forest.gd.
 var forest := Forest.new()
-## Head-locked tunnel vignette, driven only by the avenue walk for now (scripts/xr/comfort_vignette.gd).
+## Head-locked tunnel vignette, driven by the avenue walk and a room-size DIVE (scripts/xr/comfort_vignette.gd).
 var vignette := ComfortVignette.new()
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
@@ -1289,6 +1289,7 @@ func _set_ifs_mode(on: bool) -> void:
 		# whatever is about to draw it.
 		ifs_edit.cancel()
 		ifs_dive.reset()
+		vignette.set_motion(0.0)   # the dive tick that would clear it stops with the mode
 		ifs.settle()
 		ifs_detail_idx = _ifs_detail_idx(ifs.detail)
 		grab.suspended = false
@@ -2563,6 +2564,10 @@ func _process_frame(delta: float) -> void:
 			and not _menu_active and not ifs_edit.is_editing() \
 			and (grab == null or not grab.is_grabbing()) and (_trig_held[0] or _trig_held[1])
 		ifs_dive.tick(delta, dive_held, xr_camera.global_transform)
+		# Room size flies the beams past your face, so the periphery dims while a step moves,
+		# eased with the step as the walk's is. At table size the sculpture moves in front of
+		# you and the view is left alone.
+		vignette.set_motion(ifs_dive.motion() if ifs_room else 0.0)
 		# A captured handle owns the shape, so the ambient clock stops while it is held. So does
 		# a dive step: it re-roots by the maps it started with, and a breath would move them.
 		ifs.ambient_hold = ifs_edit.is_editing() or not _xr_focused or ifs_dive.in_step()
