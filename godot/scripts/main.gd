@@ -47,6 +47,10 @@ const DENSITY_STEPS := [1.0, 0.5, 0.0]
 # with no hue. Forward Mobile's colour buffer is 10-bit fixed point, so the only way to
 # get density range out of it is to make each point contribute a small fraction and let
 # the tonemapper expand it again. 0.02 gives roughly 50 clean overlaps.
+# The default is 0.05. set_brightness used to floor at 0.05, so the old default of 0.02
+# and the 0.01 below it both drew at 0.05, and every look was tuned against that. The floor is
+# gone and the default moved to the value that was really drawing, so 0.01 and 0.02 are now
+# genuinely dimmer detents rather than two clicks that did nothing.
 # 1.0 is there for the premultiplied splat path: "over" compositing converges to the
 # source colour rather than summing it, so a splat surface wants its palette at full
 # strength where an additive point cloud wants slivers.
@@ -266,7 +270,7 @@ var tonemap := Flam3Tonemap.new()
 var preset_idx := 0
 var particle_idx := 0      # 1.05M: 8.2ms app GPU, zero stale frames, no reprojection
 var point_idx := 0         # 1.0px
-var bright_idx := 1        # 0.02
+var bright_idx := 2        # 0.05
 var render_idx := 2        # full recommended eye buffer; sharpness matters more than the ~1ms
 var stability_idx := 0     # frozen: a settled cloud is dramatically cleaner
 var _converge := CONVERGE_FRAMES
@@ -404,7 +408,7 @@ var recolor_on_drift := true
 ## as the shape change, and cutting to the new colours undoes the work the morph is doing.
 var _theme_from: Array = []
 var _theme_blend := 1.0
-var _flame_bright_idx := 1
+var _flame_bright_idx := 2
 var _flame_exposure_idx := 0
 var _flame_opacity_idx := 2
 ## Inside the cloud rather than looking at it from outside. A distance-estimate surface

@@ -42,6 +42,10 @@ func _init() -> void:
 	var home: Image = await _shot(main, "flame-home.png", FWD)
 	var home_s := _stats(home)
 	print("FLAMESCALE stats home %s" % str(home_s))
+	# What the point shader actually draws with, so a BRIGHT ladder change can be checked
+	# against the uniform and not only against a noisy chaos-game frame.
+	print("FLAMESCALE home bright_idx=%d step=%.3f uniform=%.3f" % [main.bright_idx,
+		main.BRIGHT_STEPS[main.bright_idx], main.cloud.point_material().get_shader_parameter("brightness")])
 
 	await _galaxy(main, home_s)
 	await _echoes(main)
@@ -78,7 +82,8 @@ func _galaxy(main, home_s: Dictionary) -> void:
 			and absf(centre.distance_to(head) - Vector2(FlameGalaxy.AHEAD, FlameGalaxy.DROP).length()) < 0.05,
 		"scale %.2f, rms %.2f m, centre %.2f m from the head, %d frames" % [
 			s, rms_m, centre.distance_to(head), frames])
-	_ok("galaxy settings", settings_in, "spin off, drift off, bright %d -> %d" % [bright0, main.bright_idx])
+	_ok("galaxy settings", settings_in, "spin off, drift off, bright %d -> %d, uniform %.3f" % [
+		bright0, main.bright_idx, main.cloud.point_material().get_shader_parameter("brightness")])
 	var fwd: Image = await _shot(main, "galaxy-fwd.png", FWD)
 	await _shot(main, "galaxy-up.png", Vector3(50.0, 0.0, 0.0))
 	await _shot(main, "galaxy-left.png", Vector3(0.0, 80.0, 0.0))
@@ -86,7 +91,7 @@ func _galaxy(main, home_s: Dictionary) -> void:
 	var gs := _stats(fwd)
 	print("FLAMESCALE stats galaxy %s" % str(gs))
 	# The brightness ladder from inside (0.05, 0.12, 0.3), so FlameGalaxy.BRIGHT is chosen
-	# against numbers. Below 0.05 set_brightness clamps, so those detents draw as 0.05.
+	# against numbers. 0.05 is the default; the two detents below it are dimmer still.
 	var keep: int = main.bright_idx
 	for b in [2, 3, 4]:
 		main.bright_idx = b

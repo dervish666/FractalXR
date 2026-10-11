@@ -53,6 +53,12 @@ All notable changes to FractalXR are documented here. Format based on
   shows the new scheme, with the menu button drawn and each stick's click named.
 
 ### Fixed
+- **BRIGHT's bottom two detents do something.** The point shader's brightness was floored at
+  0.05, so 0.01, 0.02 (the default) and 0.05 all drew at 0.05 and the first two clicks of
+  BRIGHT changed nothing. The floor is gone and the default is now 0.05, the value that was
+  really drawing, so the flame you open on is unchanged. Below it, 0.01 and 0.02 now draw
+  dimmer for real. The label reads 0.050 at start instead of 0.020. GALAXY still lifts the
+  default to 0.12.
 - **A flame morph costs a fraction of what it did.** Every morph frame rebuilt the
   in-between genome as Dictionaries, re-encoded it, applied the palette twice when a theme
   blend ran alongside, and restyled the whole wrist menu each time; on the headset that was

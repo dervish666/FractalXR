@@ -28,10 +28,11 @@ const DROP := 0.4
 const TWEEN_S := 8.0
 ## Points closer than this to the eye fade out (points.gdshader near_fade).
 const NEAR_FADE_M := 0.6
-## Per-point brightness inside, at least (a higher BRIGHT the user chose stays). It has to be a
-## value and not "one step up": ParticleCloud.set_brightness floors at 0.05, so the default
-## 0.02 already draws at 0.05 and one step up changed nothing. Chosen from the desktop sweep
-## in tools/flame_scale_shot.gd; see the CHANGELOG entry for the numbers.
+## Per-point brightness inside, at least (a higher BRIGHT the user chose stays). A value rather
+## than "one step up", so it does not move if the ladder or the default does. It was written
+## when set_brightness floored at 0.05 and the default 0.02 drew as 0.05; the default is now
+## 0.05 itself, so the galaxy still lifts the default view to 0.12. Chosen from the desktop
+## sweep in tools/flame_scale_shot.gd; see the CHANGELOG entry for the numbers.
 const BRIGHT := 0.12
 ## A spin turned back on inside the galaxy runs at this share of AMBIENT_SPIN.
 const SPIN_MUL := 0.25

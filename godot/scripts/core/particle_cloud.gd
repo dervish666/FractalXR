@@ -794,9 +794,12 @@ func set_palette_cycles(n: float) -> void:
 		m.set_shader_parameter("palette_cycles", n)
 
 
+## Draws what it is given. The floor used to be 0.05, which silently turned BRIGHT's two lowest
+## detents into copies of the third; it now sits under the whole ladder and only guards against
+## a zero or negative value.
 func set_brightness(b: float) -> void:
 	for m in _mats:
-		m.set_shader_parameter("brightness", clampf(b, 0.05, 3.0))
+		m.set_shader_parameter("brightness", clampf(b, 0.001, 3.0))
 
 
 func set_visible_cloud(v: bool) -> void:
