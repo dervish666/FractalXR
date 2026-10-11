@@ -135,6 +135,9 @@ const STEPS := [
 		"far_b": 24, "far_l": 40, "budget": 48000, "budget_max": 64000},
 ]
 const VARIANT_SEED := 1000        # a species' library shapes are seeds VARIANT_SEED + 0..variants-1
+## ROOTS (off by default): the inner rows' surface roots (tree_roots.gd) reach for the centre
+## line and stop this far either side of it, so the walk down the middle stays clear.
+const ROOT_CLEAR := 0.55
 ## Placement (uploads and far-batch writes) stops for the frame once this much of it is spent.
 ## Real microseconds, so a slower headset simply places fewer trees a frame.
 const PLACE_BUDGET_US := 1000
@@ -151,6 +154,7 @@ const SHAPE_CACHE_MAX := 200
 
 var plant_mix := true             # each plant draws the next species from a shuffled bag
 var succession := true
+var roots_on := false
 var grove_seed := 0               # 0 = random each sowing
 var budget := BUDGET_START
 var visible_cost := 0
@@ -338,6 +342,31 @@ func set_palette(pal: Array) -> void:
 	for t in _trees:
 		t.set_palette(pal)
 	_far.set_palette(pal)
+
+
+## ROOTS: surface roots on the avenue's inner rows, bent toward the path. Trees drawn whole
+## get them now and as they come near; far ones never carry them.
+func set_roots(on: bool) -> void:
+	roots_on = on
+	for t in _trees:
+		_fit_roots(t)
+
+
+## Give `t` its roots, turned toward the centre line and scaled so the tips stop ROOT_CLEAR short
+## of it, or take them away. A transform on a shared MultiMesh, so a walk recycle is free.
+func _fit_roots(t: FractalTree) -> void:
+	if not roots_on or t.row < 0 or t.row > 1 or t.far or not t.is_inside_tree():
+		if t.roots_node() != null:
+			t.set_roots(null, Transform3D(), AABB())
+		return
+	var v := TreeRoots.shape(t.seed_value)
+	var tb := t.transform.basis
+	var s := tb.get_scale().y
+	# Unit frame +X along the floor toward the path: +X for the left row, -X for the right.
+	var toward := Basis(Vector3.UP, 0.0 if t.position.x < 0.0 else PI)
+	var k := (absf(t.position.x) - ROOT_CLEAR) / (TreeRoots.REACH * s)
+	var local := tb.orthonormalized().inverse() * toward * Basis.from_scale(Vector3.ONE * k)
+	t.set_roots(v["mm"], Transform3D(local, Vector3.ZERO), v["aabb"])
 
 
 func set_plant_mix(on: bool) -> void:
@@ -664,6 +693,8 @@ func _adopt(t: FractalTree, d: Dictionary, fresh: bool) -> void:
 	if not t.is_inside_tree():
 		_avenue.add_child(t)
 	t.adopt(d)
+	if roots_on:
+		_fit_roots(t)
 	adopt_us_max = maxi(adopt_us_max, Time.get_ticks_usec() - u0)
 	t.grow_t = minf(keep, 0.0) if fresh else keep
 	adopts += 1
@@ -798,6 +829,8 @@ func _recycle(t: FractalTree) -> void:
 		_far.drop(t)
 	if _far_on():
 		t.unplace()
+	elif roots_on:
+		_fit_roots(t)   # its turn and size changed with the move
 	recycles += 1
 
 

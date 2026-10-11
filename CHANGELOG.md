@@ -102,6 +102,17 @@ All notable changes to FractalXR are documented here. Format based on
   than stepping the gallery behind the panel.
 
 ### Added
+- **ROOTS: a path down the avenue (prototype, off by default).** A switch on TREE's MAKE card.
+  The avenue's two inner rows grow surface roots from the trunk base, fanning along the row and
+  bending toward the middle at every segment, so neighbouring trees' roots interleave into one
+  kerb each side and leave a dark walk 1.1 m wide down the centre (the tips stop 0.55 m from
+  the centre line). Built like the branches (`scripts/tree/tree_roots.gd`): tapered cylinders
+  drawn with the tree's own branch material, so they grow out with the trunk, take its colour
+  and do not sway. Eight shared root shapes; each tree turns and scales one to its distance
+  from the path, so a WALK recycle is a transform and never a build. Desktop cost on the
+  default avenue: +28 draws, about 90 segments a tree, +30k triangles in view, no change in
+  script time; switching on costs 1.7 ms once. Trees in the far batch (COUNT 120 and up)
+  carry none.
 - **COUNT: up to 500 trees.** A slider on TREE's MAKE card with five steps, 30, 60, 120, 250
   and 500 (`STEPS` in `forest.gd`). It starts at 30, which sows exactly the avenue and grove
   it always did; moving it sows the layout on show again at the new size.

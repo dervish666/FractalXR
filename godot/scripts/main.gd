@@ -698,6 +698,12 @@ func _build_menu() -> void:
 			func(): _step_tree_count(1),
 			false, _vis_tree).stepping(func(d: int): _step_tree_count(d)).slider(
 			func(): return forest.count_idx, Forest.STEPS.size()),
+		# Surface roots on the avenue's two inner rows, bent toward the middle so they edge a
+		# path (scripts/tree/tree_roots.gd). Off by default.
+		WristMenu.Item.new("make", "ROOTS",
+			func(): return "edge the path" if forest.roots_on else "off",
+			func(): forest.set_roots(not forest.roots_on),
+			false, _vis_tree).toggle(func(): return forest.roots_on),
 
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(

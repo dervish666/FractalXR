@@ -170,6 +170,7 @@ var lod := 0
 
 var _branches: MultiMeshInstance3D = null
 var _leaves: MultiMeshInstance3D = null
+var _roots: MultiMeshInstance3D = null    # ROOTS (tree_roots.gd), drawn with the branch material
 var _branch_mat: ShaderMaterial = null
 var _leaf_mat: ShaderMaterial = null
 var _palette: Array = []
@@ -617,6 +618,32 @@ func _upload(d: Dictionary) -> void:
 	_leaves.custom_aabb = d["aabb"]
 
 
+## Surface roots (forest.gd's ROOTS): a shared root MultiMesh under a node of their own, turned
+## and scaled by `xf` in the tree's frame. They use the branch material, so they grow, colour
+## and hide with the tree. null takes them away.
+func set_roots(mm: MultiMesh, xf: Transform3D, aabb: AABB) -> void:
+	if mm == null:
+		if _roots != null:
+			_roots.queue_free()
+			_roots = null
+		return
+	_guts()
+	if _roots == null:
+		_roots = MultiMeshInstance3D.new()
+		_roots.name = "Roots"
+		_roots.material_override = _branch_mat
+		_roots.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(_roots)
+	_roots.multimesh = mm
+	_roots.transform = xf
+	_roots.custom_aabb = aabb
+	_roots.visible = _branches.visible and not far
+
+
+func roots_node() -> MultiMeshInstance3D:
+	return _roots
+
+
 ## Handed to the far batch: the tree's own nodes go dark and give their buffers back. The
 ## shape, counts and clock stay, so it can come back with adopt().
 func release() -> void:
@@ -625,6 +652,8 @@ func release() -> void:
 		return
 	_branches.visible = false
 	_leaves.visible = false
+	if _roots != null:
+		_roots.visible = false
 	_branches.multimesh.instance_count = 0
 	_leaves.multimesh.instance_count = 0
 
@@ -769,10 +798,14 @@ func tick(delta: float) -> void:
 	if grow_t <= 0.0:
 		_branches.visible = false
 		_leaves.visible = false
+		if _roots != null:
+			_roots.visible = false
 		return
 	if not _branches.visible:
 		_branches.visible = true
 		_leaves.visible = leaves_on
+		if _roots != null:
+			_roots.visible = true
 	var xf := global_transform
 	var wxf := wind_ref.global_transform if wind_ref != null else xf
 	var g := minf(grow_t, grow_s + 2.0)
