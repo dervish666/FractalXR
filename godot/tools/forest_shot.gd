@@ -9,6 +9,8 @@ extends SceneTree
 ##   tools/forest_shot.sh
 
 const SPEED := 4.0   # the forest's clocks run on frame delta; this only shortens the wait
+const SCRIPT_CAP_MS := 4.0   # main's whole _process: frames past it are counted (1% allowed)
+const FOREST_CAP_MS := 3.0   # the forest's own tick, any one frame, on this Mac
 
 
 func _init() -> void:
@@ -126,9 +128,12 @@ func _init() -> void:
 	var label_ok: bool = label == forest.peek_plant(FractalTree.SHAPE_NAMES[main.tree_shape_idx]).to_upper()
 	var marker_off: bool = not await _probe_marker(main, Vector3(0.6, 1.6, 0.4), Vector3(40.0, 0.0, 0.0))
 
+	var top_ok: bool = await _top_grove(main, forest)
+
 	var ok: bool = sown == Forest.GROVE_COUNT and species.size() >= 8 and in_ring and clear_of_eye \
 		and planted_a and planted_b and promise_kept and capped and still and hero_turned \
-		and governor_ok and interior_room and marker_on and marker_matches and label_ok and marker_off and err == OK
+		and governor_ok and interior_room and marker_on and marker_matches and label_ok and marker_off and err == OK \
+		and top_ok
 	print("FORESTSHOT %s sown=%d species=%d ring=%s eye_clear=%s planted=%s/%s promise=%s(%s,%s) capped=%s max_tree=%d still=%s hero_turned=%s" % [
 		"PASS" if ok else "FAIL", sown, species.size(), str(in_ring), str(clear_of_eye),
 		str(planted_a), str(planted_b), str(promise_kept), got_a, got_b, str(capped), max_tree,
@@ -138,6 +143,115 @@ func _init() -> void:
 		forest.budget, forest.visible_cost, forest.gpu_ms, str(interior_room),
 		str(marker_on), str(marker_matches), str(marker_off), label, frames])
 	quit(0 if ok else 1)
+
+
+## COUNT's top step through its own tile, in the grove: sown afresh at the bigger size, inside
+## its wider ring, every trunk clear of the next and in front of you, grown under the script cap
+## and drawn within the budget. Then back to the default. Saves forest_<n>.png.
+func _top_grove(main, forest: Forest) -> bool:
+	var top := Forest.STEPS.size() - 1
+	var tile = null
+	for it in main.menu.items:
+		if it.label == "COUNT" and it.section == "make":
+			tile = it
+	if tile == null:
+		print("FORESTSHOT top FAIL no COUNT tile")
+		return false
+	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
+	main.xr_camera.rotation_degrees = Vector3(-14.0, 0.0, 0.0)
+	main._recenter()
+	await process_frame
+	var planted0 := forest.planted_count()
+	var read0 := str(tile.read.call())
+	var b0 := forest.builds
+	var t0 := Time.get_ticks_usec()
+	tile.step.call(top - forest.count_idx)
+	var sow_ms := float(Time.get_ticks_usec() - t0) / 1000.0
+	var want: int = forest.step()["grove"]
+	var r_max := sqrt(Forest.GROVE_R_MIN * Forest.GROVE_R_MIN + float(want) / Forest.GROVE_COUNT
+		* (Forest.GROVE_R_MAX * Forest.GROVE_R_MAX - Forest.GROVE_R_MIN * Forest.GROVE_R_MIN))
+	var eye_w: Vector3 = main.xr_camera.global_position
+	var eye_l := forest.to_local(eye_w)
+	var eye2 := Vector2(eye_l.x, eye_l.z)
+	var sown := 0
+	var in_ring := true
+	var in_front := true
+	var clear := true
+	var ps: Array[Vector2] = []
+	for t in forest.trees():
+		if t.hand_planted:
+			continue
+		sown += 1
+		var p := forest.to_local(t.global_position)
+		var q := Vector2(p.x, p.z)
+		in_ring = in_ring and q.length() >= Forest.GROVE_R_MIN - 1e-3 and q.length() <= r_max + 1e-3
+		in_front = in_front and q.dot(eye2.normalized()) <= eye2.length() - Forest.GROVE_EYE_CLEAR + 1e-3
+		clear = clear and Vector2(t.global_position.x, t.global_position.z).distance_to(
+			Vector2(eye_w.x, eye_w.z)) >= Forest.GROVE_EYE_CLEAR - 1e-3
+		ps.append(q)
+	var gap := INF
+	for a in ps.size():
+		for b in range(a + 1, ps.size()):
+			gap = minf(gap, ps[a].distance_to(ps[b]))
+	var meter := {"sum": 0, "n": 0, "max": 0, "fmax": 0, "over": 0, "ls": main._proc_us_sum,
+		"lf": main._proc_frames}
+	Engine.time_scale = SPEED
+	var frames := 0
+	while frames < 8000:
+		frames += 1
+		await process_frame
+		_sample(main, meter)
+		var all_grown := true
+		for t in forest.trees():
+			all_grown = all_grown and t.built and t.grow_t > t.grow_s + 1.0
+		if all_grown and frames > 60:
+			break
+	Engine.time_scale = 1.0
+	for i in 30:
+		await process_frame
+		_sample(main, meter)
+	forest.apply_lod(main.xr_camera.global_position)
+	for i in 3:
+		await process_frame
+	# Counted from the scene, all as if in view (a frame difference moves with the menu's redraws).
+	var draws := 2 * forest.whole_drawn() + 2 * forest.far_batch().batch_count()
+	var img := root.get_viewport().get_texture().get_image()
+	img.save_png("res://.spike-out/forest_%d.png" % int(forest.step()["n"]))
+	var max_ms: float = meter["max"] / 1000.0
+	var fmax_ms: float = meter["fmax"] / 1000.0
+	var ok: bool = read0 == "30 trees" and str(tile.read.call()) == "%d trees" % int(forest.step()["n"]) \
+		and sown >= int(want * 0.9) and in_ring and in_front and clear and gap >= Forest.GROVE_SPACING - 1e-3 \
+		and forest.planted_count() == planted0 and forest.visible_cost <= forest.budget \
+		and fmax_ms <= FOREST_CAP_MS and int(meter["over"]) <= maxi(1, int(meter["n"] * 0.01)) \
+		and frames < 8000
+	print("FORESTSHOT top %s count=%s grove=%d/%d r_max=%.2fm in_ring=%s in_front=%s eye_clear=%s gap=%.2fm planted_kept=%s sow=%.2fms computes=%d script_ms avg=%.2f max=%.2f forest=%.2f (cap %.1f) over %.1fms: %d/%d visible=%d budget=%d branches=%d leaves=%d tree_draws=%d frames=%d" % [
+		"PASS" if ok else "FAIL", str(tile.read.call()), sown, want, r_max, str(in_ring), str(in_front),
+		str(clear), gap, str(forest.planted_count() == planted0), sow_ms, forest.builds - b0,
+		meter["sum"] / 1000.0 / maxf(1.0, meter["n"]), max_ms, fmax_ms, FOREST_CAP_MS, SCRIPT_CAP_MS,
+		meter["over"], meter["n"], forest.visible_cost, forest.budget, forest.drawn_branches,
+		forest.drawn_leaves, draws, frames])
+	tile.step.call(-forest.count_idx)
+	await process_frame
+	return ok
+
+
+## One frame of main's script exactly (as avenue_shot.gd's meter), the forest's tick in it, and
+## whether the whole script passed SCRIPT_CAP_MS.
+func _sample(main, m: Dictionary) -> void:
+	var s: int = main._proc_us_sum
+	var f: int = main._proc_frames
+	var reset: bool = f < int(m["lf"])
+	var ds: int = s if reset else s - int(m["ls"])
+	var df: int = f if reset else f - int(m["lf"])
+	m["sum"] += ds
+	m["n"] += df
+	if df == 1:
+		m["max"] = maxi(int(m["max"]), ds)
+		m["fmax"] = maxi(int(m["fmax"]), main.forest.last_tick_us)
+		if ds > SCRIPT_CAP_MS * 1000.0:
+			m["over"] += 1
+	m["ls"] = s
+	m["lf"] = f
 
 
 ## Point the right hand somewhere and report whether the planting ring came up. Negative

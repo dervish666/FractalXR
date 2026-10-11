@@ -27,7 +27,17 @@ const PARTICLE_STEPS := [0.25, 0.35, 0.45, 0.6, 0.15]
 const POINT_STEPS := [1.0, 1.25, 1.5, 2.0]
 # Softer, not tighter. A point that fades across its whole sprite changes weight
 # smoothly as sub-pixel position drifts; a hard-edged one flips on and off.
+# Only the legacy kernel (AA "old") draws with these; the area kernel keeps each step's
+# average brightness from them and nothing else.
 const SHARPNESS := [3.0, 3.0, 3.5, 4.0]
+# AA: the side of the little square each point is drawn as at SIZE 1.0, in pixels
+# (points.gdshader, point_kernel 1). Each point now lands equally bright wherever it falls
+# inside a pixel, which is what stops the flame flickering as the head moves; the side sets
+# how smoothly a point crosses from one pixel to the next. 0.5 is the measured knee
+# (tools/flame_flicker.sh). 0.0 is the crispest and hops; 1.0 is smoothest and softest; -1 is
+# the old kernel, for comparing in the headset.
+const AA_STEPS := [0.5, 0.0, 1.0, -1.0]
+var aa_idx := 0
 # Splat radius in metres, before the cloud's own scale. Bulbs want the larger end: a
 # distance-estimate shell is a surface, and a surface wants overlapping discs.
 const SPLAT_STEPS := [0.006, 0.010, 0.016, 0.026, 0.042, 0.003]
@@ -70,15 +80,23 @@ const STABILITY := [0, 1, 2, 4, 8, 16]   # 1/n of the cloud per frame; 0 = froze
 # particles are already on the final attractor. Only a fresh load needs a long settle.
 const CONVERGE_FRAMES := 150             # ~2s at 72Hz, for a cold start
 const FUSE_FRAMES := 5                   # reseed-free tail before a freeze (5 x 4 iterations)
-const SETTLE_FRAMES := 30                # after a morph, which has already converged it
 const MEASURE_EVERY := 12                # frames between framing updates while moving
-# A sixth of the cloud per frame during a transition. This is NOT a performance trade:
-# the cost is the same either way. It is sampling. Every particle the chaos game touches
-# teleports elsewhere on the attractor, so the more of them that move per frame, the more
-# of the image is uncorrelated frame to frame, which reads as a loss of detail. Over a
-# six-second morph a sixth still gives each particle around fifty updates, far more than
-# enough to track a genome changing that slowly.
+# A sixth of the cloud per frame at the height of a transition, less towards either end
+# (_morph_slabs: 4 of 24 slabs down to 1). This is sampling, not performance. Every particle
+# the chaos game touches teleports elsewhere on the attractor, so the more of them that move
+# per frame, the more of the image changes frame to frame, which reads as flicker and a loss
+# of detail. The price of moving fewer is lag: a particle updated every n frames shows the
+# genome as it was up to n frames ago. Over a six-second morph a sixth still gives each
+# particle around fifty updates, far more than enough to track a genome changing that slowly.
 const MORPH_UPDATE_MOD := 6
+const MORPH_STRIDE_MAX := 24
+# After a transition lands: every particle gets SETTLE_UPDATES reseed-free updates at the
+# calmest stride, the twenty fused iterations a cold start gets (FUSE_FRAMES x 4). It used to
+# be thirty frames of every particle every frame, the most flicker the flame ever made
+# (tools/flame_flicker.sh: 18% of the light changing per frame, against 2.7% now), at the
+# moment the shape stops moving and flicker shows most.
+const SETTLE_UPDATES := 5
+const SETTLE_FRAMES := SETTLE_UPDATES * MORPH_STRIDE_MAX
 # Ambient tumble. Rigid rotation is temporally coherent, so it adds life without the
 # per-pixel churn that iterating the chaos game causes. Two near-coprime rates on
 # different axes read as a slow swirl rather than a turntable.
@@ -104,12 +122,14 @@ var help := HelpCard.new()
 var xr: OpenXRInterface = null
 var cloud := ParticleCloud.new()
 # The flame at scale: GALAXY (stand inside it), ECHOES (copies round the room) and the SKY it
-# can be baked into for the other modes. scripts/core/flame_galaxy.gd, flame_echoes.gd,
+# can be baked into for every mode. scripts/core/flame_galaxy.gd, flame_echoes.gd,
 # flame_sky.gd; the glue is _tick_flame_scale() and the functions after it.
 var galaxy := FlameGalaxy.new()
 var flame_echoes := FlameEchoes.new()
 var flame_sky := FlameSky.new()
 var sky_on := false
+## BULB's own SKY switch, off until pressed there: the splats sit at the budget line already.
+var sky_bulb_on := false
 var _galaxy_saved := {}
 var _near_fade := 0.0
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
@@ -118,8 +138,22 @@ var march := BulbMarch.new()
 # This DE needs roughly 48 trace steps to reach a true exterior surface. Lower rungs
 # painted the bounding volume or punched holes, so the performance budget lives in
 # resolution and post-hit shading rather than a misleading step-count preview.
-const SURFACE_STEPS := [0, 48, 64, 80]
-const SURFACE_NAMES := ["splats", "march 48", "march 64", "march 80"]
+const SURFACE_STEPS := [0, 48, 64, 80, 0, 0, 0]
+const SURFACE_NAMES := ["splats", "march 48", "march 64", "march 80", "solid 128", "solid 192", "solid 256"]
+## SOLID (spike, T-48): the bulb meshed on the device with AO and a soft shadow baked into
+## its vertices (scripts/sources/bulb_solid.gd). Grid cells per axis for each SURFACE entry,
+## 0 where the entry is not solid. Appended, so INSIDE_STEPS_IDX still names march 48.
+const SURFACE_SOLID := [0, 0, 0, 0, 128, 192, 256]
+var solid := BulbSolid.new()
+## SOLID re-homes the bulb to the size of the Mandelbulber taste-test render Sam liked
+## (godot/.spike-out/mb2-2026-10-11): 35 cm across, 0.7 m out, 15 cm under the eyes. The
+## splat toy is 1.2 m across at 1.1 m, which puts twice the pixels and triangles in view.
+const SOLID_ACROSS_M := 0.35
+const SOLID_DISTANCE := 0.7
+const SOLID_DROP := 0.15
+## A key light fixed to the shape: upper right and toward the viewer, as in the render.
+const SOLID_KEY_WORLD := Vector3(0.5, 0.8, 0.35)
+var _solid_msaa_saved := -1
 # Splat fill is cheap enough to use the chosen DETAIL. A raymarch is not: even the
 # normal 0.6x floor could sustain a full stereo DE trace for only a handful of frames.
 # Give the surface a dedicated quarter-ish eye buffer; the composition-layer wrist menu
@@ -274,6 +308,8 @@ var bright_idx := 2        # 0.05
 var render_idx := 2        # full recommended eye buffer; sharpness matters more than the ~1ms
 var stability_idx := 0     # frozen: a settled cloud is dramatically cleaner
 var _converge := CONVERGE_FRAMES
+## True while _converge is counting down a transition's settle rather than a cold start.
+var _settling := false
 var spin := true
 var exposure_idx := 0      # measured on-device as the best-looking end of the range
 var iter_idx := 2          # 4 iterations
@@ -392,6 +428,18 @@ var passthru_label := "void"
 ## reshaping plain enough to judge.
 const BREATH_STEPS := [1.0, 3.0, 0.0]
 var breath_idx := 0
+## LINES (T-49 spike): the bulb as stacked slice rings, its shell snapped onto parallel
+## planes so it reads as contour lines. Each rung is how many planes span the shape; 0
+## is the ordinary splatted shell. Same particles, same splats, same bake.
+const LINE_SLICES := [0, 24, 48, 96]
+var line_idx := 0
+## A ring's sigma across the line, as a share of the gap between rings; its length along
+## the ring as a multiple of the baked splat axis (long enough to close the gaps between
+## neighbours, and thin lines make the extra length cheap in fill); and the most that
+## length may be, in line widths, before a stroke stands off a curving ring as a hair.
+const LINE_WIDTH := 0.05
+const LINE_STRETCH := 2.0
+const LINE_CAP := 6.0
 var splat_on := false
 var splat_idx := 1
 var colour_idx := 0
@@ -468,6 +516,7 @@ const BULB_EXPOSURE_IDX := 0      # points are already bright, so do not push th
 func _ready() -> void:
 	add_child(cloud)
 	cloud.add_child(march)
+	cloud.add_child(solid)
 	cloud.add_child(tree)
 	cloud.add_child(forest)
 	cloud.add_child(ifs)
@@ -543,6 +592,7 @@ func _load_preset(i: int) -> bool:
 	# set_source reseeds into a ball; without a fresh converge window a frozen stability
 	# (the default) never iterates it, and a flame loaded after a bulb stays a ball.
 	_converge = CONVERGE_FRAMES
+	_settling = false
 	_apply_tone(preset)
 	# set_source touches the RenderingDevice, so it has to happen on the render thread.
 	# Failures surface through cloud.get_error() on a later frame rather than here.
@@ -689,6 +739,19 @@ func _build_menu() -> void:
 			func(): return "%d trees" % forest.tree_count(),
 			func(): _clear_forest(),
 			false, _vis_tree),
+		# How many trees AVENUE, WALK and SOW grow (scripts/tree/forest.gd STEPS). A step sows
+		# the current layout again at the new size.
+		WristMenu.Item.new("make", "COUNT",
+			func(): return "%d trees" % int(forest.step()["n"]),
+			func(): _step_tree_count(1),
+			false, _vis_tree).stepping(func(d: int): _step_tree_count(d)).slider(
+			func(): return forest.count_idx, Forest.STEPS.size()),
+		# Surface roots on the avenue's two inner rows, bent toward the middle so they edge a
+		# path (scripts/tree/tree_roots.gd). Off by default.
+		WristMenu.Item.new("make", "ROOTS",
+			func(): return "edge the path" if forest.roots_on else "off",
+			func(): forest.set_roots(not forest.roots_on),
+			false, _vis_tree).toggle(func(): return forest.roots_on),
 
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
@@ -720,8 +783,8 @@ func _build_menu() -> void:
 			func(): return "reset", func(): _recenter(); cloud.request_measure(),
 			false, _vis_grab),
 		# The flame at scale. GALAXY grows it round you, ECHOES hangs copies of it round the
-		# room, TO SKY bakes it into the sky that GROUND, TREE and IFS wear, and SKY, on this
-		# card in every mode, hangs or hides it. Not in the bottom bar: a fourth item there cut
+		# room, TO SKY bakes it into the sky every mode can wear, and SKY, on this card in every
+		# mode, hangs or hides it (BULB keeps its own switch). Not in the bottom bar: a fourth item there cut
 		# PASSTHRU to PASS and EXIT's "hold to quit" to "hold to q".
 		WristMenu.Item.new("scene", "GALAXY",
 			func(): return "inside" if galaxy.active else "off",
@@ -741,7 +804,7 @@ func _build_menu() -> void:
 			false, _vis_flame),
 		WristMenu.Item.new("scene", "SKY",
 			func(): return _sky_label(),
-			func(): _toggle_sky()).toggle(func(): return sky_on),
+			func(): _toggle_sky()).toggle(func(): return _sky_switch()),
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
@@ -786,12 +849,14 @@ func _build_menu() -> void:
 			false, _vis_cloud).stepping(func(d: int):
 				density_idx = wrapi(density_idx + d, 0, DENSITY_STEPS.size())
 				_apply_point_look()).minor(),
+		# Splat opacity. Hidden while SURFACE is a solid mesh: it does nothing there, and two
+		# things called solid on one card would be one too many.
 		WristMenu.Item.new("look", "SOLID",
 			func(): return "%d%%" % int(OPACITY_STEPS[opacity_idx] * 100.0),
 			func():
 				opacity_idx = (opacity_idx + 1) % OPACITY_STEPS.size()
 				_apply_point_look(),
-			false, _vis_cloud).stepping(func(d: int):
+			false, func(): return _vis_cloud.call() and SURFACE_SOLID[surface_idx] == 0).stepping(func(d: int):
 				opacity_idx = wrapi(opacity_idx + d, 0, OPACITY_STEPS.size())
 				_apply_point_look()).slider(func(): return opacity_idx, OPACITY_STEPS.size()),
 		WristMenu.Item.new("look", "SIZE",
@@ -800,6 +865,12 @@ func _build_menu() -> void:
 			false, _vis_flame).stepping(func(d: int):
 				point_idx = wrapi(point_idx + d, 0, POINT_STEPS.size())
 				_apply_point_look()).slider(func(): return point_idx, POINT_STEPS.size()),
+		WristMenu.Item.new("look", "AA",
+			func(): return "old" if AA_STEPS[aa_idx] < 0.0 else "%.1f px" % AA_STEPS[aa_idx],
+			func(): aa_idx = (aa_idx + 1) % AA_STEPS.size(); _apply_point_look(),
+			false, _vis_flame).stepping(func(d: int):
+				aa_idx = wrapi(aa_idx + d, 0, AA_STEPS.size())
+				_apply_point_look()).minor(),
 		WristMenu.Item.new("colour", "THEME",
 			func():
 				if recolor_on_drift:
@@ -890,6 +961,10 @@ func _build_menu() -> void:
 				else:
 					cloud.clear_bake(),
 			false, func(): return bulb_mode).toggle(func(): return auto_bake).minor(),
+		WristMenu.Item.new("look", "LINES",
+			func(): return "off" if LINE_SLICES[line_idx] == 0 else "%d rings" % LINE_SLICES[line_idx],
+			func(): _step_lines(1),
+			false, func(): return bulb_mode).stepping(func(d: int): _step_lines(d)),
 		WristMenu.Item.new("look", "BREATHE",
 			func():
 				# A frozen cloud cannot show a moving surface, so say so rather than
@@ -902,7 +977,15 @@ func _build_menu() -> void:
 				breath_idx = wrapi(breath_idx + d, 0, BREATH_STEPS.size())),
 		# Splats or a raymarched surface. The ms readout in the footer is the verdict.
 		WristMenu.Item.new("look", "SURFACE",
-			func(): return SURFACE_NAMES[surface_idx],
+			func():
+				if SURFACE_SOLID[surface_idx] > 0:
+					if solid.is_building():
+						return "growing %d%%" % int(solid.progress() * 100.0)
+					if solid.is_ready():
+						return "solid %dk" % int(solid.tri_count / 1000)
+					if solid.get_error() != "":
+						return "solid failed"
+				return SURFACE_NAMES[surface_idx],
 			func(): surface_idx = (surface_idx + 1) % SURFACE_STEPS.size(); _apply_surface(),
 			false, func(): return bulb_mode).stepping(func(d: int):
 				surface_idx = wrapi(surface_idx + d, 0, SURFACE_STEPS.size())
@@ -1186,6 +1269,7 @@ func _morph_to_preset(i: int) -> void:
 	_morph_plan = Morph.plan(_morph_from, _morph_to)
 	_morph_t = 0.0
 	_converge = CONVERGE_FRAMES
+	_settling = false
 
 
 ## Generate a flame, add it to the gallery, and morph to it. Generated flames are
@@ -1257,8 +1341,9 @@ func _set_tree_mode(on: bool) -> void:
 		if tree.branch_count == 0:
 			tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
 		_set_forest_wind(TREE_WIND[tree_wind_idx])
-		_regrow_forest()
+		# Recentre first: a grove sown on entry keeps clear of you from where you will stand.
 		_recenter()
+		_regrow_forest()
 		_apply_palette()
 	else:
 		_recenter()
@@ -1505,9 +1590,10 @@ func _perf_tail() -> String:
 			_zoom_text(ground.zoom_factor()), ground.progress(),
 			GROUND_ITER[ground_iter_idx], ground.effective_iter(), GROUND_RELIEF[ground_relief_idx]]
 	if bulb_mode:
-		return head + " mode=bulb surface=%s marching=%s cover=%.2f" % [
+		return head + " mode=bulb surface=%s marching=%s cover=%.2f solid_tris=%d solid_build_ms=%.0f" % [
 			SURFACE_NAMES[surface_idx].replace(" ", "_"), str(march.is_on()),
-			BULB_COVERAGE[coverage_idx]]
+			BULB_COVERAGE[coverage_idx], solid.tri_count if solid.is_ready() else 0,
+			solid.wall_ms if solid.is_ready() else 0.0]
 	return head + " mode=flame morph=%.2f drift=%s" % [_morph_t, str(_drift)]
 
 
@@ -1585,6 +1671,21 @@ func _sow_grove() -> void:
 ## Two rows from your feet down the way you face; the hero steps out of the path.
 func _sow_avenue(walk: bool) -> void:
 	forest.sow_avenue(xr_camera.global_transform, walk, FractalTree.SHAPE_NAMES[tree_shape_idx])
+
+
+## COUNT: the next size up or down, sown again in the layout on show.
+func _step_tree_count(d: int) -> void:
+	var i := clampi(forest.count_idx + d, 0, Forest.STEPS.size() - 1)
+	if i == forest.count_idx:
+		return
+	forest.set_count(i)
+	match forest.layout:
+		Forest.Layout.GROVE:
+			_sow_grove()
+		Forest.Layout.AVENUE:
+			_sow_avenue(false)
+		Forest.Layout.WALK:
+			_sow_avenue(true)
 
 
 ## WALK on sows the endless avenue; off stops where you are and lets the far end grow in.
@@ -1959,7 +2060,15 @@ func _load_bulb(i: int) -> void:
 		_bulb = BulbSource.new(library.bulbs[bulb_idx])
 		_bulb.update_mod = BULB_UPDATE_MOD
 		RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
+	_bulb.slices = LINE_SLICES[line_idx]
+	var axis := Vector3.ZERO
+	if _bulb.slices > 0:
+		axis[_bulb.slice_axis] = 1.0
+	cloud.set_lines(axis, LINE_WIDTH * _bulb.slice_spacing(), LINE_STRETCH, LINE_CAP)
 	march.configure(_bulb)
+	# SOLID builds a mesh per bulb; the splats show the new one while it grows.
+	if bulb_mode and SURFACE_SOLID[surface_idx] > 0:
+		_apply_surface()
 	# The node transform is deliberately left alone: switching bulbs used to reset the
 	# scale here, which threw away wherever the user had grabbed and sized the cloud to.
 	# Only entering bulb mode (see _set_bulb_mode) puts you inside the surface.
@@ -1968,6 +2077,21 @@ func _load_bulb(i: int) -> void:
 	# set_source and reload_source paint the bulb's own palette (apply_look). Put the
 	# user's theme back over it and resync the menu swatch and marcher, as _load_preset does.
 	call_deferred("_apply_palette")
+
+
+## Step LINES and rebuild the cloud for it. Every point has to find a ring (or the shell)
+## again, so this reseeds, and the settle re-bakes; seeds stay hidden until they land, so
+## the rings draw themselves in rather than a ball of noise collapsing.
+func _step_lines(d: int) -> void:
+	line_idx = wrapi(line_idx + d, 0, LINE_SLICES.size())
+	if not bulb_mode:
+		return
+	# Rings are particles, and a marched surface hides the particles.
+	if surface_idx != 0:
+		surface_idx = 0
+		_apply_surface()
+	cloud.request_seed()
+	_load_bulb(bulb_idx)
 
 
 func _morph_to_new(g: Dictionary) -> void:
@@ -2036,17 +2160,31 @@ func _sync_iteration() -> void:
 		return
 	# A frozen cloud that is morphing would keep the old attractor's points while the
 	# genome moved out from under them, so a morph always forces iteration.
+	src.slabs_per_frame = 1
 	if _morph_t < 1.0:
-		src.update_mod = MORPH_UPDATE_MOD
+		src.update_mod = MORPH_STRIDE_MAX
+		src.slabs_per_frame = _morph_slabs(_morph_t)
 	elif _converge > 0:
-		src.update_mod = 1
+		src.update_mod = MORPH_STRIDE_MAX if _settling else 1
 	else:
 		src.update_mod = STABILITY[stability_idx]
 	# flam3 fuses 15-20 unplotted iterations after a reseed; here a reseeded point is
 	# stored after whatever is left of the frame. Stop reseeding for the last few settle
 	# frames so anything that will be frozen has had at least FUSE_FRAMES * iterations.
-	var fusing := _morph_t >= 1.0 and _converge > 0 and _converge <= FUSE_FRAMES
+	# A transition's settle is reseed-free throughout: SETTLE_UPDATES updates of each particle.
+	var fusing := _morph_t >= 1.0 and _converge > 0 and (_settling or _converge <= FUSE_FRAMES)
 	src.reseed_prob = 0.0 if fusing else FlameSource.RESEED_PROB
+
+
+## Slabs of MORPH_STRIDE_MAX the chaos game moves per frame during a transition. smoothstep
+## moves the genome fastest at the middle and barely at either end, where the flicker shows
+## most, so the rate follows the speed and the lag (frames between a particle's updates x the
+## genome's speed) stays at what a sixth a frame costs at the peak: 4 of 24 through the middle,
+## 2 a tenth of the way in or out, 1 at the very ends.
+func _morph_slabs(t: float) -> int:
+	var speed := 6.0 * t * (1.0 - t)   # smoothstep's slope: 1.5 at the middle
+	var per_peak := float(MORPH_STRIDE_MAX) / float(MORPH_UPDATE_MOD) / 1.5
+	return clampi(ceili(speed * per_peak), 1, MORPH_STRIDE_MAX / MORPH_UPDATE_MOD)
 
 
 func _tick_morph(delta: float) -> void:
@@ -2074,6 +2212,11 @@ func _tick_morph(delta: float) -> void:
 		cloud.set_framing(
 			(fa["center"] as Vector3).lerp(fb["center"] as Vector3, k),
 			lerpf(fa["fit"], fb["fit"], k))
+	elif _settling and _converge > 0 and b_known:
+		# Landed on a known framing: hold it through the settle. Measuring every 12 frames
+		# here eased the whole picture toward a fresh, noisy estimate each time (a pixel over
+		# the settle on the flicker harness), and the settle's own measure still refreshes it.
+		pass
 	elif _should_iterate():
 		_measure_countdown -= 1
 		if _measure_countdown <= 0:
@@ -2095,10 +2238,11 @@ func _tick_morph(delta: float) -> void:
 	var was := _morph_t
 	_morph_t = minf(1.0, _morph_t + delta / MORPH_STEPS[morph_idx])
 	if was < 1.0 and _morph_t >= 1.0:
-		# The morph already iterated it onto the final genome; a brief settle is enough.
+		# The morph already iterated it onto the final genome; a calm settle is enough.
 		# The old two-second convergence meant two seconds of every particle re-rolling
 		# after each transition, which read as a churn before it went still.
 		_converge = SETTLE_FRAMES
+		_settling = true
 	var src := cloud.source as FlameSource
 	if _morph_t >= 1.0 or _morph_plan == null:
 		# Land on the real genome, not an interpolated copy of it: everything that reads
@@ -2134,9 +2278,11 @@ func _tick_flame_scale(delta: float) -> void:
 		_near_fade = fade
 		cloud.set_near_fade(fade)
 	flame_echoes.suppressed = galaxy.active or galaxy.is_moving()
-	# The sky hangs behind the modes that are not the flame itself. Bulb is left out on budget
-	# (13.9 ms measured, at the line already), and passthrough always wins: the room is the sky.
-	flame_sky.sync(sky_on and (ground_mode or tree_mode or ifs_mode) and not passthrough, delta)
+	# The sky hangs behind every mode, the live flame included: bake flame A, then flame B
+	# stands in front of it. BULB has its own switch, off until pressed there: its splats were
+	# measured at 13.9 ms, at the line already, and a baked sky is one fetch per background
+	# pixel on top (under 1 ms, a guess). Passthrough always wins: the room is the sky.
+	flame_sky.sync(_sky_switch() and not passthrough, delta)
 
 
 func _toggle_galaxy() -> void:
@@ -2211,17 +2357,26 @@ func _bake_sky() -> void:
 		sky_on = true
 
 
-## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds.
+## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds
+## (in BULB that is nothing, so it reads "no flame" until a flame has been baked).
 func _toggle_sky() -> void:
-	sky_on = not sky_on
-	if sky_on and not flame_sky.ready and not flame_sky.baking:
+	if bulb_mode:
+		sky_bulb_on = not sky_bulb_on
+	else:
+		sky_on = not sky_on
+	if _sky_switch() and not flame_sky.ready and not flame_sky.baking:
 		_bake_sky()
+
+
+## The switch the SKY tile shows and flips in the current mode.
+func _sky_switch() -> bool:
+	return sky_bulb_on if bulb_mode else sky_on
 
 
 func _sky_label() -> String:
 	if flame_sky.baking:
 		return "baking %d%%" % int(flame_sky.progress * 100.0)
-	if not sky_on:
+	if not _sky_switch():
 		return "off"
 	return "on" if flame_sky.ready else "no flame"
 
@@ -2480,6 +2635,7 @@ func _process_frame(delta: float) -> void:
 		_bulb.clock += delta * BREATH_STEPS[breath_idx]
 		if march.is_on():
 			march.tick(_bulb, cloud.center, cloud.fit)
+		_tick_solid(delta)
 		if _inside:
 			_guard_inside()
 		elif march.is_on():
@@ -2735,6 +2891,7 @@ func _handle_input(delta: float) -> void:
 	if _key(KEY_S) and not ground_mode and not tree_mode and not ifs_mode:
 		cloud.request_seed()
 		_converge = CONVERGE_FRAMES
+		_settling = false
 	if _key(KEY_6):
 		_step_detail(1)
 
@@ -2793,6 +2950,8 @@ func _apply_palette() -> void:
 	cloud.override_palette(pal)
 	_push_menu_palette(pal)
 	march.set_palette(pal)
+	# SOLID on THEME "preset" wears the Mandelbulber echo instead of the bulb's own ramp.
+	solid.set_palette(BulbSolid.CLASSIC_PALETTE if theme_idx < 0 else pal)
 	# This runs every morph and theme-blend frame, so only the modes on screen are
 	# recoloured. Entering ground or tree calls this, so each arrives in the current theme.
 	if ground_mode:
@@ -2857,9 +3016,13 @@ func _apply_point_look() -> void:
 	cloud.set_coverage(BULB_COVERAGE[coverage_idx] if bulb_mode else 0.0)
 	cloud.set_point_size(POINT_STEPS[point_idx])
 	cloud.set_sharpness(SHARPNESS[point_idx])
+	cloud.set_point_kernel(0 if AA_STEPS[aa_idx] < 0.0 else 1)
+	cloud.set_aa_width(maxf(0.0, AA_STEPS[aa_idx]))
 	cloud.set_brightness(BRIGHT_STEPS[bright_idx])
 	march.set_palette_cycles(COLOUR_CYCLES[colour_idx])
 	march.set_gain(BRIGHT_STEPS[bright_idx] * MARCH_GAIN)
+	solid.set_palette_cycles(COLOUR_CYCLES[colour_idx])
+	solid.set_gain(BRIGHT_STEPS[bright_idx] * MARCH_GAIN)
 
 
 ## Show either the splatted cloud or the marched surface, never both. Ground mode owns
@@ -2872,8 +3035,94 @@ func _apply_surface() -> void:
 	else:
 		_apply_march_budget()
 	march.set_steps(SURFACE_STEPS[surface_idx] if bulb_mode else 0)
+	_apply_solid()
 	if not ground_mode:
-		cloud.set_visible_cloud(not marching)
+		# A solid still growing leaves the splats up until it lands (_tick_solid).
+		cloud.set_visible_cloud(not marching and not solid.visible)
+
+
+## SOLID on, off, or at a new grid. Entering it re-homes the bulb to the render's framing;
+## a build already running or finished for this bulb and grid is kept.
+var _solid_key := ""
+
+
+func _apply_solid() -> void:
+	var n: int = SURFACE_SOLID[surface_idx] if bulb_mode and _bulb != null else 0
+	if n == 0:
+		if solid.state != BulbSolid.State.IDLE or _solid_key != "":
+			solid.clear()
+			_solid_key = ""
+			_set_solid_msaa(false)
+		return
+	var entering := _solid_key == ""
+	var key := "%s/%d" % [_bulb.display_name, n]
+	if key == _solid_key and (solid.is_building() or solid.is_ready()):
+		solid.visible = solid.is_ready()
+		return
+	if entering:
+		_solid_home()
+		# A sculpture to look at, not a slideshow: DRIFT would rebuild it every 20 s. And it
+		# opens on the Mandelbulber palette; THEME still recolours it, DRIFT turns back on.
+		_drift = false
+		# The light is baked in and turns with the shape, so the ambient spin would carry the
+		# lit side away from you in forty seconds. A grab still turns it, light and all.
+		spin = false
+		if theme_idx >= 0:
+			_begin_theme_blend()
+			theme_idx = -1
+		_apply_palette()
+	_solid_key = key
+	solid.visible = false
+	var key_state := (cloud.global_transform.basis.orthonormalized().inverse()
+		* SOLID_KEY_WORLD.normalized())
+	solid.request(_bulb, n, key_state)
+
+
+## Main thread, every frame in bulb mode: drive the build on the render thread and swap
+## the splats out for the mesh when it lands.
+func _tick_solid(delta: float) -> void:
+	if solid.state == BulbSolid.State.IDLE:
+		return
+	if solid.is_building():
+		RenderingServer.call_on_render_thread(solid.step)
+	solid.tick(cloud.center, cloud.fit, delta)
+	if solid.just_ready:
+		solid.just_ready = false
+		solid.visible = true
+		cloud.set_visible_cloud(false)
+		_set_solid_msaa(true)
+
+
+func _solid_home() -> void:
+	if _bulb == null:
+		return
+	var cam := xr_camera.global_transform
+	var fwd := -cam.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 1e-4:
+		fwd = Vector3.FORWARD
+	fwd = fwd.normalized()
+	var pos := cam.origin + fwd * SOLID_DISTANCE
+	pos.y = cam.origin.y - SOLID_DROP
+	var s := SOLID_ACROSS_M * 0.5 / maxf(1e-3, BulbSolid.extent_of(_bulb) * cloud.target_fit)
+	var t := Transform3D(Basis().scaled(Vector3.ONE * s), pos)
+	if grab != null:
+		grab.reset(t)
+	else:
+		cloud.global_transform = t
+
+
+## MSAA 4x while the mesh is on screen and only then: project-wide it blurred the points
+## (project.godot), but an opaque mesh with 2-4 px triangles crawls without it.
+func _set_solid_msaa(on: bool) -> void:
+	var vp := get_viewport()
+	if on:
+		if _solid_msaa_saved < 0:
+			_solid_msaa_saved = vp.msaa_3d
+		vp.msaa_3d = Viewport.MSAA_4X
+	elif _solid_msaa_saved >= 0:
+		vp.msaa_3d = _solid_msaa_saved as Viewport.MSAA
+		_solid_msaa_saved = -1
 
 
 ## Marching runs for every shaded pixel in both eyes. Keep the normal render setting for
@@ -3085,6 +3334,7 @@ func _mark_help_seen() -> void:
 
 
 func _exit_tree() -> void:
+	RenderingServer.call_on_render_thread(solid.cleanup)
 	RenderingServer.call_on_render_thread(flame_sky.cleanup)
 	RenderingServer.call_on_render_thread(cloud.cleanup)
 	RenderingServer.call_on_render_thread(ground.cleanup)

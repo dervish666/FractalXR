@@ -7,8 +7,9 @@ extends SceneTree
 ##     them back on the way out; the flame comes back to arm's length.
 ##   - ECHOES add light to a view past the hero (off is the control), draw within POINTS_MAX,
 ##     keep the comfort rules, stay put when the hero is grabbed away, and hide in tree mode.
-##   - TO SKY bakes, the sky stays off in FLAME, comes up in TREE, IFS and GROUND, adds light to
-##     their backgrounds (SKY off is the control), and yields to passthrough.
+##   - TO SKY bakes, the sky comes up behind the live FLAME (and the flame still stands out in
+##     front of it), in TREE, IFS and GROUND, and in BULB only once BULB's own switch is on; it
+##     adds light to each background (SKY off is the control), and yields to passthrough.
 ##   - The baked equirect itself, dumped from the GPU, so the bake can be judged whole.
 ##
 ## Desktop mono render, 1280x800, a 75 degree camera. Stereo, scale and comfort are headset
@@ -18,6 +19,10 @@ extends SceneTree
 
 const OUT := "res://.spike-out/flame-scale-2026-10-10"
 const FWD := Vector3(-8.0, 0.0, 0.0)
+## The galaxy's ease is timed in seconds and this window is not vsynced, so its frame count
+## swings with the machine: the grow measured 1,903 and 1,995 frames, and a cap of 2,000 cut
+## the ease out short with the fade still on.
+const GALAXY_MAX_FRAMES := 6000
 
 var _fails := 0
 
@@ -69,7 +74,7 @@ func _galaxy(main, home_s: Dictionary) -> void:
 		and main.BRIGHT_STEPS[main.bright_idx] == maxf(main.BRIGHT_STEPS[bright0], FlameGalaxy.BRIGHT)
 	var mid: Image = null
 	var frames := 0
-	while main.galaxy.is_moving() and frames < 2000:
+	while main.galaxy.is_moving() and frames < GALAXY_MAX_FRAMES:
 		await process_frame
 		frames += 1
 		if mid == null and frames > 0 and main.galaxy._t > 0.5:
@@ -108,7 +113,7 @@ func _galaxy(main, home_s: Dictionary) -> void:
 
 	tile.advance.call()
 	frames = 0
-	while main.galaxy.is_moving() and frames < 2000:
+	while main.galaxy.is_moving() and frames < GALAXY_MAX_FRAMES:
 		await process_frame
 		frames += 1
 	await process_frame
@@ -252,10 +257,8 @@ func _sky(main) -> void:
 	_ok("sky bakes", main.flame_sky.ready and main.sky_on and read0 == "off",
 		"%d frames; SKY read %s before, %s after" % [frames, read0, str(sky.read.call())])
 	await _dump_sky(main)
-	# Not in FLAME: the live flame is the scene there.
-	for i in 10:
-		await process_frame
-	_ok("sky not in flame", env.background_mode == Environment.BG_COLOR, "mode %d" % env.background_mode)
+	await _sky_flame(main, sky)
+	await _sky_bulb(main, sky)
 
 	for mode in ["tree", "ifs", "ground"]:
 		main._set_mode(mode)
@@ -301,6 +304,100 @@ func _sky(main) -> void:
 	main._set_mode("flame")
 	for i in 4:
 		await process_frame
+
+
+## Behind the live flame: the sky the flame was baked into, hung behind the flame itself. The
+## pair is sky on and off from the same view; the flame has to keep standing out of the sky.
+func _sky_flame(main, sky) -> void:
+	var env: Environment = main._env()
+	var look := Vector3(12.0, 25.0, 0.0)
+	await _settle_sky(main)
+	var on_img: Image = await _shot(main, "sky-flame.png", look)
+	var shown: bool = env.background_mode == Environment.BG_SKY
+	sky.advance.call()
+	for i in 4:
+		await process_frame
+	var off_img: Image = await _shot(main, "nosky-flame.png", look)
+	var hidden: bool = env.background_mode == Environment.BG_COLOR
+	sky.advance.call()
+	var on_s := _stats(on_img)
+	var off_s := _stats(off_img)
+	_ok("sky over flame", shown and hidden and on_s["lit_n"] > off_s["lit_n"] + 1000,
+		"lit samples sky %d against %d without" % [on_s["lit_n"], off_s["lit_n"]])
+	# Washed out or not: where the flame draws (lit with the sky off), its mean luminance with
+	# the sky on, against the sky's own mean where no flame draws. Additive points over a
+	# background, so the flame's pixels carry the sky too; this asks that they still clearly
+	# beat it.
+	var c := _contrast(on_img, off_img)
+	print("FLAMESCALE stats sky-flame %s nosky-flame %s contrast %s" % [str(on_s), str(off_s), str(c)])
+	_ok("flame over its sky", c["flame"] > 2.0 * c["sky"] and c["flame_off"] > 0.0,
+		"flame pixels %.3f (%.3f without the sky), sky elsewhere %.3f" % [
+			c["flame"], c["flame_off"], c["sky"]])
+	# Passthrough wins in FLAME too.
+	main.passthrough = true
+	for i in 4:
+		await process_frame
+	var yields: bool = env.background_mode == Environment.BG_COLOR
+	main.passthrough = false
+	for i in 4:
+		await process_frame
+	_ok("flame sky yields", yields and env.background_mode == Environment.BG_SKY, "passthrough wins in FLAME")
+
+
+## BULB: the SKY switch there is its own and starts off, whatever the other modes have; on, the
+## baked sky hangs behind the bulb as it does everywhere else.
+func _sky_bulb(main, sky) -> void:
+	var env: Environment = main._env()
+	main._set_mode("bulb")
+	main.spin = false
+	for i in 200:
+		await process_frame
+	var look := Vector3(8.0, 25.0, 0.0)
+	var off_first: bool = env.background_mode == Environment.BG_COLOR \
+		and str(sky.read.call()) == "off" and main.sky_on
+	var read_first := str(sky.read.call())
+	var off_img: Image = await _shot(main, "nosky-bulb.png", look)
+	sky.advance.call()
+	await _settle_sky(main)
+	var on_img: Image = await _shot(main, "sky-bulb.png", look)
+	var shown: bool = env.background_mode == Environment.BG_SKY and str(sky.read.call()) == "on"
+	sky.advance.call()
+	for i in 4:
+		await process_frame
+	var back_off: bool = env.background_mode == Environment.BG_COLOR and not main.sky_bulb_on \
+		and main.sky_on
+	var on_s := _stats(on_img)
+	var off_s := _stats(off_img)
+	print("FLAMESCALE stats sky-bulb %s nosky-bulb %s" % [str(on_s), str(off_s)])
+	_ok("bulb sky off at first", off_first, "tile read %s with FLAME's switch %s" % [
+		read_first, str(main.sky_on)])
+	_ok("sky over bulb", shown and back_off and on_s["lit_n"] > off_s["lit_n"] + 1000,
+		"lit samples sky %d against %d without" % [on_s["lit_n"], off_s["lit_n"]])
+
+
+## Mean luminance of the flame's pixels (lit in the sky-off shot) in both shots, and of the sky
+## where the flame does not draw.
+func _contrast(on_img: Image, off_img: Image) -> Dictionary:
+	var f_on := 0.0
+	var f_off := 0.0
+	var f_n := 0
+	var s_on := 0.0
+	var s_n := 0
+	for y in range(0, on_img.get_height(), 2):
+		for x in range(0, on_img.get_width(), 2):
+			var a := off_img.get_pixel(x, y)
+			var b := on_img.get_pixel(x, y)
+			var ma := maxf(a.r, maxf(a.g, a.b))
+			var lb := 0.2126 * b.r + 0.7152 * b.g + 0.0722 * b.b
+			if ma > 0.12:
+				f_on += lb
+				f_off += 0.2126 * a.r + 0.7152 * a.g + 0.0722 * a.b
+				f_n += 1
+			elif ma < 0.02:
+				s_on += lb
+				s_n += 1
+	return {"flame": f_on / maxi(1, f_n), "flame_off": f_off / maxi(1, f_n),
+		"sky": s_on / maxi(1, s_n), "flame_n": f_n, "sky_n": s_n}
 
 
 ## The baked equirect straight off the GPU, through a plain Reinhard so it fits a PNG.

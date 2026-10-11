@@ -20,6 +20,13 @@ var reseed_prob := RESEED_PROB
 var proj_steps := 3.0
 var jitter := 0.0022
 var update_mod := 1
+## LINES: how many parallel slice planes span the shape (0 = off, the shell as splats),
+## and the state axis they stack along. y is up in the world, so the rings lie flat.
+var slices := 0
+var slice_axis := 1
+## The rings are cut at DE = this share of the ring spacing, an inflated bulb whose
+## crinkles below the spacing are rounded off.
+var slice_offset := 0.3
 ## Seconds of breathing, advanced by the host each frame.
 var clock := 0.0
 
@@ -35,6 +42,11 @@ func shader_path() -> String:
 	return "res://shaders/bulb.glsl"
 
 
+## bulb.glsl also carries SOLID's mesh passes (BulbSolid), so the cloud names its variant.
+func shader_version() -> StringName:
+	return &"particles"
+
+
 func is_frozen() -> bool:
 	return update_mod <= 0
 
@@ -44,7 +56,7 @@ func update_stride() -> int:
 
 
 func push_constant_size() -> int:
-	return 96
+	return 112
 
 
 func wants_normals() -> bool:
@@ -341,7 +353,7 @@ func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
 	var c: Vector3 = mp["julia_c"]
 
 	var b := PackedByteArray()
-	b.resize(96)
+	b.resize(112)
 	b.encode_s32(0, _tex_size)
 	b.encode_s32(4, frame % 16777216)
 	b.encode_s32(8, count)
@@ -367,4 +379,17 @@ func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
 	b.encode_float(84, ang_b)
 	b.encode_float(88, 0.0)
 	b.encode_float(92, 0.0)
+	# vec4 slice at 96: spacing, plane count, axis. Spaced over the shape's measured
+	# extent rather than the seed bound, so "48 rings" means 48 across what you see.
+	b.encode_float(96, slice_spacing())
+	b.encode_float(100, float(slices))
+	b.encode_float(104, float(slice_axis))
+	b.encode_float(108, slice_offset * slice_spacing())
 	return b
+
+
+## Distance between slice planes in state units, 0 when LINES is off.
+func slice_spacing() -> float:
+	if slices <= 0:
+		return 0.0
+	return 2.0 * float(room().get("extent", bound())) / float(slices)

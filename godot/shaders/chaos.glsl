@@ -27,7 +27,9 @@ layout(push_constant, std430) uniform Params {
 	// changing what it converges to, and costs proportionally less GPU.
 	int update_mod;
 	int update_phase;
-	int _pad;
+	// Slabs moved this frame, consecutively from update_phase, wrapping. A transition varies
+	// this and keeps update_mod fixed, so the slabs never re-partition under a particle.
+	int update_slabs;
 } p;
 
 // Genome layout (floats). Mirrors src/flame/encode.ts EncodedFlame.
@@ -108,10 +110,11 @@ void main() {
 		// 4.4ms for all of it). The host dispatches one slab's worth of workgroups and
 		// this maps them onto the slab for this frame's phase.
 		uint slab = (uint(p.count) + uint(p.update_mod) - 1u) / uint(p.update_mod);
-		// The dispatch rounds up to whole workgroups; lanes past the slab belong to the
-		// next phase's particles and would update them twice.
-		if (idx >= slab) return;
-		idx = uint(p.update_phase) * slab + idx;
+		uint k = uint(clamp(p.update_slabs, 1, p.update_mod));
+		// The dispatch rounds up to whole workgroups; lanes past the last slab belong to
+		// the next phase's particles and would update them twice.
+		if (idx >= slab * k) return;
+		idx = ((uint(p.update_phase) + idx / slab) % uint(p.update_mod)) * slab + idx % slab;
 		if (idx >= uint(p.count)) return;
 		ip = ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);
 	}

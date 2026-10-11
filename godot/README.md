@@ -160,6 +160,28 @@ The fix is to stagger the updates: only `1/n` of the cloud iterates per frame, s
 sample set persists. It converges to the same attractor, looks far more solid, and
 costs proportionally less GPU. Default is a quarter per frame.
 
+**The flicker that was left was the point kernel, not the chaos game** (2026-10-11). With
+the cloud frozen, the only thing still moving is the head, and the old fragment shader made a
+point's brightness depend on where its centre fell inside the pixel: full at the middle, a
+falloff, and a circular cut that discarded the corners outright. At size 1 that is anything
+from zero to full, mean 0.41, coefficient of variation 0.71, with 21% of positions drawing
+nothing. Every sub-pixel of head motion re-rolled every point, independently per eye. The
+area kernel (`point_kernel` 1 in `points.gdshader`) draws each point as a small square and
+gives each pixel the share of the square it overlaps, which sums to one at every position;
+`energy_gain` keeps the old mean brightness. `tools/flame_flicker.sh` measures it on a
+desktop stand-in for the headset (the Quest's centre pixel density, a one-degree-a-second
+drift applied as an exact frustum shift, the metric shifts each frame back and scores what
+still changed): 14.3% of the light changing per frame with the old kernel, 9.7% with a hard
+one-pixel square, 5.8% with the 0.5 px default, 3.7% at 1 px, which starts to read as soft.
+Inside the flame (GALAXY), where points are sparse, 40% fell to 16%. Glow, MSAA and point
+count were measured and are not it; see the harness for the table.
+
+The resampling half is the transitions. A morph moves a sixth of the cloud per frame, and
+the landing used to iterate every particle every frame for thirty frames (18% of the light
+changing per frame, the worst the flame did). Now a transition moves 1 to 4 of 24 slabs a
+frame with the genome's speed, taken in turn by a pointer so a changing rate never strands a
+particle (`selftest.gd` counts the coverage), and lands at 1 of 24 with the framing held.
+
 **Low resolution.** Two separate causes, neither of them a resolution setting.
 
 Above about 1.2M particles the frame rate falls below refresh, the compositor reprojects
@@ -356,6 +378,7 @@ Already installed on this machine, listed so it can be rebuilt elsewhere:
 ```bash
 tools/selftest.sh          # verify the compute chain on this machine, writes .spike-out/selftest.png
 tools/card_shot.sh         # render the first-launch controls card to .spike-out/help_card.png
+tools/flame_flicker.sh     # flame flicker per cause, frame to frame, scored by tools/flicker_metric.py
 tools/menu_shot.sh         # render and walk the wrist menu (galleries, bar, float) to .spike-out/menu_*.png
 tools/thumb_bake.sh        # re-bake the menu's gallery pictures to art/thumbs/ (commit the result)
 tools/build.sh             # export build/fractalxr-debug.apk (debug-signed, the dev loop)

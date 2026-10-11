@@ -41,6 +41,12 @@ func shader_path() -> String:
 	return ""
 
 
+## The #[versions] entry to compile, for a shader file that declares several. Empty for a
+## file with none.
+func shader_version() -> StringName:
+	return &""
+
+
 ## Bytes for the compute push constant. Must be a multiple of 16 and at most 128,
 ## which is the limit every Vulkan implementation is guaranteed to offer.
 func params_bytes(_count: int, _frame: int, _seeding: bool) -> PackedByteArray:
@@ -66,6 +72,12 @@ func is_frozen() -> bool:
 ## How many frames the cloud is spread over (1 = every particle every frame). The host
 ## dispatches count / stride invocations and the shader maps them onto this frame's slab.
 func update_stride() -> int:
+	return 1
+
+
+## How many of those slabs move in one frame. The shader takes them one after another from its
+## phase, so the host dispatches this many slabs' worth.
+func update_slabs() -> int:
 	return 1
 
 
@@ -105,7 +117,7 @@ func setup(rd: RenderingDevice, state_tex: RID, tex_size: int, normal_tex: RID =
 		if file == null:
 			_error = "failed to load %s" % path
 			return false
-		var spirv := file.get_spirv()
+		var spirv := file.get_spirv(shader_version())
 		if spirv.compile_error_compute != "":
 			_error = "%s: %s" % [path, spirv.compile_error_compute]
 			return false
@@ -166,7 +178,8 @@ func encode(cl: int, count: int, frame: int, seeding: bool) -> void:
 		return
 	var n := _tex_size * _tex_size if seeding else count
 	var stride := 1 if seeding else maxi(1, update_stride())
-	var invocations := int(ceil(float(n) / float(stride)))
+	var slabs := 1 if seeding else clampi(update_slabs(), 1, stride)
+	var invocations := int(ceil(float(n) / float(stride))) * slabs
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline)
 	_rd.compute_list_bind_uniform_set(cl, _uniform_set, 0)
 	_rd.compute_list_set_push_constant(cl, params_bytes(n, frame, seeding), push_constant_size())

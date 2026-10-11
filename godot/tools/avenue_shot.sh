@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 mkdir -p "$PROJ/.spike-out"
 "$GODOT" $GODOT_FLAGS --headless --import >/dev/null 2>&1 || true
-( sleep 420; pkill -9 -f "Godot --xr-mode off --path $PROJ" 2>/dev/null ) &
+( sleep 900; pkill -9 -f "Godot --xr-mode off --path $PROJ" 2>/dev/null ) &
 WATCHDOG=$!
 trap 'set +e; kill $WATCHDOG 2>/dev/null; true' EXIT
 # || RC=$?, not a bare RC=$? after: under set -e a failing run exited here and the grep below

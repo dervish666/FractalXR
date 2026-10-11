@@ -1,5 +1,5 @@
-// FLAME SKY (scripts/core/flame_sky.gd): the baked flame, hung at infinity behind GROUND,
-// TREE and IFS. One texture fetch per background pixel and nothing that changes per frame,
+// FLAME SKY (scripts/core/flame_sky.gd): the baked flame, hung at infinity behind every
+// mode. One texture fetch per background pixel and nothing that changes per frame,
 // so it cannot shimmer.
 shader_type sky;
 
