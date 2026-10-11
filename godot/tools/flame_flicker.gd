@@ -114,6 +114,16 @@ func _conditions() -> Array:
 		_c("d_frozen_aa1", {"kernel": 1, "aa": 1.0}, {"drift": true}),
 		_c("d_frozen_legacy_px2", {"kernel": 0, "px": 2.0, "sharp": 4.0}, {"drift": true}),
 		_c("d_frozen_new_px2", {"kernel": 1, "aa": 0.5, "px": 2.0, "sharp": 4.0}, {"drift": true}),
+		# CYCLE: the palette scrolling, frozen cloud. Still camera, so all of it is the colour
+		# moving (compare s_frozen_new, the floor); then slow with the head drifting, against
+		# d_frozen_new. Each condition starts the scroll a third of the way in, mid-ramp.
+		_c("s_cycle_slow", area, {"cycle": 1}),
+		_c("s_cycle_medium", area, {"cycle": 2}),
+		_c("s_cycle_fast", area, {"cycle": 3}),
+		_c("d_cycle_slow", area, {"drift": true, "cycle": 1}),
+		# The same colouring held still: what d_cycle_slow adds over this is the scroll itself,
+		# and what this adds over d_frozen_new is only the different colours at that phase.
+		_c("d_cycle_held", area, {"drift": true, "cycle": 1, "hold": true}),
 		# Candidates eliminated: the glow, MSAA, and the 10-bit buffer at a fifth of the energy
 		# per point paid back in the tone map.
 		_c("d_frozen_legacy_noglow", legacy, {"drift": true, "glow": false}),
@@ -232,6 +242,8 @@ func _capture(main, name: String, c: Dictionary, drift: bool) -> void:
 		# Positive offset.x moves the window right, so the picture moves left; offset.y up
 		# moves it down in image rows. Content shift in image pixels is (sh.x, sh.y).
 		_cam.frustum_offset = Vector2(-sh.x, sh.y) * _px_near
+		if c.get("hold", false):
+			main._cycle = 0.35   # CYCLE's colouring without its motion; the tick adds 1/8640
 		await process_frame
 		var img := root.get_viewport().get_texture().get_image()
 		img.save_png("%s/f%03d.png" % [dir, t])
@@ -283,6 +295,9 @@ func _apply_look(main, c: Dictionary) -> void:
 	main._env().tonemap_exposure = _exposure0 * float(c.get("exp_mul", 1.0))
 	main._env().glow_enabled = bool(c.get("glow", true))
 	root.get_viewport().msaa_3d = int(c.get("msaa", Viewport.MSAA_DISABLED))
+	# CYCLE. Off is set to exactly 0 here, not left to glide home into the next condition.
+	main.cycle_idx = int(c.get("cycle", 0))
+	main._cycle = 0.35 if main.cycle_idx > 0 else 0.0
 
 
 ## Load or converge, then frozen with the framing cached. The framing eases toward its last
@@ -309,6 +324,8 @@ func _cost(main) -> void:
 		["area 0.5", {"kernel": 1, "aa": 0.5}],
 		["area 0", {"kernel": 1, "aa": 0.0}],
 		["area 1", {"kernel": 1, "aa": 1.0}],
+		# The palette scroll's own cost: the default kernel with CYCLE at medium.
+		["area .5 cyc", {"kernel": 1, "aa": 0.5, "cycle": 2}],
 	]
 	var vp := root.get_viewport().get_viewport_rid()
 	var sums := {}
