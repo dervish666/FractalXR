@@ -1,0 +1,29 @@
+[remap]
+
+importer="cubemap_texture"
+type="CompressedCubemap"
+uid="uid://sj8o4ey1m5u8"
+path.s3tc="res://.godot/imported/geode.webp-18b6a058270fc1ad433ba36330aec2bf.s3tc.ccube"
+path.etc2="res://.godot/imported/geode.webp-18b6a058270fc1ad433ba36330aec2bf.etc2.ccube"
+metadata={
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
+"vram_texture": true
+}
+
+[deps]
+
+source_file="res://art/skies/geode.webp"
+dest_files=["res://.godot/imported/geode.webp-18b6a058270fc1ad433ba36330aec2bf.s3tc.ccube", "res://.godot/imported/geode.webp-18b6a058270fc1ad433ba36330aec2bf.etc2.ccube"]
+
+[params]
+
+compress/mode=2
+compress/high_quality=false
+compress/lossy_quality=0.7
+compress/uastc_level=0
+compress/rdo_quality_loss=0.0
+compress/hdr_compression=1
+compress/channel_pack=0
+mipmaps/generate=true
+mipmaps/limit=-1
+slices/arrangement=2

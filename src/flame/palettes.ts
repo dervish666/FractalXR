@@ -31,6 +31,15 @@ export const THEMES: Theme[] = [
   { name: 'Vaporwave', colors: [[0.12, 0.0, 0.35], [0.55, 0.0, 0.95], [1.0, 0.1, 0.7], [0.0, 0.85, 1.0], [0.7, 1.0, 1.0]] }, // indigo→purple→hot-pink→cyan
   { name: 'Acid', colors: [[0.1, 0.0, 0.12], [0.7, 0.0, 1.0], [0.25, 1.0, 0.0], [1.0, 0.92, 0.0], [1.0, 0.0, 0.6]] }, // clashing neon: purple/lime/yellow/magenta
   { name: 'Iridescent', colors: [[0.02, 0.06, 0.18], [0.18, 0.0, 0.55], [0.0, 0.65, 0.7], [0.45, 0.98, 0.5], [1.0, 0.45, 0.88]] }, // oilslick sheen
+  // --- greens, earths and metals (added for the native build's trees and CYCLE). Appended,
+  // never inserted: both builds number themes from the top. ---
+  { name: 'Autumn', colors: [[0.08, 0.02, 0.03], [0.5, 0.08, 0.04], [0.9, 0.38, 0.06], [1.0, 0.75, 0.2], [0.8, 0.9, 0.45]] }, // maroon→rust→amber→gold→pale lime
+  { name: 'Lagoon', colors: [[0.0, 0.06, 0.12], [0.0, 0.4, 0.55], [0.15, 0.85, 0.7], [0.95, 0.92, 0.45], [1.0, 0.55, 0.5]] }, // deep teal→turquoise→sand→coral
+  { name: 'Sakura', colors: [[0.08, 0.02, 0.1], [0.45, 0.1, 0.35], [0.95, 0.45, 0.65], [1.0, 0.82, 0.88], [0.8, 1.0, 0.75]] }, // plum→rose→blossom→petal→spring green
+  { name: 'Patina', colors: [[0.06, 0.03, 0.01], [0.5, 0.22, 0.08], [0.88, 0.55, 0.28], [0.3, 0.75, 0.62], [0.85, 0.98, 0.9]] }, // copper→bronze→verdigris
+  { name: 'Peacock', colors: [[0.02, 0.03, 0.15], [0.0, 0.32, 0.5], [0.0, 0.68, 0.45], [0.85, 0.78, 0.2], [0.65, 0.5, 1.0]] }, // navy→teal→emerald→gold→violet
+  { name: 'Jungle', colors: [[0.0, 0.05, 0.02], [0.0, 0.35, 0.15], [0.35, 0.75, 0.1], [1.0, 0.62, 0.08], [1.0, 0.3, 0.4]] }, // deep green→leaf→mango→hibiscus
+  { name: 'Abyss', colors: [[0.0, 0.01, 0.05], [0.03, 0.1, 0.38], [0.0, 0.45, 0.8], [0.1, 0.92, 0.85], [0.75, 1.0, 0.55]] }, // black→navy→cyan→bioluminescent green
 ]
 
 /** Look up a theme's colours by name (cloned so callers can't mutate the source). */

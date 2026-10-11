@@ -47,6 +47,23 @@ const SPLAT_STEPS := [0.006, 0.010, 0.016, 0.026, 0.042, 0.003]
 const BULB_COVERAGE := [0.9, 1.1, 1.3, 0.5, 0.7]
 var coverage_idx := 0
 const COLOUR_CYCLES := [1.0, 2.0, 3.0, 4.0]
+# CYCLE: every mode's palette scrolls through its ramp, Fractint-style, moving each point's hue
+# and keeping its brightness (the shaders' keep_luma says why). Seconds per full cycle, in which
+# a colour runs out along the ramp, back, and lands where it started: eight palette stops, so
+# "slow" moves a point about one stop every fifteen seconds. "fast" is the speed that looks
+# right on first sight; Sam's rule puts ambient motion well under that, hence slow at six times
+# slower. 0 is off. The last rung is slow plus a walk through the themes (CYCLE_THEME_S).
+const CYCLE_STEPS := [0.0, 120.0, 48.0, 20.0, 120.0]
+const CYCLE_NAMES := ["off", "slow", "medium", "fast", "themes"]
+const CYCLE_THEMES_RUNG := 4
+## The themes rung: another theme every CYCLE_THEME_S, cross-faded over CYCLE_THEME_BLEND_S, so
+## the palette is in motion a third of the time and never cuts.
+const CYCLE_THEME_S := 60.0
+const CYCLE_THEME_BLEND_S := 20.0
+## Off glides the colour home instead of snapping back: at most this many cycles a second,
+## twice "fast", easing in over the last twentieth of a cycle. Half a cycle out looks home in
+## about five seconds.
+const CYCLE_HOME_RATE := 0.1
 # Ascending, so SOLID cycles from ghost to wall instead of jumping about. Unsorted
 # "over" compositing reads thinner than the WebXR build's sorted version at the same
 # alpha, so the top of this ladder is how a bulb gets back to looking solid.
@@ -130,6 +147,8 @@ var flame_sky := FlameSky.new()
 var sky_on := false
 ## BULB's own SKY switch, off until pressed there: the splats sit at the budget line already.
 var sky_bulb_on := false
+## SKY RES: the live bake's equirect width, an index into FlameSky.RES_STEPS.
+var sky_res_idx := FlameSky.RES_DEFAULT
 var _galaxy_saved := {}
 var _near_fade := 0.0
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
@@ -216,6 +235,9 @@ var forest := Forest.new()
 var vignette := ComfortVignette.new()
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
+## The FLOOR and BARK tiles' words, by Forest.FLOOR_STEPS and Forest.BARK_STEPS.
+const FLOOR_LABELS := ["off", "fractal ground", "fallen leaves", "ground + leaves"]
+const BARK_LABELS := ["plain", "fractal veins", "julia lace"]
 const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
 var tree_shape_idx := 0
 var tree_wind_idx := 0
@@ -325,6 +347,9 @@ var _prev := {}
 ## both have to read the same stored answer rather than poll the button twice. Left, right.
 var _trig := [false, false]
 var _trig_held := [false, false]
+## WALK: the right stick held forward past WALK_STICK reads as a held trigger (_handle_input).
+var _walk_stick := false
+const WALK_STICK := 0.5
 ## True when the IFS editor took this frame's trigger. Nothing below it in the priority order
 ## gets a second go at the same press.
 var _trig_owned := false
@@ -433,16 +458,37 @@ var breath_idx := 0
 ## is the ordinary splatted shell. Same particles, same splats, same bake.
 const LINE_SLICES := [0, 24, 48, 96]
 var line_idx := 0
-## A ring's sigma across the line, as a share of the gap between rings; its length along
-## the ring as a multiple of the baked splat axis (long enough to close the gaps between
-## neighbours, and thin lines make the extra length cheap in fill); and the most that
-## length may be, in line widths, before a stroke stands off a curving ring as a hair.
-const LINE_WIDTH := 0.05
+## PATTERN: rings (one family of planes), grid (two, across y and x) or cross (all three
+## axes). The families share the one particle budget, so each plane of a grid gets half the
+## points a ring did and each plane of a cross a third. LINE_MAX_SLICES caps the planes per
+## family where that leaves too few points for the lines to close. tools/line_check.py on
+## Classic: grid at 24 a family 100% of its points in closed loops, at 48 20-25% (3-4 breaks a
+## plane); cross at 24 88-98%, at 48 3-15%. Citadel closes at both. So LINES steps off / 24 for
+## grid and cross, and off / 24 / 48 / 96 for rings.
+const LINE_PATTERNS := ["rings", "grid", "cross"]
+const LINE_MAX_SLICES := [96, 24, 24]
+var line_pattern_idx := 0
+## WIDTH: a line's sigma across, as a share of the gap between planes.
+const LINE_WIDTHS := [0.05, 0.03, 0.02]
+const LINE_WIDTH_NAMES := ["normal", "thin", "hair"]
+var line_width_idx := 0
+## A stroke's length along the ring as a multiple of the baked splat axis (long enough to
+## close the gaps between neighbours, and thin lines make the extra length cheap in fill);
+## and the most that length may be, as a share of the gap between planes, before a stroke
+## stands off a curving ring as a hair. 0.3 is the old cap of six 0.05 widths, now held
+## whatever the width, so a thinner line reaches as far along its ring and still closes.
 const LINE_STRETCH := 2.0
-const LINE_CAP := 6.0
+const LINE_CAP := 0.3
 var splat_on := false
 var splat_idx := 1
 var colour_idx := 0
+## CYCLE, off by default: nothing moves until it is asked to.
+var cycle_idx := 0
+## How far the palette has scrolled, in cycles [0, 1): the colour_cycle shader global, which
+## every colour shader adds to its ramp coordinate. One number for every mode, set once a frame.
+var _cycle := 0.0
+var _cycle_sent := 0.0
+var _cycle_theme_t := 0.0
 var opacity_idx := 2       # 0.35
 var density_idx := 0
 ## -1 means "whatever palette the genome came with". Anything else indexes library.themes,
@@ -456,6 +502,11 @@ var recolor_on_drift := true
 ## as the shape change, and cutting to the new colours undoes the work the morph is doing.
 var _theme_from: Array = []
 var _theme_blend := 1.0
+## Seconds the running blend takes; 0 follows SPEED, so colour and form arrive together.
+var _theme_blend_s := 0.0
+## The palette _apply_palette last pushed, so a blend begun mid-blend starts from what is on
+## screen instead of jumping to the old target first.
+var _pal_shown: Array = []
 var _flame_bright_idx := 2
 var _flame_exposure_idx := 0
 var _flame_opacity_idx := 2
@@ -746,12 +797,25 @@ func _build_menu() -> void:
 			func(): _step_tree_count(1),
 			false, _vis_tree).stepping(func(d: int): _step_tree_count(d)).slider(
 			func(): return forest.count_idx, Forest.STEPS.size()),
-		# Surface roots on the avenue's two inner rows, bent toward the middle so they edge a
-		# path (scripts/tree/tree_roots.gd). Off by default.
-		WristMenu.Item.new("make", "ROOTS",
-			func(): return "edge the path" if forest.roots_on else "off",
-			func(): forest.set_roots(not forest.roots_on),
-			false, _vis_tree).toggle(func(): return forest.roots_on),
+		# How fast WALK glides (scripts/tree/forest.gd WALK_PACES): 0.75 m/s unless you pick.
+		WristMenu.Item.new("make", "PACE",
+			func(): return "%.2f m/s" % forest.walk_pace(),
+			func(): forest.set_pace(wrapi(forest.pace_idx + 1, 0, Forest.WALK_PACES.size())),
+			false, _vis_tree).stepping(func(d: int): forest.set_pace(forest.pace_idx + d)).slider(
+			func(): return forest.pace_idx, Forest.WALK_PACES.size()),
+		# Something under the trees, in theme: a faint fractal ground, fallen leaves round every
+		# trunk, or both (forest_floor.gd, tree_litter.gd). Off by default.
+		WristMenu.Item.new("make", "FLOOR",
+			func(): return FLOOR_LABELS[forest.floor_idx],
+			func(): _set_tree_floor(wrapi(forest.floor_idx + 1, 0, Forest.FLOOR_STEPS.size())),
+			false, _vis_tree).stepping(func(d: int):
+				_set_tree_floor(wrapi(forest.floor_idx + d, 0, Forest.FLOOR_STEPS.size()))),
+		# A fractal grown into the wood (tree.gdshader BARK). Plain by default; far trees stay plain.
+		WristMenu.Item.new("make", "BARK",
+			func(): return BARK_LABELS[forest.bark_style],
+			func(): _set_tree_bark(wrapi(forest.bark_style + 1, 0, Forest.BARK_STEPS.size())),
+			false, _vis_tree).stepping(func(d: int):
+				_set_tree_bark(wrapi(forest.bark_style + d, 0, Forest.BARK_STEPS.size()))),
 
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
@@ -805,6 +869,20 @@ func _build_menu() -> void:
 		WristMenu.Item.new("scene", "SKY",
 			func(): return _sky_label(),
 			func(): _toggle_sky()).toggle(func(): return _sky_switch()),
+		# Which sky: the live bake of a flame, or one of the skies pre-rendered on the Mac
+		# (art/skies/), which need no bake and so are there in BULB from the start.
+		WristMenu.Item.new("scene", "SKY PICK",
+			func(): return flame_sky.pick_name(),
+			func(): _step_sky_pick(1),
+			false, func(): return not flame_sky.presets.is_empty()).stepping(
+			func(d: int): _step_sky_pick(d)),
+		# The live bake's resolution. Each step re-bakes the flame on show; a bake is a frame
+		# count, 2.8 s, 6.9 s and 15.4 s at 72 Hz (tools/sky_bake.sh measure).
+		WristMenu.Item.new("scene", "SKY RES",
+			func(): return FlameSky.RES_NAMES[sky_res_idx],
+			func(): _step_sky_res(1),
+			false, _vis_flame).stepping(func(d: int): _step_sky_res(d)).slider(
+			func(): return sky_res_idx, FlameSky.RES_STEPS.size()).minor(),
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
@@ -878,6 +956,11 @@ func _build_menu() -> void:
 				return "theme %d" % (theme_idx + 1) if theme_idx >= 0 else "preset",
 			func(): _cycle_theme()).stepping(func(d: int): _cycle_theme(d)).gallery(
 			func(): return theme_idx + 1, func(): return library.themes.size() + 1, _theme_swatch),
+		# Every mode's palette scrolling through its ramp. Beside THEME because it is the same
+		# palette moving, and like THEME it is on this card in every mode.
+		WristMenu.Item.new("colour", "CYCLE",
+			func(): return _cycle_label(),
+			func(): _step_cycle(1)).stepping(func(d: int): _step_cycle(d)),
 		WristMenu.Item.new("colour", "AUTO",
 			func(): return "on" if recolor_on_drift else "off",
 			func(): recolor_on_drift = not recolor_on_drift,
@@ -962,9 +1045,22 @@ func _build_menu() -> void:
 					cloud.clear_bake(),
 			false, func(): return bulb_mode).toggle(func(): return auto_bake).minor(),
 		WristMenu.Item.new("look", "LINES",
-			func(): return "off" if LINE_SLICES[line_idx] == 0 else "%d rings" % LINE_SLICES[line_idx],
+			func(): return "off" if _line_slices() == 0 else "%d %s" % [_line_slices(),
+				LINE_PATTERNS[line_pattern_idx]],
 			func(): _step_lines(1),
 			false, func(): return bulb_mode).stepping(func(d: int): _step_lines(d)),
+		# Only while LINES is on: with it off there are no lines to pattern or thin.
+		WristMenu.Item.new("look", "PATTERN",
+			func(): return LINE_PATTERNS[line_pattern_idx],
+			func(): _step_line_pattern(1),
+			false, func(): return bulb_mode and _line_slices() > 0).stepping(
+			func(d: int): _step_line_pattern(d)),
+		WristMenu.Item.new("look", "WIDTH",
+			func(): return LINE_WIDTH_NAMES[line_width_idx],
+			func(): _step_line_width(1),
+			false, func(): return bulb_mode and _line_slices() > 0).stepping(
+			func(d: int): _step_line_width(d)).slider(
+			func(): return line_width_idx, LINE_WIDTHS.size()).minor(),
 		WristMenu.Item.new("look", "BREATHE",
 			func():
 				# A frozen cloud cannot show a moving surface, so say so rather than
@@ -1650,6 +1746,22 @@ func _set_forest_leaves(on: bool) -> void:
 func _set_forest_palette(pal: Array) -> void:
 	tree.set_palette(pal)
 	forest.set_palette(pal)
+	if pal.size() > 2:
+		vignette.set_rest_tint(pal[2])
+
+
+## FLOOR: the forest's step, and the hero's fallen leaves with it (the hero is not in the forest's
+## LOD pass, so it is always near enough).
+func _set_tree_floor(i: int) -> void:
+	forest.set_floor(i)
+	tree.litter_near = true
+	tree.set_litter(forest.litter_on())
+
+
+## BARK: the hero and every forest tree drawn whole.
+func _set_tree_bark(i: int) -> void:
+	forest.set_bark(i)
+	tree.set_bark(forest.bark_style)
 
 
 ## Regrow the hero and the forest, staggered; an empty forest is sown afresh.
@@ -2060,11 +2172,9 @@ func _load_bulb(i: int) -> void:
 		_bulb = BulbSource.new(library.bulbs[bulb_idx])
 		_bulb.update_mod = BULB_UPDATE_MOD
 		RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
-	_bulb.slices = LINE_SLICES[line_idx]
-	var axis := Vector3.ZERO
-	if _bulb.slices > 0:
-		axis[_bulb.slice_axis] = 1.0
-	cloud.set_lines(axis, LINE_WIDTH * _bulb.slice_spacing(), LINE_STRETCH, LINE_CAP)
+	_bulb.slices = _line_slices()
+	_bulb.slice_families = line_pattern_idx + 1
+	_apply_line_look()
 	march.configure(_bulb)
 	# SOLID builds a mesh per bulb; the splats show the new one while it grows.
 	if bulb_mode and SURFACE_SOLID[surface_idx] > 0:
@@ -2083,7 +2193,45 @@ func _load_bulb(i: int) -> void:
 ## again, so this reseeds, and the settle re-bakes; seeds stay hidden until they land, so
 ## the rings draw themselves in rather than a ball of noise collapsing.
 func _step_lines(d: int) -> void:
-	line_idx = wrapi(line_idx + d, 0, LINE_SLICES.size())
+	# Rungs past the pattern's cap would only repeat the capped count, a press that does nothing.
+	for i in LINE_SLICES.size():
+		line_idx = wrapi(line_idx + d, 0, LINE_SLICES.size())
+		if LINE_SLICES[line_idx] <= LINE_MAX_SLICES[line_pattern_idx]:
+			break
+	_reload_lines()
+
+
+## Planes per family for the current rung and pattern, 0 when LINES is off.
+func _line_slices() -> int:
+	return mini(LINE_SLICES[line_idx], LINE_MAX_SLICES[line_pattern_idx])
+
+
+## PATTERN moves points between families, so like LINES it reseeds and re-bakes.
+func _step_line_pattern(d: int) -> void:
+	line_pattern_idx = wrapi(line_pattern_idx + d, 0, LINE_PATTERNS.size())
+	# Down to the pattern's cap, so the next LINES press moves from what the tile shows.
+	while LINE_SLICES[line_idx] > LINE_MAX_SLICES[line_pattern_idx]:
+		line_idx -= 1
+	_reload_lines()
+
+
+## WIDTH is the renderer's alone: the points stay where they are.
+func _step_line_width(d: int) -> void:
+	line_width_idx = wrapi(line_width_idx + d, 0, LINE_WIDTHS.size())
+	if _bulb != null:
+		_apply_line_look()
+
+
+func _apply_line_look() -> void:
+	var axis := Vector3.ZERO
+	if _bulb.slices > 0:
+		axis[_bulb.slice_axis] = 1.0
+	var h := _bulb.slice_spacing()
+	cloud.set_lines(axis, LINE_WIDTHS[line_width_idx] * h, LINE_STRETCH, LINE_CAP * h,
+		_bulb.slice_families)
+
+
+func _reload_lines() -> void:
 	if not bulb_mode:
 		return
 	# Rings are particles, and a marched surface hides the particles.
@@ -2355,6 +2503,26 @@ func _step_flame_echoes(d: int) -> void:
 func _bake_sky() -> void:
 	if flame_sky.request_bake(cloud, _theme_palette(), COLOUR_CYCLES[colour_idx]):
 		sky_on = true
+		# Baking this flame is asking for the live sky over any preset.
+		flame_sky.set_pick(0)
+
+
+## SKY PICK: live or a preset. Choosing a sky is asking to see it, so a preset switches SKY on;
+## back to live with nothing baked, FLAME bakes the flame on show (BULB has none to bake).
+func _step_sky_pick(d: int) -> void:
+	flame_sky.set_pick(flame_sky.pick + d)
+	if flame_sky.pick > 0 and not _sky_switch():
+		_toggle_sky()
+	elif flame_sky.pick == 0 and _sky_switch() and not flame_sky.has_sky() and not flame_sky.baking:
+		_bake_sky()
+
+
+## SKY RES: set the live bake's width, and re-bake the flame on show if a live sky is up.
+func _step_sky_res(d: int) -> void:
+	sky_res_idx = wrapi(sky_res_idx + d, 0, FlameSky.RES_STEPS.size())
+	flame_sky.set_width(FlameSky.RES_STEPS[sky_res_idx])
+	if flame_sky.pick == 0 and (flame_sky.ready or flame_sky.baking):
+		_bake_sky()
 
 
 ## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds
@@ -2364,7 +2532,7 @@ func _toggle_sky() -> void:
 		sky_bulb_on = not sky_bulb_on
 	else:
 		sky_on = not sky_on
-	if _sky_switch() and not flame_sky.ready and not flame_sky.baking:
+	if _sky_switch() and not flame_sky.has_sky() and not flame_sky.baking:
 		_bake_sky()
 
 
@@ -2378,7 +2546,7 @@ func _sky_label() -> String:
 		return "baking %d%%" % int(flame_sky.progress * 100.0)
 	if not _sky_switch():
 		return "off"
-	return "on" if flame_sky.ready else "no flame"
+	return "on" if flame_sky.has_sky() else "no flame"
 
 
 func _fail(msg: String) -> void:
@@ -2594,6 +2762,9 @@ var _proc_frames := 0
 
 func _process(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()
+	# Ahead of _process_frame and its early returns, so the colour never stalls, and so a theme
+	# the walk picks is applied by the dirty check below in the same frame.
+	_tick_cycle(delta)
 	_process_frame(delta)
 	# After every early return in _process_frame, so whatever recoloured this frame lands.
 	if _palette_dirty:
@@ -2611,9 +2782,14 @@ func _process_frame(delta: float) -> void:
 	_uptime += delta
 	cloud.ease_framing(delta)
 	if _theme_blend < 1.0:
-		# Match the shape transition, so colour and form arrive together.
-		_theme_blend = minf(1.0, _theme_blend + delta / MORPH_STEPS[morph_idx])
-		_palette_dirty = true
+		# Match the shape transition, so colour and form arrive together. CYCLE's theme walk
+		# sets its own, longer span.
+		var span: float = _theme_blend_s if _theme_blend_s > 0.0 else MORPH_STEPS[morph_idx]
+		_theme_blend = minf(1.0, _theme_blend + delta / span)
+		# The walk's twenty seconds recolour every near tree each time. Every fourth frame steps a
+		# channel by about one code value at most, which nobody sees, for a quarter of the script.
+		if _theme_blend_s <= 0.0 or _theme_blend >= 1.0 or Engine.get_process_frames() % 4 == 0:
+			_palette_dirty = true
 	if not _placed and _setup_done and xr_camera.global_transform.origin.length_squared() > 1e-6:
 		_placed = true
 		_recenter()
@@ -2706,8 +2882,10 @@ func _process_frame(delta: float) -> void:
 		# arrows are the right stick there). Only while nothing else owns the trigger, so a
 		# press on the menu never starts a walk.
 		forest.walk_held = forest.walking() and not _menu_active and not help.is_open() \
-			and (_trig_held[0] or _trig_held[1] or Input.is_key_pressed(KEY_G))
+			and (_trig_held[0] or _trig_held[1] or _walk_stick or Input.is_key_pressed(KEY_G))
 		forest.tick(delta, xr_camera.global_transform.origin)
+		# The walk's tunnel: tighter than the dive's, shut early, with the rest frame in it.
+		vignette.set_profile(ComfortVignette.WALK)
 		vignette.set_motion(forest.walk_motion())
 		return
 	# The sculpture's only per-frame work: the ambient clocks, and whatever rebuild breathing
@@ -2723,6 +2901,7 @@ func _process_frame(delta: float) -> void:
 		# Room size flies the beams past your face, so the periphery dims while a step moves,
 		# eased with the step as the walk's is. At table size the sculpture moves in front of
 		# you and the view is left alone.
+		vignette.set_profile(ComfortVignette.DIVE)
 		vignette.set_motion(ifs_dive.motion() if ifs_room else 0.0)
 		# A captured handle owns the shape, so the ambient clock stops while it is held. So does
 		# a dive step: it re-roots by the maps it started with, and a breath would move them.
@@ -2750,8 +2929,9 @@ func _process_frame(delta: float) -> void:
 # Left menu (≡)          pin the wrist menu open, press again to let go
 # Left stick click       passthrough on / off
 # Right stick click      the mode's ambient motion on / off
-# Right stick            turn, push away and pull back (ground: turn and zoom)
-# Left stick             grow and shrink (ground: walk)
+# Right stick            turn, push away and pull back (ground: turn and zoom; tree WALK:
+#                        forward glides like the trigger, and nothing else)
+# Left stick             grow and shrink (ground: walk; off during tree WALK)
 # Triggers               THE MODE'S OWN: prev/next flame or bulb, glide (ground),
 #                        regrow/plant (tree), sculpt a handle (ifs)
 # Right menu             the Quest system button; the app never sees it. Not bound.
@@ -2784,6 +2964,7 @@ func _handle_input(delta: float) -> void:
 	if xr == null:
 		rs = Vector2(Input.get_axis("ui_left", "ui_right"), Input.get_axis("ui_down", "ui_up"))
 
+	_walk_stick = false
 	if ground_mode:
 		# Left stick walks the fractal under you, in the direction you face; right stick
 		# Y zooms about the ground under your feet.
@@ -2802,6 +2983,13 @@ func _handle_input(delta: float) -> void:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
 			if absf(rs.x) > 0.15 and not menu.wants_stick():
 				ground.rotate_about_head(-rs.x * GROUND_TURN_RAD_S * delta)
+	# WALK owns the sticks. The right stick pushed forward glides like a held trigger, under
+	# the same pace, ease and tunnel; it used to shove the whole avenue at 1.5 m/s with no
+	# vignette. Turning and scaling the avenue mid-walk are off: a smooth turn swung the rows
+	# about the cloud's origin, and Meta's guidance makes smooth turning opt-in at most. Turn
+	# your body instead; the avenue re-lays ahead of you on a recentre.
+	elif tree_mode and forest.walking():
+		_walk_stick = rs.y > WALK_STICK and not _menu_active
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
 	# the sculpture moves out from under the plane you are dragging.
@@ -2947,6 +3135,7 @@ func _apply_palette() -> void:
 			mixed.append((_theme_from[i] as Vector3).lerp(target[i] as Vector3,
 				Morph.smoothstep_t(_theme_blend)))
 		pal = mixed
+	_pal_shown = pal
 	cloud.override_palette(pal)
 	_push_menu_palette(pal)
 	march.set_palette(pal)
@@ -3001,10 +3190,59 @@ func _theme_palette() -> Array:
 	return _theme_cache[ti]
 
 
-## Start a cross-fade from the palette currently showing to whatever theme_idx now names.
-func _begin_theme_blend() -> void:
-	_theme_from = _theme_palette()
+## Start a cross-fade from the palette currently showing to whatever theme_idx now names, over
+## `seconds`, or SPEED's transition time when that is 0.
+func _begin_theme_blend(seconds: float = 0.0) -> void:
+	var mid := _theme_blend < 1.0 and _pal_shown.size() == _theme_palette().size()
+	_theme_from = _pal_shown if mid else _theme_palette()
 	_theme_blend = 0.0
+	_theme_blend_s = seconds
+
+
+## CYCLE's label: the rung and its seconds per cycle.
+func _cycle_label() -> String:
+	if CYCLE_STEPS[cycle_idx] <= 0.0:
+		return "off"
+	if cycle_idx == CYCLE_THEMES_RUNG:
+		return "slow + themes"
+	return "%s · %ds" % [CYCLE_NAMES[cycle_idx], int(CYCLE_STEPS[cycle_idx])]
+
+
+func _step_cycle(d: int) -> void:
+	cycle_idx = wrapi(cycle_idx + d, 0, CYCLE_STEPS.size())
+	# Onto the themes rung, the first cross-fade starts now: a minute of nothing new would read
+	# as a dead tile.
+	_cycle_theme_t = CYCLE_THEME_S if cycle_idx == CYCLE_THEMES_RUNG else 0.0
+
+
+## CYCLE, once a frame: advance the scroll, or glide it home when off; walk the themes on the
+## last rung; hand every shader the result as one global. Nothing is sent while it sits at 0.
+func _tick_cycle(delta: float) -> void:
+	var period: float = CYCLE_STEPS[cycle_idx]
+	if period > 0.0:
+		_cycle = fposmod(_cycle + delta / period, 1.0)
+	elif _cycle != 0.0:
+		# Home the short way round: the scroll is periodic, so 0.9 is 0.1 from home, not 0.9.
+		var off := _cycle - roundf(_cycle)
+		off = move_toward(off, 0.0, minf(CYCLE_HOME_RATE, absf(off) * 2.0) * delta)
+		# Exactly 0 at the end, so the shaders take their off branch and the look is the old one
+		# to the bit.
+		_cycle = 0.0 if absf(off) < 1e-4 else fposmod(off, 1.0)
+	if _cycle != _cycle_sent:
+		_cycle_sent = _cycle
+		RenderingServer.global_shader_parameter_set(&"colour_cycle", _cycle)
+	if cycle_idx == CYCLE_THEMES_RUNG and library.themes.size() > 1 and _setup_done:
+		_cycle_theme_t += delta
+		if _cycle_theme_t >= CYCLE_THEME_S:
+			_cycle_theme_t = 0.0
+			_begin_theme_blend(CYCLE_THEME_BLEND_S)
+			# Any theme but the one showing: a walk that lands where it stood looks stuck.
+			var n := library.themes.size()
+			var nxt := randi() % n
+			if nxt == theme_idx:
+				nxt = (nxt + 1 + randi() % (n - 1)) % n
+			theme_idx = nxt
+			_palette_dirty = true
 
 
 func _apply_point_look() -> void:

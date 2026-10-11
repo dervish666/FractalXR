@@ -34,6 +34,15 @@ anti_aliasing/quality/msaa_3d=0
 scaling_3d/mode=0
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0
 
+[shader_globals]
+
+; CYCLE (main.gd, the COLOUR card): how far every mode's palette has scrolled, in cycles,
+; [0, 1). main.gd advances it once a frame and every colour shader reads it. 0 is the old look.
+colour_cycle={
+"type": "float",
+"value": 0.0
+}
+
 [xr]
 
 openxr/enabled=true

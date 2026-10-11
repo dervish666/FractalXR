@@ -16,6 +16,7 @@ uniform vec3 pal2 = vec3(0.95, 0.15, 0.4);
 uniform vec3 pal3 = vec3(1.0, 0.6, 0.1);
 uniform vec3 pal4 = vec3(1.0, 0.95, 0.65);
 uniform float palette_cycles = 2.0;
+global uniform float colour_cycle;
 uniform float gain = 1.0;
 // Trap equalisation, measured over the vertices at build time: cdf[i] is the share of
 // vertices whose trap is under i/64.
@@ -42,14 +43,8 @@ uniform int debug_view = 0;
 varying float v_trap;
 varying float v_ao;
 varying float v_sh;
-
-void vertex() {
-	v_trap = CUSTOM0.w;
-	v_ao = CUSTOM1.x;
-	v_sh = CUSTOM1.y;
-	// Model space in, view space out: Godot carries NORMAL through MODELVIEW.
-	NORMAL = CUSTOM0.xyz;
-}
+// CYCLE's colour, per vertex (see vertex()).
+varying vec3 v_cycled;
 
 float equalise(float x) {
 	float f = clamp(x, 0.0, 1.0) * 64.0;
@@ -66,13 +61,57 @@ vec3 palette(float u) {
 	return mix(a, b, f);
 }
 
+// CYCLE (main.gd, the COLOUR card; points.gdshader says how the ramp scrolls). Banded, the wrap
+// already has a seam per band and it scrolls with them; unbanded it ping-pongs, so cycling adds
+// no seam. Off (0, the default) is the old wrap exactly.
+float cycle_u(float u) {
+	if (colour_cycle <= 0.0) return fract(u * palette_cycles);
+	if (palette_cycles > 1.5) return fract(u * palette_cycles + colour_cycle);
+	return 1.0 - abs(fract(u * 0.5 + colour_cycle) * 2.0 - 1.0);
+}
+
+// CYCLE moves the hue and keeps the brightness: the scrolled colour scaled to the unscrolled
+// one's luma, at most 3x and the rest in grey (points.gdshader says why).
+vec3 keep_luma(vec3 c, float l0) {
+	const vec3 W = vec3(0.2126, 0.7152, 0.0722);
+	c *= min(l0 / max(dot(c, W), 1e-4), 3.0);
+	return c + max(l0 - dot(c, W), 0.0);
+}
+
+// After the ramp functions now, because CYCLE reads them here.
+void vertex() {
+	v_trap = CUSTOM0.w;
+	v_ao = CUSTOM1.x;
+	v_sh = CUSTOM1.y;
+	// Model space in, view space out: Godot carries NORMAL through MODELVIEW.
+	NORMAL = CUSTOM0.xyz;
+	// CYCLE's colour per vertex: the scrolled ramp at the unscrolled one's luma. Per pixel it cost
+	// a quarter of SOLID's draw on the Mac, and at a few pixels a triangle the vertices carry the
+	// colour as well. Banded, a band's seam would smear across a triangle, so fragment() keeps
+	// that case per pixel. Unused, and black, when CYCLE is off.
+	v_cycled = vec3(0.0);
+	if (colour_cycle > 0.0) {
+		float eq = equalise(v_trap);
+		v_cycled = keep_luma(palette(cycle_u(eq)),
+			dot(palette(fract(eq * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
+	}
+}
+
 void fragment() {
 	vec3 n = normalize(NORMAL);
 	vec3 l = normalize((VIEW_MATRIX * MODEL_MATRIX * vec4(light_dir, 0.0)).xyz);
 	float ndl = max(dot(n, l), 0.0);
 	float ndv = clamp(dot(n, VIEW), 0.0, 1.0);
 
-	vec3 albedo = palette(fract(equalise(v_trap) * palette_cycles));
+	vec3 albedo;
+	if (colour_cycle > 0.0 && palette_cycles < 1.5) {
+		albedo = v_cycled;
+	} else {
+		float eq = equalise(v_trap);
+		albedo = palette(cycle_u(eq));
+		if (colour_cycle > 0.0)
+			albedo = keep_luma(albedo, dot(palette(fract(eq * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
+	}
 	float lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
 	albedo *= mix(lum, 0.5, flatten) / max(lum, 0.03);
 	// The tonemapper bleaches what the key lifts; push chroma back so gold stays gold.

@@ -6,6 +6,89 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **FLOOR: something under the trees, in theme (off by default).** A stepper on TREE's MAKE
+  card: off, fractal ground, fallen leaves, ground + leaves. It replaces the ROOTS prototype
+  (never released, now deleted with `scripts/tree/tree_roots.gd`), which the headset judged a
+  failure: the roots never met the trunks, and they all ran one way.
+  - *Fractal ground*: a faint Kaliset filigree in the theme's colours on the floor under the
+    grove or the avenue, added to the void, so the black between the lines stays black and in
+    passthrough the lines lie on your real floor. It slides with the trees as you walk and has
+    faded out by 26 m. The pattern is baked once, the first time the ground shows, into a
+    mipmapped tile (`scripts/tree/forest_floor.gd`; 5.9 ms on the Mac, so a frame or two):
+    computed per pixel it measured 0.37 ms for a frame of floor on the M1 Pro, which would be a
+    few milliseconds on the Quest, and the mipmaps fade the distant lines without shimmer.
+  - *Fallen leaves*: glowing discs round every trunk, thick against the bark and thinning out
+    to the crown's reach on every side, in the tree's own leaf colour and outline (petals under
+    a sakura, sparkles under a crystal). They fall in over the 2 s after a canopy is out and go
+    first when a tree withers. Six shared shapes, scaled to each crown
+    (`scripts/tree/tree_litter.gd`), so a WALK recycle carries them and builds nothing. Only the
+    16 nearest trees within 14 m carry them, one draw each, and they shrink away from 9 m so
+    nothing pops.
+  - Cost at COUNT 500 standing, both on with BARK veins (`godot/tools/avenue_shot.sh`): +17
+    draws (litter on 16 trees, the ground 1), +6.6k triangles, no change in script time. The
+    ground filling the whole frame added 0.07-0.15 ms of GPU on the M1 Pro across runs
+    (`godot/tools/tree_look_shot.sh`); a guess for the Quest is 0.5-1 ms looking down the
+    avenue, unmeasured.
+- **BARK: fractal wood (spike, plain by default).** A stepper on TREE's MAKE card: plain,
+  fractal veins (a 3D Kaliset, cellular and lit from inside) or julia lace (the San Marco Julia
+  set's chain of bulbs round the wood). Mapped along each branch from the tree's base and round
+  its circumference, so it wraps with no seam, runs on unbroken into the next segment, never
+  slides as the tree sways or you move, and leaves thin twigs smooth. It fades to the plain
+  bark's colour between about 7 and 18 m on the Quest (by the pixel footprint, per eye), so the
+  distance never shimmers. It modulates the tree's own palette ramp, so new themes and cycling
+  palettes reach it for free. The far batch (COUNT 120 and up) stays plain. Cost is per
+  fragment of near wood: with a baobab trunk filling 41% of the frame on the M1 Pro, veins
+  added 0.07-0.17 ms and julia 0.10-0.23 ms over plain (the Mac's GPU clock wanders between
+  runs). Guessed at 3x slower per pixel on the Quest: about 0.5 ms down the avenue, and up to
+  2-3 ms standing with a trunk filling the view. Unmeasured on the headset.
+- **CYCLE: the colours move.** A new tile on the COLOUR card, beside THEME and in every mode,
+  scrolls the palette through each fractal's colour ramp: off, slow (a full cycle in 120 s,
+  about one palette stop every 15 s), medium (48 s), fast (20 s), and slow + themes, which
+  also cross-fades to another theme every minute over 20 s. FLAME and BULB splats scroll each
+  point's palette coordinate, LINES sends the colour up the stacked rings, SOLID scrolls the
+  orbit trap its vertices already carried (no bake change), the marched surface its own,
+  GROUND gets Fractint-style cycling along the escape count, TREE adds it to every tree's
+  palette phase so the avenue's colour rolls along the rows (BARK, the fallen leaves and FLOOR's
+  ground roll with it), and IFS adds it on top of its own slow scroll. The pre-rendered skies
+  are baked colour and stay put. In FLAME, BULB and GROUND it moves hue and keeps each point's brightness, so a
+  bulb does not dim to a purple blob halfway round; TREE and IFS move along their phase as
+  they already did. Turning it off glides the colour home over a few seconds.
+  One shader global, `colour_cycle`, set once a frame; off by default, and at 0 every shader
+  takes its old path, so nothing changes until it is turned on. With the head still, slow
+  changes 0.03% of the flame's light a frame (fast 0.17%), against the 5.8% head drift already
+  causes (`flame_flicker.sh`). `godot/tools/cycle_shot.sh` checks the clock, shoots a six-phase
+  strip per mode, runs a control that must fail and times every mode off against on.
+- **Seven more themes**, appended so every existing theme keeps its number: Autumn, Lagoon,
+  Sakura, Patina, Peacock, Jungle and Abyss, heavier on greens, earths and metals than the
+  first nineteen, for the trees as much as the flames. Shared with the web build through
+  `src/flame/palettes.ts`, so its Recolor and the breeder pick them up too.
+- **Sharper SKY, and three pre-rendered ones.** SKY PICK (SCENE, every mode) chooses the live
+  bake or Ember, Nautilus or Geode, skies baked on the Mac through the same bake at 8192 wide
+  with 2.1 billion samples and shipped as 2048-a-face cubemaps (ETC2 with mipmaps on the
+  headset, 16.8 MB of VRAM for the one on show, 24.9 MB of the APK for all three). They need
+  no bake, so they also hang behind BULB before any flame has been baked; picking one switches
+  SKY on. Their colours are baked in. SKY RES (FLAME > SCENE, under MORE) sets the live bake
+  to 2.5k, 4k (the new default, was 2.5k) or 6k across, re-baking the flame on show. The live
+  bake is a frame count, so on the headset it takes 2.8 s, 6.9 s or 15.4 s at 72 Hz; its
+  memory is 25 + 38 MB, 64 + 96 MB or 144 + 216 MB (sky plus the accumulator while baking).
+  The live sky's zenith no longer blends in the nadir row (bilinear filtering wrapped v).
+  `tools/sky_bake.sh` measures the live bake and makes the offline ones, `tools/sky_cube.py`
+  turns them into presets and `tools/sky_compare.py` checks a preset against the equirect it
+  came from, down a face edge and into a corner included. Headset not tried.
+- **LINES patterns and widths.** BULB > LOOK gains PATTERN (rings, grid, cross) and, under
+  MORE, WIDTH (normal, thin, hair), both showing only while LINES is on. A grid adds a second
+  set of slice planes across x, a cross a third across z; the particles split evenly between
+  the sets and every set is coloured by height, so the bulb reads as one net. On Citadel's
+  flat faces the grid and cross draw what rings could not (its top and bottom read blank as
+  rings). Splitting the points leaves fewer per plane, so grid and cross stop at 24 planes a
+  set: on Classic a grid at 48 kept only 20-25% of its points in closed loops (24: 100%) and
+  a cross at 48 3-15% (24: 88-98%). WIDTH is 0.05, 0.03 or 0.02 of the plane gap; the
+  stroke's reach along its ring no longer shrinks with the width, so thin lines close as
+  well as normal ones. Desktop fill: thin is 0.7x and hair 0.58x of normal. Grid and cross at
+  normal width are 0.97-1.0x of rings on Classic and up to 1.26x on Citadel (they draw the
+  faces rings leave empty), all under the rings-24 rung that was already shipped. Headset not
+  tried. `tools/line_shot.sh` takes patterns and widths, `tools/line_check.py` checks
+  closure per set, and `menu_shot.sh` shoots the LOOK card with LINES on.
 - **SOLID (spike): the bulb as a lit sculpture.** BULB > LOOK > SURFACE now runs on past the
   march steps to `solid 128`, `solid 192` and `solid 256`. The headset meshes the bulb from
   its own distance estimate (surface nets on a grid of that many cells, four compute passes
@@ -19,6 +102,23 @@ All notable changes to FractalXR are documented here. Format based on
   and the kill-criteria call are from `godot/tools/solid_shot.sh`; the headset has not seen it.
 
 ### Changed
+- **WALK is gentler on the stomach.** At 1.0 m/s the avenue gave mild VR sickness, so:
+  - PACE on TREE's MAKE card picks 0.5, 0.75 or 1.0 m/s, default 0.75. Optic flow, the thing
+    that drives vection, scales with speed.
+  - The ease to and from the pace is 0.4 s, down from 1 s. Meta's locomotion guidance is to keep
+    acceleration events brief: the inner ear feels acceleration, not steady speed.
+  - The walk has its own tunnel, tighter and earlier than the dive's: it starts closing at the
+    edge of the view the moment you move and is shut by half the pace, clear to 29 degrees and
+    darkest by 49. Measured on a 96-degree field (`godot/tools/comfort_shot.sh`) it takes 95% of
+    the light at the top and bottom edges and 92% at the sides, against the old tunnel's 50% and
+    43%.
+  - A rest frame sits in the dark of that tunnel: a faint latitude and longitude lattice in the
+    theme's colour, fixed to the room at infinity, so it turns with your head and never moves
+    with the walk. Meta's guidance calls it an independent visual background; a static rest
+    frame cut sickness in Cao, Jerald and Kopper (IEEE VR 2018).
+  - The right stick pushed forward now glides like the trigger, under the same pace, ease and
+    tunnel. In WALK it used to shove the whole avenue at 1.5 m/s with no tunnel; the stick's
+    smooth turn and the left stick's scaling are off while walking. The help card says so.
 - **DIVE dims the edges of the view at room size.** The avenue walk's tunnel vignette now
   also follows a dive step at room size, where the beams fly past your face: it eases in and
   out with the step's own half-second ease and clears when the step stops. Table size leaves
@@ -140,17 +240,6 @@ All notable changes to FractalXR are documented here. Format based on
   than stepping the gallery behind the panel.
 
 ### Added
-- **ROOTS: a path down the avenue (prototype, off by default).** A switch on TREE's MAKE card.
-  The avenue's two inner rows grow surface roots from the trunk base, fanning along the row and
-  bending toward the middle at every segment, so neighbouring trees' roots interleave into one
-  kerb each side and leave a dark walk 1.1 m wide down the centre (the tips stop 0.55 m from
-  the centre line). Built like the branches (`scripts/tree/tree_roots.gd`): tapered cylinders
-  drawn with the tree's own branch material, so they grow out with the trunk, take its colour
-  and do not sway. Eight shared root shapes; each tree turns and scales one to its distance
-  from the path, so a WALK recycle is a transform and never a build. Desktop cost on the
-  default avenue: +28 draws, about 90 segments a tree, +30k triangles in view, no change in
-  script time; switching on costs 1.7 ms once. Trees in the far batch (COUNT 120 and up)
-  carry none.
 - **COUNT: up to 500 trees.** A slider on TREE's MAKE card with five steps, 30, 60, 120, 250
   and 500 (`STEPS` in `forest.gd`). It starts at 30, which sows exactly the avenue and grove
   it always did; moving it sows the layout on show again at the new size.

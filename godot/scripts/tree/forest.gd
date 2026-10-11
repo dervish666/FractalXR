@@ -39,9 +39,10 @@ class_name Forest
 ## 3 m tall for an oak, so at 3-4 m spacing each crown keeps clear of the next and a row
 ## reads as trees, not a hedge (avenue_shot.sh shoots it from where you stand).
 ##
-## WALK is the same rows with a held trigger. The viewer never moves: the avenue's root
-## slides toward you along the path, at a held speed only, eased in and out over a
-## second, level and straight, so letting go stops it. A fixed pool of trees is built once.
+## WALK is the same rows with a held trigger (or the right stick pushed forward). The viewer
+## never moves: the avenue's root slides toward you along the path at the PACE you picked,
+## eased in and out over WALK_EASE_S, level and straight, so letting go stops it. A fixed
+## pool of trees is built once.
 ## A tree sprouts as it comes within 25 m, withers once it is behind you, and by 5 m behind
 ## it is hidden, moved to the far end of its row and left waiting to sprout again. Moving a
 ## tree is a transform and two uniforms, never a rebuild, so the walk costs no build at all
@@ -99,11 +100,17 @@ const AVENUE_PHASE_JITTER := 0.06
 const ROW_GAP := 2.6
 const ROW_GAP_JITTER := 0.5
 const WALK_PER_ROW := 15          # a pool of 30 trees, built once for the walk, never rebuilt
-## Held speed: a slow stroll, under the 1.3 m/s of a normal walk. 0.3 m/s read as too slow
-## in the headset. The glide is constant, straight, held and level under a vignette, which is
-## where steady speed near walking pace is tolerated; the ramp is what has to stay gentle.
-const WALK_SPEED := 1.0
-const WALK_EASE_S := 1.0          # seconds from still to full speed, and back: 1 m/s², 0.5 m to stop
+## PACE, the held speed in m/s. 0.3 read as too slow in the headset and 1.0 gave Sam mild
+## sickness (2026-10-11), so the default is the middle step, a stroll at under 60% of a normal
+## 1.3 m/s walk: optic flow, the thing that drives vection, scales with speed. Meta's locomotion
+## guidance: match avatar speed to real walking, keep the glide constant, straight and level.
+const WALK_PACES := [0.5, 0.75, 1.0]
+const WALK_PACE_DEFAULT := 1
+## Seconds from still to full speed, and back. Was 1.0 s. Meta's guidance is to keep acceleration
+## events brief and infrequent: it is acceleration, not steady speed, that the inner ear feels and
+## the eyes contradict, so a short ramp is one short conflict where a long one was a long one. At
+## 0.75 m/s this is 1.9 m/s² for 0.4 s, and 0.15 m to stop.
+const WALK_EASE_S := 0.4
 const WALK_SPROUT := 25.0         # metres ahead at which a waiting tree sprouts
 const WALK_WITHER := 1.5          # metres behind you at which a grown tree starts to wither
 const WALK_RECYCLE := 5.0         # metres behind you by which it goes to the far end
@@ -135,9 +142,16 @@ const STEPS := [
 		"far_b": 24, "far_l": 40, "budget": 48000, "budget_max": 64000},
 ]
 const VARIANT_SEED := 1000        # a species' library shapes are seeds VARIANT_SEED + 0..variants-1
-## ROOTS (off by default): the inner rows' surface roots (tree_roots.gd) reach for the centre
-## line and stop this far either side of it, so the walk down the middle stays clear.
-const ROOT_CLEAR := 0.55
+## FLOOR, the MAKE card's step (off by default). "fractal" is a faint Kaliset ground under the trees
+## (forest_floor.gd), "leaves" fallen leaves round every trunk (tree_litter.gd), "both" the two.
+const FLOOR_STEPS := ["off", "fractal", "leaves", "both"]
+## Fallen leaves cost a draw per tree, so only this many of the nearest trees drawn whole carry
+## them, and none past LITTER_FAR metres (tree_leaf.gdshader's litter_fade shrinks them away
+## before that, so a tree passing the line shows no pop).
+const LITTER_NEAR := 16
+const LITTER_FAR := 14.0
+## BARK, the MAKE card's step: tree.gdshader's bark_style.
+const BARK_STEPS := ["plain", "veins", "julia"]
 ## Placement (uploads and far-batch writes) stops for the frame once this much of it is spent.
 ## Real microseconds, so a slower headset simply places fewer trees a frame.
 const PLACE_BUDGET_US := 1000
@@ -154,12 +168,15 @@ const SHAPE_CACHE_MAX := 200
 
 var plant_mix := true             # each plant draws the next species from a shuffled bag
 var succession := true
-var roots_on := false
+var floor_idx := 0
+var bark_style := 0
+var pace_idx := WALK_PACE_DEFAULT
 var grove_seed := 0               # 0 = random each sowing
 var budget := BUDGET_START
 var visible_cost := 0
 var drawn_branches := 0           # instances drawn at the last LOD pass, near and far
 var drawn_leaves := 0
+var litter_drawn := 0             # trees carrying fallen leaves at the last LOD pass
 var gpu_ms := 0.0
 var count_idx := 0
 ## Shapes computed so far, and the compute time on the worker (the harness reads these).
@@ -187,6 +204,7 @@ var _trees: Array[FractalTree] = []
 ## _walk_s metres further toward you along +Z.
 var _avenue := Node3D.new()
 var _far := FarForest.new()
+var _floor := ForestFloor.new()
 var _avenue_frame := Transform3D()
 var _walk_s := 0.0
 var _row_far := PackedFloat32Array([0.0, 0.0])   # the furthest trunk's z in each row
@@ -222,6 +240,7 @@ func _init() -> void:
 	_avenue.name = "Avenue"
 	add_child(_avenue)
 	_avenue.add_child(_far)
+	_avenue.add_child(_floor)
 
 
 func _notification(what: int) -> void:
@@ -342,31 +361,46 @@ func set_palette(pal: Array) -> void:
 	for t in _trees:
 		t.set_palette(pal)
 	_far.set_palette(pal)
+	_floor.set_palette(pal)
 
 
-## ROOTS: surface roots on the avenue's inner rows, bent toward the path. Trees drawn whole
-## get them now and as they come near; far ones never carry them.
-func set_roots(on: bool) -> void:
-	roots_on = on
+## FLOOR: a FLOOR_STEPS index. The fractal ground is one node; the fallen leaves are a node per
+## tree, shown on the nearest by the LOD pass. Neither builds anything per tree.
+func set_floor(i: int) -> void:
+	floor_idx = clampi(i, 0, FLOOR_STEPS.size() - 1)
+	var leaves := litter_on()
 	for t in _trees:
-		_fit_roots(t)
+		t.set_litter(leaves)
+	_floor.set_on(ground_on())
+	_lod_next = true
 
 
-## Give `t` its roots, turned toward the centre line and scaled so the tips stop ROOT_CLEAR short
-## of it, or take them away. A transform on a shared MultiMesh, so a walk recycle is free.
-func _fit_roots(t: FractalTree) -> void:
-	if not roots_on or t.row < 0 or t.row > 1 or t.far or not t.is_inside_tree():
-		if t.roots_node() != null:
-			t.set_roots(null, Transform3D(), AABB())
-		return
-	var v := TreeRoots.shape(t.seed_value)
-	var tb := t.transform.basis
-	var s := tb.get_scale().y
-	# Unit frame +X along the floor toward the path: +X for the left row, -X for the right.
-	var toward := Basis(Vector3.UP, 0.0 if t.position.x < 0.0 else PI)
-	var k := (absf(t.position.x) - ROOT_CLEAR) / (TreeRoots.REACH * s)
-	var local := tb.orthonormalized().inverse() * toward * Basis.from_scale(Vector3.ONE * k)
-	t.set_roots(v["mm"], Transform3D(local, Vector3.ZERO), v["aabb"])
+func ground_on() -> bool:
+	return floor_idx == 1 or floor_idx == 3
+
+
+func litter_on() -> bool:
+	return floor_idx >= 2
+
+
+func floor_node() -> ForestFloor:
+	return _floor
+
+
+## BARK: a BARK_STEPS index, one uniform on every tree drawn whole. The far batch stays plain.
+func set_bark(i: int) -> void:
+	bark_style = clampi(i, 0, BARK_STEPS.size() - 1)
+	for t in _trees:
+		t.set_bark(bark_style)
+
+
+## PACE: a WALK_PACES index. The next press of the trigger glides at it; a glide under way eases to it.
+func set_pace(i: int) -> void:
+	pace_idx = clampi(i, 0, WALK_PACES.size() - 1)
+
+
+func walk_pace() -> float:
+	return float(WALK_PACES[pace_idx])
 
 
 func set_plant_mix(on: bool) -> void:
@@ -445,9 +479,10 @@ func walking() -> bool:
 	return layout == Layout.WALK
 
 
-## 0 still, 1 at full walking speed: what a comfort vignette should follow.
+## 0 still, 1 at the full PACE: what a comfort vignette should follow. Every pace reaches 1, so
+## the tunnel is as strong at a stroll as at a walk.
 func walk_motion() -> float:
-	return walk_speed / WALK_SPEED
+	return clampf(walk_speed / walk_pace(), 0.0, 1.0)
 
 
 ## The avenue: two rows from your feet down the way `eye` faces (more behind them at higher
@@ -603,6 +638,8 @@ func tick(delta: float, cam: Vector3) -> void:
 		_sow_next_row()
 	if layout == Layout.WALK:
 		_tick_walk(delta, cam)
+	if _floor.visible:
+		_place_floor(cam)
 	_tier_slice()
 	# The LOD pass, split over two frames so neither carries all of it: the governor and the
 	# near/far ranking, then the detail per tree. It runs before placement, which gets what
@@ -685,6 +722,16 @@ func tick(delta: float, cam: Vector3) -> void:
 		_tick_succession()
 
 
+## The fractal ground under you: round the hero's grove, or centred on you down the avenue (it
+## slides with the root while you walk, so it re-centres every frame and the pattern stays put).
+func _place_floor(cam: Vector3) -> void:
+	if layout == Layout.GROVE:
+		_floor.follow(Vector2.ZERO, _grove_r_max() + ForestFloor.GROVE_PAD)
+		return
+	var e := _avenue.to_local(cam)
+	_floor.follow(Vector2(e.x, e.z), ForestFloor.AVENUE_RADIUS)
+
+
 ## Upload a shape into the tree's own nodes. A fresh tree starts its clock no later than now,
 ## as a build always did; one coming back from the far batch keeps its place in its growth.
 func _adopt(t: FractalTree, d: Dictionary, fresh: bool) -> void:
@@ -693,8 +740,6 @@ func _adopt(t: FractalTree, d: Dictionary, fresh: bool) -> void:
 	if not t.is_inside_tree():
 		_avenue.add_child(t)
 	t.adopt(d)
-	if roots_on:
-		_fit_roots(t)
 	adopt_us_max = maxi(adopt_us_max, Time.get_ticks_usec() - u0)
 	t.grow_t = minf(keep, 0.0) if fresh else keep
 	adopts += 1
@@ -788,8 +833,9 @@ func _trim_shapes() -> void:
 ## toward you, then sprout, wither and recycle by each tree's distance ahead. No allocation:
 ## the loop walks the live array, and a recycle only moves a tree within it.
 func _tick_walk(delta: float, cam: Vector3) -> void:
-	var target := WALK_SPEED if walk_held else 0.0
-	walk_speed = move_toward(walk_speed, target, WALK_SPEED / WALK_EASE_S * delta)
+	var pace := walk_pace()
+	var target := pace if walk_held else 0.0
+	walk_speed = move_toward(walk_speed, target, pace / WALK_EASE_S * delta)
 	if walk_speed > 0.0:
 		_walk_s += walk_speed * delta
 		walked += walk_speed * delta
@@ -829,8 +875,6 @@ func _recycle(t: FractalTree) -> void:
 		_far.drop(t)
 	if _far_on():
 		t.unplace()
-	elif roots_on:
-		_fit_roots(t)   # its turn and size changed with the move
 	recycles += 1
 
 
@@ -900,6 +944,8 @@ func _new_tree(species: String, parent: Node3D = self) -> FractalTree:
 	t.wind_ref = self
 	t.wind = _wind
 	t.leaves_on = _leaves_on
+	t.bark_style = bark_style
+	t.litter_on = litter_on()
 	t.set_palette(_palette)
 	t.visible = true
 	# An avenue tree joins the scene when it is first uploaded (_adopt): one the far batch
@@ -1148,6 +1194,16 @@ func _lod_items(cam: Vector3) -> void:
 		visible_cost += t.lod_cost(k) - base
 		drawn_branches += t.lod_branches(k)
 		drawn_leaves += t.lod_leaves(k) if _leaves_on else 0
+	# FLOOR's fallen leaves: the largest on screen first, so the nearest LITTER_NEAR within reach.
+	if litter_on():
+		var n := 0
+		for it in items:
+			var t: FractalTree = it[1]
+			var near := n < LITTER_NEAR and cam.distance_to(t.global_position) < LITTER_FAR
+			t.set_litter_near(near)
+			if near:
+				n += 1
+		litter_drawn = n
 
 
 ## One grove tree at a time withers back into the ground and a seedling of another

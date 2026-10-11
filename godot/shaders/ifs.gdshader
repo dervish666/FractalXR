@@ -25,6 +25,9 @@ uniform float grow_from = 0.0;
 uniform float seed_scale0 = 1.0;
 uniform float seed_scale1 = 0.0;
 uniform float scroll = 0.02;       // palette turns per second
+// CYCLE (main.gd, the COLOUR card), in palette turns, on top of the scroll above. A global every
+// mode reads; 0, the default, leaves the colour exactly as before.
+global uniform float colour_cycle;
 uniform float radius_mix = 0.45;   // colour coordinate: level at 0, radial distance at 1
 uniform float origin_span = 4.0;   // construction units the packed parent origin covers
 uniform float brightness = 1.0;
@@ -104,6 +107,8 @@ void vertex() {
 	// line between bands, radius alone ignores the recursion that built the shape.
 	v_u = mix(level * level_gain, radius * radius_gain, radius_mix) + anim_t * scroll + echo_phase
 		+ echo_life.w * echo_t;
+	// Its own line: FractalIFS._variant anchors on the one above, whole.
+	v_u += colour_cycle;
 	v_shade = UV.x * echo_gain * (1.0 + echo_glow * swell);
 }
 

@@ -34,6 +34,7 @@ uniform vec3 pal2 = vec3(0.9, 0.2, 0.4);
 uniform vec3 pal3 = vec3(1.0, 0.6, 0.1);
 uniform vec3 pal4 = vec3(1.0, 0.95, 0.65);
 uniform float palette_cycles = 1.0;
+global uniform float colour_cycle;
 uniform float gain = 1.0;
 uniform int max_steps = 64;
 
@@ -194,6 +195,23 @@ vec3 palette(float u) {
 	return mix(a, b, f);
 }
 
+// CYCLE (main.gd, the COLOUR card; points.gdshader says how the ramp scrolls). Banded, the wrap
+// already has a seam per band and it scrolls with them; unbanded it ping-pongs, so cycling adds
+// no seam. Off (0, the default) is the old wrap exactly.
+float cycle_u(float u) {
+	if (colour_cycle <= 0.0) return fract(u * palette_cycles);
+	if (palette_cycles > 1.5) return fract(u * palette_cycles + colour_cycle);
+	return 1.0 - abs(fract(u * 0.5 + colour_cycle) * 2.0 - 1.0);
+}
+
+// CYCLE moves the hue and keeps the brightness: the scrolled colour scaled to the unscrolled
+// one's luma, at most 3x and the rest in grey (points.gdshader says why).
+vec3 keep_luma(vec3 c, float l0) {
+	const vec3 W = vec3(0.2126, 0.7152, 0.0722);
+	c *= min(l0 / max(dot(c, W), 1e-4), 3.0);
+	return c + max(l0 - dot(c, W), 0.0);
+}
+
 void fragment() {
 	// Ray in the cloud's local space, then into state (DE) space. State space is a
 	// uniform scale and offset of local, so directions carry over unchanged. In the
@@ -284,7 +302,9 @@ void fragment() {
 	// occlusion probes carry the ramp, crevices dark and ridges light.
 	float trap = clamp((r.y * 0.7 + r.z * 0.5) * 0.45, 0.0, 1.0);
 	float col = clamp(0.65 * ao_raw + 0.35 * trap, 0.0, 1.0);
-	vec3 albedo = palette(fract(col * palette_cycles));
+	vec3 albedo = palette(cycle_u(col));
+	if (colour_cycle > 0.0)
+		albedo = keep_luma(albedo, dot(palette(fract(col * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
 	float fres = pow(1.0 - ndv, 3.0);
 	vec3 c = albedo * (0.16 + 0.6 * ndv + 0.4 * ndk) * ao * crawl
 		+ pal4 * fres * 0.3 * ao;
