@@ -19,6 +19,8 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer Params { float g[]
 // The surface normal is already computed here for the Newton projection, so handing it
 // to the renderer is free. It is what lets a splat lie IN the surface rather than face
 // the camera: a disc across a filament blurs it, a disc along it keeps the filigree.
+// w is a hide flag, used only by LINES: 1 means "not on a ring (yet)", and splat.gdshader
+// culls it. Splats write 0 everywhere, so their look is unchanged.
 layout(set = 0, binding = 2, rgba32f) uniform restrict writeonly image2D normal_img;
 
 layout(push_constant, std430) uniform PC {
@@ -43,6 +45,10 @@ layout(push_constant, std430) uniform PC {
 	float k_angle_b;
 	float _pad0;
 	float _pad1;
+	// LINES: x = spacing between slice planes in state units (0 = off, plain splats),
+	// y = how many planes span the shape, z = the axis they are stacked along (0, 1, 2),
+	// w = the level the rings are cut at, DE = w (state units; see shellEps below).
+	vec4 slice;
 } p;
 
 #define PAL(i, k) g[(i) * 3 + (k)]
@@ -202,7 +208,9 @@ void main() {
 	if (p.do_seed != 0) {
 		uint ss = idx * 747796405u + 101u;
 		imageStore(state_img, ip, vec4(randBall(ss, p.bound), rnd(ss)));
-		imageStore(normal_img, ip, vec4(0.0, 0.0, 1.0, 0.0));
+		// A seed is not on a ring, so LINES hides it until it lands on one: the rings
+		// draw themselves in instead of a ball of noise collapsing.
+		imageStore(normal_img, ip, vec4(0.0, 0.0, 1.0, p.slice.x > 0.0 ? 1.0 : 0.0));
 		return;
 	}
 	if (p.update_mod <= 0) return;
@@ -230,29 +238,78 @@ void main() {
 	float e = 0.0012 * p.bound;
 
 	bool bad = !(pos.x == pos.x) || !(pos.y == pos.y) || !(pos.z == pos.z) || dot(pos, pos) > bsq;
-	if (bad || rnd(seed) < p.reseed_prob) pos = randBall(seed, p.bound);
+	// LINES churns a quarter as hard. A reseed lands wherever its in-plane Newton basin
+	// sends it, which clumps on the inside of every crinkle; fewer of them, and the walk
+	// along the ring below has time to spread the clumps out evenly.
+	float reseed = (p.slice.x > 0.0) ? 0.25 * p.reseed_prob : p.reseed_prob;
+	if (bad || rnd(seed) < reseed) pos = randBall(seed, p.bound);
 
 	// For the box, aim a thin shell OUTSIDE the surface: that repels the spurious
 	// interior zeros (the core blob) instead of collapsing onto them.
 	float shellEps = (abs(p.formula - 1.0) < 0.5) ? 0.012 * p.bound : 0.0;
+
+	// LINES: slice rings by constrained projection. Snap onto the nearest of a stack of
+	// parallel planes, then Newton-project WITHIN that plane: the step is the gradient
+	// with its axis component removed, so the particle never leaves the plane and settles
+	// where the isosurface crosses it. Same number of DE evaluations as the shell.
+	bool slicing = p.slice.x > 0.0;
+	int ax = int(p.slice.z + 0.5);
+	// Cut the rings from a slightly inflated bulb, DE = w rather than DE = 0. Contours of
+	// the true surface trace every crinkle smaller than the ring spacing, which no stack of
+	// rings can show and which reads as worms from any angle but side-on; the offset
+	// surface rounds those off and keeps the form.
+	if (slicing) shellEps = max(shellEps, p.slice.w);
+	float plane = 0.0;
+	if (slicing) {
+		plane = (floor(pos[ax] / p.slice.x) + 0.5) * p.slice.x;
+		pos[ax] = plane;
+	}
+	float resid = 0.0;   // in-plane distance to the ring at the last evaluation
 	vec4 d;
 	vec3 n = vec3(0.0, 0.0, 1.0);
 	for (int i = 0; i < 6; i++) {
 		if (float(i) >= p.proj_steps) break;
 		n = deGradMean(pos, e, d);
-		pos -= n * (d.x - shellEps);
+		float f = d.x - shellEps;
+		if (slicing) {
+			vec3 nt = n;
+			nt[ax] = 0.0;
+			float l2 = dot(nt, nt);
+			// Where the plane is nearly tangent to the surface (the top of a lobe) the
+			// in-plane gradient vanishes and a full Newton step would fling the point.
+			// The floor turns it into a damped step there; those points rarely converge
+			// and are hidden below rather than drawn as a blob.
+			pos -= nt * (f / max(l2, 0.25));
+			resid = abs(f) / sqrt(max(l2, 1e-4));
+		} else {
+			pos -= n * f;
+		}
 	}
 	// With no projection steps nothing above ran, so evaluate once here. (Doing this
 	// unconditionally before the loop cost a full DE per particle that the first
 	// iteration then recomputed and overwrote.)
-	if (p.proj_steps < 0.5) { d = de(pos); n = deGrad(pos, e); }
+	if (p.proj_steps < 0.5) { d = de(pos); n = deGrad(pos, e); resid = abs(d.x - shellEps); }
 
-	// Wander tangentially so the shell fills and stays alive. Reuses n from the last
-	// projection step rather than a fresh 4-tap gradient: the point barely moved on that
-	// step, so it is the same normal, saving four DE evaluations per particle.
-	vec3 t1 = normalize(cross(n, vec3(0.0, 0.0, 1.0) + vec3(1e-3)));
-	vec3 t2 = cross(n, t1);
-	pos += (t1 * (rnd(seed) * 2.0 - 1.0) + t2 * (rnd(seed) * 2.0 - 1.0)) * p.jitter * p.bound;
+	if (slicing) {
+		// Wander ALONG the ring only, so the jitter that fills the shell fills the curve
+		// instead of smearing it into a band. Three times the shell's step: a random walk
+		// on a closed curve evens out, and even spacing is what makes a line read as a
+		// line. None in the reseed-free tail before a freeze (reseed_prob 0), so frozen
+		// points sit exactly on the ring rather than one stray tangent step off it.
+		vec3 axv = vec3(0.0);
+		axv[ax] = 1.0;
+		vec3 tr = cross(n, axv);
+		float tl = length(tr);
+		float walk = (p.reseed_prob > 0.0) ? 3.0 * p.jitter * p.bound : 0.0;
+		if (tl > 1e-3) pos += (tr / tl) * ((rnd(seed) * 2.0 - 1.0) * walk);
+	} else {
+		// Wander tangentially so the shell fills and stays alive. Reuses n from the last
+		// projection step rather than a fresh 4-tap gradient: the point barely moved on that
+		// step, so it is the same normal, saving four DE evaluations per particle.
+		vec3 t1 = normalize(cross(n, vec3(0.0, 0.0, 1.0) + vec3(1e-3)));
+		vec3 t2 = cross(n, t1);
+		pos += (t1 * (rnd(seed) * 2.0 - 1.0) + t2 * (rnd(seed) * 2.0 - 1.0)) * p.jitter * p.bound;
+	}
 
 	// Orbit-trap colour, RAW. This used to be squashed through smoothstep(0.15, 0.9, ..)
 	// as a hand-tuned stand-in for a CDF, which saturated: nearly every particle came out
@@ -262,11 +319,26 @@ void main() {
 	// here is the unsquashed value with the range merely bounded.
 	col = clamp((d.y * 0.7 + d.z * 0.5) * 0.45, 0.0, 1.0);
 
+	bool hide = false;
+	if (slicing) {
+		// Colour by height: every ring one colour, bottom to top through the palette, with
+		// a little of the trap so neighbouring rings are not flat bands. The trap alone
+		// changes colour point to point along a ring, which reads as dotted. Mapped into
+		// [0.125, 0.875] because the splat shader stretches the coordinate by 4/3.
+		float ht = clamp(0.5 + plane / (p.slice.x * p.slice.y), 0.0, 1.0);
+		col = 0.125 + 0.75 * mix(ht, col, 0.2);
+		// Not on a ring yet: the plane misses the shape, the point is still travelling,
+		// or it is stuck where the plane grazes the surface. Hide it, and while the host
+		// allows reseeding send it somewhere else to try again.
+		hide = resid > 0.06 * p.slice.x;
+		if (hide && rnd(seed) < 25.0 * p.reseed_prob) pos = randBall(seed, p.bound);
+	}
+
 	// A Mandelbox point that did not escape sits on a spurious interior zero. It is stored
 	// as a raw seed and projected from there next frame, like any reseed; the host's
 	// reseed-free tail (main.gd _sync_iteration) is what keeps these out of a freeze.
-	if (abs(p.formula - 1.0) < 0.5 && d.w < 0.5) pos = randBall(seed, p.bound);
-	if (dot(pos, pos) > bsq) pos = randBall(seed, p.bound);
+	if (abs(p.formula - 1.0) < 0.5 && d.w < 0.5) { pos = randBall(seed, p.bound); hide = true; }
+	if (dot(pos, pos) > bsq) { pos = randBall(seed, p.bound); hide = true; }
 	imageStore(state_img, ip, vec4(pos, col));
-	imageStore(normal_img, ip, vec4(n, 0.0));
+	imageStore(normal_img, ip, vec4(n, (slicing && hide) ? 1.0 : 0.0));
 }

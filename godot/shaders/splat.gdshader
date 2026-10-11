@@ -94,6 +94,19 @@ uniform bool bake_in_cloud_units = false;
 // The frame-rate governor's lever. Scales every splat's real size, so cost falls with
 // its square. 1 when the frame budget holds; cut hard the moment it does not.
 uniform float perf_scale = 1.0;
+// LINES (bulb.glsl's slice rings). line_axis is the slice axis in state space, zero when
+// off. On, every splat lies along its ring: the major axis is the exact ring tangent,
+// cross(normal, axis), rather than the bake's estimate of it, stretched so neighbours
+// overlap into a continuous line; the minor axis is a fixed line width in state units, so
+// the gap between rings stays open whatever the local density. Back faces fade out:
+// without them a shell is opaque enough to hide its far side, but rings leave gaps and
+// the far side's rings show through them as a second, misaligned set.
+uniform vec3 line_axis = vec3(0.0);
+uniform float line_width = 0.002;
+uniform float line_stretch = 2.0;
+// Longest a stroke may be, in line widths (sigma). A ring is crinkled below some length,
+// and a stroke longer than that sticks out of it as a hair.
+uniform float line_cap = 6.0;
 uniform vec3 density_centre = vec3(0.0);
 uniform int tex_size = 2048;
 uniform float splat_radius = 0.026;
@@ -179,18 +192,43 @@ void vertex() {
 	// Together they are the RS matrix of 3D Gaussian splatting: cov3D = RS * RS^T.
 	vec3 a1, a2, a3;
 	float shade = 1.0;
+	bool hidden = false;
+	float line_fade = 1.0;
 	if (use_normals) {
 		// The tangent frame is built in LOCAL space, from the same formula
 		// bake_shape.glsl uses, which is what lets the bake send an angle instead of
 		// two vectors.
-		vec3 nl = texelFetch(normal_tex, ivec2(pid % tex_size, pid / tex_size), 0).xyz;
+		vec4 n4 = texelFetch(normal_tex, ivec2(pid % tex_size, pid / tex_size), 0);
+		// bulb.glsl's LINES flag: a particle that has not reached a ring. Always 0 otherwise.
+		hidden = n4.w > 0.5;
+		vec3 nl = n4.xyz;
 		nl = (dot(nl, nl) > 1e-12) ? normalize(nl) : vec3(0.0, 0.0, 1.0);
 		vec3 t1 = normalize(cross(nl, abs(nl.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
 		vec3 t2 = cross(nl, t1);
 
 		float l1 = r_local;
 		float l2 = r_local;
-		if (use_bake) {
+		float thin = splat_thin;
+		vec3 ring = cross(nl, line_axis);
+		float ring_l = length(ring);
+		if (ring_l > 1e-4) {
+			t1 = ring / ring_l;
+			t2 = cross(nl, t1);
+			float len = r_local;
+			if (use_bake) {
+				len = texelFetch(bake_tex, ivec2(pid % tex_size, pid / tex_size), 0).z
+					* bake_scale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
+			}
+			float w = line_width * cloud_fit * perf_scale;
+			l1 = min(len * line_stretch, line_cap * w);
+			l2 = min(l1, w);
+			thin = l2 / max(l1, 1e-9);
+			vec3 nv = normalize((MODELVIEW_MATRIX * vec4(nl, 0.0)).xyz);
+			line_fade = smoothstep(-0.05, 0.3, dot(nv, -normalize(vc)));
+			// Where the plane grazes the surface the ring's direction is the small in-plane
+			// part of a noisy fractal normal, and the strokes point anywhere.
+			line_fade *= smoothstep(0.2, 0.45, ring_l);
+		} else if (use_bake) {
 			vec4 bk = texelFetch(bake_tex, ivec2(pid % tex_size, pid / tex_size), 0);
 			// Rotate the frame into the neighbourhood's own principal axes.
 			vec3 e1 = t1 * bk.x + t2 * bk.y;
@@ -214,7 +252,7 @@ void vertex() {
 		// uses THIN = 0.16 for exactly this.
 		a1 = (MODELVIEW_MATRIX * vec4(t1 * l1, 0.0)).xyz;
 		a2 = (MODELVIEW_MATRIX * vec4(t2 * l2, 0.0)).xyz;
-		a3 = (MODELVIEW_MATRIX * vec4(nl * (splat_thin * l1), 0.0)).xyz;
+		a3 = (MODELVIEW_MATRIX * vec4(nl * (thin * l1), 0.0)).xyz;
 		// The key is in WORLD space, not view space: a light welded to the head would
 		// slide across the surface as you looked around, and would land differently in
 		// each eye. The cloud's basis is uniformly scaled, so the model matrix carries
@@ -230,9 +268,9 @@ void vertex() {
 		a3 = vec3(0.0, 0.0, r);
 	}
 
-	float alpha = splat_opacity;
+	float alpha = splat_opacity * line_fade;
 	vec2 pixel_off = vec2(0.0);
-	bool cull = bad || vc.z >= 0.0;
+	bool cull = bad || hidden || vc.z >= 0.0;
 
 	if (!cull) {
 		mat3 rs = mat3(a1, a2, a3);

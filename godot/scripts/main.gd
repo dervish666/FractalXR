@@ -414,6 +414,18 @@ var passthru_label := "void"
 ## reshaping plain enough to judge.
 const BREATH_STEPS := [1.0, 3.0, 0.0]
 var breath_idx := 0
+## LINES (T-49 spike): the bulb as stacked slice rings, its shell snapped onto parallel
+## planes so it reads as contour lines. Each rung is how many planes span the shape; 0
+## is the ordinary splatted shell. Same particles, same splats, same bake.
+const LINE_SLICES := [0, 24, 48, 96]
+var line_idx := 0
+## A ring's sigma across the line, as a share of the gap between rings; its length along
+## the ring as a multiple of the baked splat axis (long enough to close the gaps between
+## neighbours, and thin lines make the extra length cheap in fill); and the most that
+## length may be, in line widths, before a stroke stands off a curving ring as a hair.
+const LINE_WIDTH := 0.05
+const LINE_STRETCH := 2.0
+const LINE_CAP := 6.0
 var splat_on := false
 var splat_idx := 1
 var colour_idx := 0
@@ -932,6 +944,10 @@ func _build_menu() -> void:
 				else:
 					cloud.clear_bake(),
 			false, func(): return bulb_mode).toggle(func(): return auto_bake).minor(),
+		WristMenu.Item.new("look", "LINES",
+			func(): return "off" if LINE_SLICES[line_idx] == 0 else "%d rings" % LINE_SLICES[line_idx],
+			func(): _step_lines(1),
+			false, func(): return bulb_mode).stepping(func(d: int): _step_lines(d)),
 		WristMenu.Item.new("look", "BREATHE",
 			func():
 				# A frozen cloud cannot show a moving surface, so say so rather than
@@ -2018,6 +2034,11 @@ func _load_bulb(i: int) -> void:
 		_bulb = BulbSource.new(library.bulbs[bulb_idx])
 		_bulb.update_mod = BULB_UPDATE_MOD
 		RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
+	_bulb.slices = LINE_SLICES[line_idx]
+	var axis := Vector3.ZERO
+	if _bulb.slices > 0:
+		axis[_bulb.slice_axis] = 1.0
+	cloud.set_lines(axis, LINE_WIDTH * _bulb.slice_spacing(), LINE_STRETCH, LINE_CAP)
 	march.configure(_bulb)
 	# The node transform is deliberately left alone: switching bulbs used to reset the
 	# scale here, which threw away wherever the user had grabbed and sized the cloud to.
@@ -2027,6 +2048,21 @@ func _load_bulb(i: int) -> void:
 	# set_source and reload_source paint the bulb's own palette (apply_look). Put the
 	# user's theme back over it and resync the menu swatch and marcher, as _load_preset does.
 	call_deferred("_apply_palette")
+
+
+## Step LINES and rebuild the cloud for it. Every point has to find a ring (or the shell)
+## again, so this reseeds, and the settle re-bakes; seeds stay hidden until they land, so
+## the rings draw themselves in rather than a ball of noise collapsing.
+func _step_lines(d: int) -> void:
+	line_idx = wrapi(line_idx + d, 0, LINE_SLICES.size())
+	if not bulb_mode:
+		return
+	# Rings are particles, and a marched surface hides the particles.
+	if surface_idx != 0:
+		surface_idx = 0
+		_apply_surface()
+	cloud.request_seed()
+	_load_bulb(bulb_idx)
 
 
 func _morph_to_new(g: Dictionary) -> void:
