@@ -47,6 +47,10 @@ const DENSITY_STEPS := [1.0, 0.5, 0.0]
 # with no hue. Forward Mobile's colour buffer is 10-bit fixed point, so the only way to
 # get density range out of it is to make each point contribute a small fraction and let
 # the tonemapper expand it again. 0.02 gives roughly 50 clean overlaps.
+# The default is 0.05. set_brightness used to floor at 0.05, so the old default of 0.02
+# and the 0.01 below it both drew at 0.05, and every look was tuned against that. The floor is
+# gone and the default moved to the value that was really drawing, so 0.01 and 0.02 are now
+# genuinely dimmer detents rather than two clicks that did nothing.
 # 1.0 is there for the premultiplied splat path: "over" compositing converges to the
 # source colour rather than summing it, so a splat surface wants its palette at full
 # strength where an additive point cloud wants slivers.
@@ -99,6 +103,15 @@ var help := HelpCard.new()
 
 var xr: OpenXRInterface = null
 var cloud := ParticleCloud.new()
+# The flame at scale: GALAXY (stand inside it), ECHOES (copies round the room) and the SKY it
+# can be baked into for the other modes. scripts/core/flame_galaxy.gd, flame_echoes.gd,
+# flame_sky.gd; the glue is _tick_flame_scale() and the functions after it.
+var galaxy := FlameGalaxy.new()
+var flame_echoes := FlameEchoes.new()
+var flame_sky := FlameSky.new()
+var sky_on := false
+var _galaxy_saved := {}
+var _near_fade := 0.0
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
 ## so it shares grabs and framing; SURFACE picks splats or a step budget.
 var march := BulbMarch.new()
@@ -165,6 +178,8 @@ const TREE_DISTANCE := 2.2        # metres in front of the head, on the floor; i
 ## The hero tree stays full-detail. Everything else (the sown grove, planted trees, the
 ## succession, their caps and LOD) is the Forest's: scripts/tree/forest.gd.
 var forest := Forest.new()
+## Head-locked tunnel vignette, driven only by the avenue walk for now (scripts/xr/comfort_vignette.gd).
+var vignette := ComfortVignette.new()
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
 const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
@@ -182,6 +197,14 @@ var ifs_edit := IfsEditor.new()
 ## ECHOES: view-only copies of the sculpture scattered through the room at many sizes. Under
 ## the IFS node so they hide with it, but anchored to the head at entry, not to the grab.
 var ifs_echoes := IfsEchoes.new()
+## DIVE: hold a trigger to fly into one copy of the sculpture, re-rooting for ever.
+var ifs_dive := IfsDive.new()
+## SIZE: room puts the sculpture around you, its clearest point at your eyes and its lowest
+## beam on the floor, so the width follows your eye height inside IFS_ROOM_M.
+var ifs_room := false
+const IFS_ROOM_M := Vector2(2.4, 4.0)
+## The nearest beam to the eyes when room size opens: the clip radius plus a head's sway.
+const IFS_ROOM_CLEAR := 0.36
 ## Tabletop framing. The IFS is real geometry in construction units, so its scale comes from
 ## its own published bounds rather than from the particle cloud's measured extent, which
 ## describes a flame that is not being drawn.
@@ -247,7 +270,7 @@ var tonemap := Flam3Tonemap.new()
 var preset_idx := 0
 var particle_idx := 0      # 1.05M: 8.2ms app GPU, zero stale frames, no reprojection
 var point_idx := 0         # 1.0px
-var bright_idx := 1        # 0.02
+var bright_idx := 2        # 0.05
 var render_idx := 2        # full recommended eye buffer; sharpness matters more than the ~1ms
 var stability_idx := 0     # frozen: a settled cloud is dramatically cleaner
 var _converge := CONVERGE_FRAMES
@@ -385,7 +408,7 @@ var recolor_on_drift := true
 ## as the shape change, and cutting to the new colours undoes the work the morph is doing.
 var _theme_from: Array = []
 var _theme_blend := 1.0
-var _flame_bright_idx := 1
+var _flame_bright_idx := 2
 var _flame_exposure_idx := 0
 var _flame_opacity_idx := 2
 ## Inside the cloud rather than looking at it from outside. A distance-estimate surface
@@ -452,9 +475,14 @@ func _ready() -> void:
 	ifs_edit.setup(ifs)
 	ifs.add_child(ifs_echoes)
 	ifs_echoes.setup(ifs)
+	ifs_dive.setup(ifs, cloud)
 	add_child(ground)
 	add_child(orbit)
 	add_child(plant_marker)
+	xr_camera.add_child(vignette)
+	cloud.add_child(flame_echoes)
+	flame_echoes.setup(cloud)
+	flame_sky.setup(_env())
 
 	if not library.load_all():
 		_fail("presets: %s" % library.load_error)
@@ -606,8 +634,16 @@ func _build_menu() -> void:
 		# the other direction, which is why it clears the undo.
 		WristMenu.Item.new("make", "EDIT",
 			func(): return "handles on" if ifs_edit.guides_on else "handles off",
-			func(): ifs_edit.set_guides(not ifs_edit.guides_on),
+			func():
+				# The handles and the dive both want the trigger; the one turned on last has it.
+				if not ifs_edit.guides_on and ifs_dive.on:
+					_set_ifs_dive(false)
+				ifs_edit.set_guides(not ifs_edit.guides_on),
 			false, _vis_ifs).toggle(func(): return ifs_edit.guides_on),
+		WristMenu.Item.new("make", "DIVE",
+			func(): return ("hold trigger · %d" % ifs_dive.steps) if ifs_dive.on else "off",
+			func(): _set_ifs_dive(not ifs_dive.on),
+			false, _vis_ifs).toggle(func(): return ifs_dive.on),
 		WristMenu.Item.new("make", "UNDO",
 			func(): return "last edit" if ifs_edit.has_undo() else "nothing yet",
 			func(): ifs_edit.undo(),
@@ -630,6 +666,17 @@ func _build_menu() -> void:
 			func(): return "mixed grove",
 			func(): _sow_grove(),
 			false, _vis_tree),
+		# The avenue: two rows from your feet to 50 m, growing away from you. WALK is the same
+		# rows, endless, gliding toward you while a trigger is held. MIX picks their species.
+		WristMenu.Item.new("make", "AVENUE",
+			func(): return "mixed rows" if forest.plant_mix \
+				else "%s rows" % FractalTree.SHAPE_NAMES[tree_shape_idx],
+			func(): _sow_avenue(false),
+			false, _vis_tree),
+		WristMenu.Item.new("make", "WALK",
+			func(): return "hold trigger" if forest.walking() else "endless avenue",
+			func(): _toggle_walk(),
+			false, _vis_tree).toggle(func(): return forest.walking()),
 		WristMenu.Item.new("make", "MIX",
 			func(): return "species" if forest.plant_mix else "one kind",
 			func(): _toggle_plant_mix(),
@@ -672,6 +719,29 @@ func _build_menu() -> void:
 		WristMenu.Item.new("scene", "CENTRE",
 			func(): return "reset", func(): _recenter(); cloud.request_measure(),
 			false, _vis_grab),
+		# The flame at scale. GALAXY grows it round you, ECHOES hangs copies of it round the
+		# room, TO SKY bakes it into the sky that GROUND, TREE and IFS wear, and SKY, on this
+		# card in every mode, hangs or hides it. Not in the bottom bar: a fourth item there cut
+		# PASSTHRU to PASS and EXIT's "hold to quit" to "hold to q".
+		WristMenu.Item.new("scene", "GALAXY",
+			func(): return "inside" if galaxy.active else "off",
+			func(): _toggle_galaxy(),
+			false, _vis_flame).toggle(func(): return galaxy.active),
+		WristMenu.Item.new("scene", "ECHOES",
+			func(): return "off" if flame_echoes.count() == 0 else "%s · %s" % [
+				flame_echoes.step_name(), _fmt_count(flame_echoes.point_total())],
+			func(): _step_flame_echoes(1),
+			false, _vis_flame).stepping(func(d: int): _step_flame_echoes(d)),
+		WristMenu.Item.new("scene", "TO SKY",
+			func():
+				if flame_sky.baking:
+					return "baking %d%%" % int(flame_sky.progress * 100.0)
+				return "baked" if flame_sky.ready else "this flame",
+			func(): _bake_sky(),
+			false, _vis_flame),
+		WristMenu.Item.new("scene", "SKY",
+			func(): return _sky_label(),
+			func(): _toggle_sky()).toggle(func(): return sky_on),
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
@@ -796,6 +866,16 @@ func _build_menu() -> void:
 					ifs_echoes.step_name(), ifs_echoes.count()],
 			func(): ifs_echoes.set_step(ifs_echoes.step + 1),
 			false, _vis_ifs).stepping(func(d: int): ifs_echoes.set_step(ifs_echoes.step + d)),
+		# Where the echoes stand: the seeded scatter, or where the sculpture's own maps put its
+		# relatives, so the room is the next generations out.
+		WristMenu.Item.new("look", "LAYOUT",
+			func(): return ifs_echoes.layout_name(),
+			func(): ifs_echoes.set_family(not ifs_echoes.family),
+			false, _vis_ifs).toggle(func(): return ifs_echoes.family),
+		WristMenu.Item.new("look", "SIZE",
+			func(): return "room" if ifs_room else "table",
+			func(): _set_ifs_room(not ifs_room),
+			false, _vis_ifs).toggle(func(): return ifs_room),
 		WristMenu.Item.new("look", "BAKE",
 			func():
 				if cloud.is_baking():
@@ -1011,6 +1091,8 @@ func _build_menu() -> void:
 			# as much mid-drag as knowing what your hand is holding.
 			if ifs_edit.is_editing():
 				return ifs_edit.status()
+			if ifs_dive.in_step():
+				return "diving %d%%" % int(ifs_dive.progress() * 100.0)
 			if ifs.is_morphing():
 				return "morphing %d%%" % int(ifs.morph_t * 100.0)
 			# A capped build is the one thing here worth interrupting for: it means the rung
@@ -1029,6 +1111,8 @@ func _build_menu() -> void:
 			return ("%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]) \
 					if dbg else ""
 		if tree_mode:
+			if forest.walking():
+				return "walking" if forest.walk_speed > 0.0 else "hold trigger to walk"
 			# At capacity the trigger stops doing anything and the marker goes away, so
 			# say why here rather than leaving the floor silently dead.
 			if not forest.can_plant():
@@ -1132,6 +1216,8 @@ func _set_mode(kind: String) -> void:
 	if bulb_mode == want_bulb and ground_mode == want_ground and tree_mode == want_tree \
 			and ifs_mode == want_ifs:
 		return
+	# First, before bulb mode swaps the brightness out: the galaxy puts back what it changed.
+	_leave_galaxy(false)
 	if ground_mode and not want_ground:
 		_set_ground_mode(false)
 	if tree_mode and not want_tree:
@@ -1159,7 +1245,12 @@ func _set_tree_mode(on: bool) -> void:
 	if not on:
 		plant_marker.hide_marker()
 		plant_marker.update(1.0)
-	tree.visible = on
+		# The walk only advances inside tree mode; leaving mid-glide must not leave the
+		# tunnel drawn over whatever comes next.
+		forest.walk_held = false
+		forest.walk_speed = 0.0
+		vignette.set_motion(0.0)
+	tree.visible = on and forest.layout == Forest.Layout.GROVE
 	forest.visible = on
 	cloud.set_visible_cloud(not on)
 	if on:
@@ -1197,6 +1288,7 @@ func _set_ifs_mode(on: bool) -> void:
 		# reset with the destination's own framing, and the particle cloud is re-measured for
 		# whatever is about to draw it.
 		ifs_edit.cancel()
+		ifs_dive.reset()
 		ifs.settle()
 		ifs_detail_idx = _ifs_detail_idx(ifs.detail)
 		grab.suspended = false
@@ -1219,6 +1311,9 @@ func _step_ifs_detail(d: int) -> void:
 ## Front-to-back stretch. Deliberately not a rebuild of the world transform: DEPTH has to
 ## feel different from grabbing the sculpture and pulling it wider.
 func _step_ifs_depth(d: int) -> void:
+	# A stretched sculpture is no longer a copy of its children, so it cannot be dived.
+	if ifs_dive.on:
+		_set_ifs_dive(false)
 	ifs_depth_idx = wrapi(ifs_depth_idx + d, 0, IFS_DEPTH.size())
 	ifs.depth = IFS_DEPTH[ifs_depth_idx]
 	ifs.land_edit()
@@ -1267,6 +1362,9 @@ func _cycle_ifs_preset(d: int) -> void:
 	# as they always did: those are the user's, and a two second fade of them would read as lag.
 	ifs.begin_morph(ifs_preset_idx)
 	_reset_ifs_shape()
+	# The relatives stand where the new rule's maps put them: fold, move, grow back.
+	if ifs_echoes.family:
+		ifs_echoes.relayout()
 
 
 ## Ambient life for the sculpture: the contraction breathes a few percent and the twist turns,
@@ -1278,6 +1376,41 @@ func _toggle_ifs_motion() -> void:
 	if not ifs.ambient:
 		ifs.build(false)
 		ifs_edit.refresh()
+
+
+## SIZE. Room size reframes at once, the way RESET does; the clip shader goes on with it so no
+## beam is drawn through your head.
+func _set_ifs_room(on: bool) -> void:
+	ifs_room = on
+	ifs.set_clip(ifs_room or ifs_dive.on)
+	_recenter()
+
+
+## DIVE. Turning it on hands the trigger from the handles to the dive and puts DEPTH back to
+## 1x; turning it off puts back the step in progress.
+func _set_ifs_dive(on: bool) -> void:
+	if on:
+		ifs_edit.set_guides(false)
+		if ifs_depth_idx != 0:
+			_step_ifs_depth(-ifs_depth_idx)
+	ifs_dive.set_on(on)
+	ifs.set_clip(ifs_room or ifs_dive.on)
+
+
+## Room size: the construction origin, the clearest point of every preset (a grid search found
+## none clearer), at the eyes, and the lowest beam on the floor, so the scale is the eye height
+## over how far the shape reaches below its centre, kept inside IFS_ROOM_M. Never so small that
+## a beam starts inside the clip sphere: CROSS seated needs that (tools/ifs_check.sh).
+func _ifs_room_scale(eye_h: float) -> float:
+	var span := maxf(ifs.bounds.size.x, ifs.bounds.size.y)
+	if span < 1e-3:
+		span = 2.0 * FractalIFS.SEED_HALF
+	var below := maxf(-ifs.bounds.position.y, 0.25)
+	var u := clampf(maxf(eye_h, 0.5) / below * span, IFS_ROOM_M.x, IFS_ROOM_M.y) / span
+	var c := ifs.centre_clearance()
+	if c > 1e-3:
+		u = minf(maxf(u, IFS_ROOM_CLEAR / c), IFS_ROOM_M.y / span)
+	return u
 
 
 ## The rung index that shows a given recursion depth, so a preset's own default lands on the
@@ -1448,6 +1581,19 @@ func _sow_grove() -> void:
 	forest.sow_grove()
 
 
+## Two rows from your feet down the way you face; the hero steps out of the path.
+func _sow_avenue(walk: bool) -> void:
+	forest.sow_avenue(xr_camera.global_transform, walk, FractalTree.SHAPE_NAMES[tree_shape_idx])
+
+
+## WALK on sows the endless avenue; off stops where you are and lets the far end grow in.
+func _toggle_walk() -> void:
+	if forest.walking():
+		forest.stand_still()
+	else:
+		_sow_avenue(true)
+
+
 ## Planting draws a mixed species each pull, or plants the SHAPE tile's species.
 func _toggle_plant_mix() -> void:
 	forest.set_plant_mix(not forest.plant_mix)
@@ -1459,7 +1605,7 @@ func _toggle_succession() -> void:
 
 
 func _forest_tree_count() -> int:
-	return 1 + forest.tree_count()
+	return (1 if forest.layout == Forest.Layout.GROVE else 0) + forest.tree_count()
 
 
 func _forest_branch_count() -> int:
@@ -1543,7 +1689,8 @@ func _tick_plant_marker(delta: float) -> void:
 	# is not one of them: the trigger only goes to the menu when the ray is actually ON
 	# it (_menu_active), so a ring that vanished whenever the wrist panel was up would
 	# hide from you at the very moment the trigger still plants.
-	var want := tree_mode and not _menu_active and not help.is_open() and forest.can_plant()
+	var want := tree_mode and not _menu_active and not help.is_open() and forest.can_plant() \
+		and not forest.walking()
 	if want:
 		var hit = _hand_floor_hit(right_hand)
 		if hit == null:
@@ -1970,6 +2117,114 @@ func _tick_morph(delta: float) -> void:
 		RenderingServer.call_on_render_thread(src.update_params)
 
 
+# --- The flame at scale: GALAXY, ECHOES, SKY -------------------------------------------------
+
+## Once a frame in every mode, before any of them returns early: the galaxy's ease and near
+## fade, and the sky's bake steps and visibility. The echoes see to their own visibility.
+func _tick_flame_scale(delta: float) -> void:
+	if galaxy.is_moving():
+		# A grip takes over from the ease where it stands, and a mode change ends it.
+		if (grab != null and grab.is_grabbing()) or bulb_mode or ground_mode or tree_mode or ifs_mode:
+			galaxy.stop()
+		else:
+			cloud.global_transform = galaxy.step(delta)
+	var fade := FlameGalaxy.NEAR_FADE_M if galaxy.active or galaxy.is_moving() else 0.0
+	if fade != _near_fade:
+		_near_fade = fade
+		cloud.set_near_fade(fade)
+	flame_echoes.suppressed = galaxy.active or galaxy.is_moving()
+	# The sky hangs behind the modes that are not the flame itself. Bulb is left out on budget
+	# (13.9 ms measured, at the line already), and passthrough always wins: the room is the sky.
+	flame_sky.sync(sky_on and (ground_mode or tree_mode or ifs_mode) and not passthrough, delta)
+
+
+func _toggle_galaxy() -> void:
+	if galaxy.active:
+		_leave_galaxy(true)
+	else:
+		_enter_galaxy()
+
+
+## Into the flame: spin and drift off, brightness up, then the grow. What it changed is put back
+## by _leave_galaxy, which every recentre and mode change also runs.
+func _enter_galaxy() -> void:
+	if galaxy.active or bulb_mode or ground_mode or tree_mode or ifs_mode:
+		return
+	galaxy.active = true
+	_galaxy_saved = {"spin": spin, "drift": _drift, "bright": bright_idx}
+	spin = false
+	_drift = false
+	_drift_hold = 0.0
+	bright_idx = maxi(bright_idx, BRIGHT_STEPS.find(FlameGalaxy.BRIGHT))
+	_apply_point_look()
+	var from := cloud.global_transform
+	if grab != null:
+		grab.reset(from)
+	galaxy.begin(from, FlameGalaxy.target(xr_camera.global_transform, from.basis,
+		cloud.target_rms * cloud.target_fit))
+
+
+## `ease_out` shrinks the flame back to arm's length ahead, over the time it took to grow. A
+## recentre or a mode change passes false and puts the cloud where it wants it.
+func _leave_galaxy(ease_out: bool) -> void:
+	if not galaxy.active:
+		if not ease_out:
+			galaxy.stop()
+		return
+	galaxy.active = false
+	spin = bool(_galaxy_saved.get("spin", spin))
+	_drift = bool(_galaxy_saved.get("drift", _drift))
+	bright_idx = int(_galaxy_saved.get("bright", bright_idx))
+	_apply_point_look()
+	if ease_out:
+		var from := cloud.global_transform
+		galaxy.begin(from, Transform3D(from.basis.orthonormalized(), _home_transform().origin))
+	else:
+		galaxy.stop()
+
+
+## Hang the echoes round the head as it is now, the hero where _recenter puts it.
+func _place_flame_echoes() -> void:
+	if flame_echoes.step == 0:
+		return
+	var cam := xr_camera.global_transform
+	var fwd := -cam.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 1e-4:
+		fwd = Vector3.FORWARD
+	fwd = fwd.normalized()
+	flame_echoes.place(Transform3D(Basis.looking_at(fwd, Vector3.UP), cam.origin),
+		xr_origin.global_position.y - cam.origin.y, Vector3(0.0, -HOME_DROP, -HOME_DISTANCE))
+
+
+func _step_flame_echoes(d: int) -> void:
+	var was := flame_echoes.step
+	flame_echoes.set_step(flame_echoes.step + d)
+	if was == 0 and flame_echoes.step > 0:
+		_place_flame_echoes()
+
+
+## TO SKY: bake the flame on show into the sky, and switch the sky on.
+func _bake_sky() -> void:
+	if flame_sky.request_bake(cloud, _theme_palette(), COLOUR_CYCLES[colour_idx]):
+		sky_on = true
+
+
+## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds.
+func _toggle_sky() -> void:
+	sky_on = not sky_on
+	if sky_on and not flame_sky.ready and not flame_sky.baking:
+		_bake_sky()
+
+
+func _sky_label() -> String:
+	if flame_sky.baking:
+		return "baking %d%%" % int(flame_sky.progress * 100.0)
+	if not sky_on:
+		return "off"
+	return "on" if flame_sky.ready else "no flame"
+
+
 func _fail(msg: String) -> void:
 	_status = "FAILED: %s" % msg
 	push_error(_status)
@@ -2120,6 +2375,7 @@ func _set_passthrough(on: bool) -> void:
 
 
 func _recenter() -> void:
+	_leave_galaxy(false)
 	var t := _home_transform()
 	if tree_mode:
 		# Trunk base on the floor, a few strides ahead, unit scale.
@@ -2141,16 +2397,30 @@ func _recenter() -> void:
 		fwd = fwd.normalized()
 		var pos := cam.origin + fwd * IFS_DISTANCE
 		pos.y = cam.origin.y - IFS_DROP
-		t = Transform3D(Basis().scaled(Vector3.ONE * _ifs_scale()), pos)
+		var unit := _ifs_scale()
+		var floor_y := xr_origin.global_position.y - cam.origin.y
+		var room_r := 0.0
+		if ifs_room:
+			unit = _ifs_room_scale(-floor_y)
+			pos = cam.origin
+			room_r = IfsEchoes.corner(ifs.bounds) * unit
+		# The dive's accumulated turn is part of the pose, so it goes back too.
+		ifs_dive.reset()
+		t = Transform3D(Basis().scaled(Vector3.ONE * unit), pos)
 		# The echoes re-anchor with the hero, so a recentre after walking away brings the
-		# room back around you with the hero's line of sight still clear.
-		ifs_echoes.place(Transform3D(Basis.looking_at(fwd, Vector3.UP), cam.origin),
-			xr_origin.global_position.y - cam.origin.y, _ifs_scale(), IFS_WIDTH_M,
-			Vector3(0.0, -IFS_DROP, -IFS_DISTANCE))
+		# room back around you with the hero's line of sight still clear. The scatter keeps the
+		# tabletop sizes in room size too; FAMILY reads the hero's own transform.
+		var anchor := Transform3D(Basis.looking_at(fwd, Vector3.UP), cam.origin)
+		ifs_echoes.place(anchor, floor_y, _ifs_scale(), IFS_WIDTH_M,
+			Vector3.ZERO if ifs_room else Vector3(0.0, -IFS_DROP, -IFS_DISTANCE),
+			anchor.affine_inverse() * t, room_r)
 	if grab != null:
 		grab.reset(t)
 	else:
 		cloud.global_transform = t
+	if tree_mode:
+		forest.place_avenue(xr_camera.global_transform)
+	_place_flame_echoes()
 
 
 func _current_eye_res() -> Vector2i:
@@ -2199,6 +2469,7 @@ func _process_frame(delta: float) -> void:
 	_menu_active = menu.update(delta)
 	if _xr_focused:
 		_run_guard(delta)
+	_tick_flame_scale(delta)
 	# _set_mode leaves bulb mode before IFS starts, so _bulb is already null here. The guard
 	# is written out anyway: breathing and marching a surface nobody is drawing is pure cost,
 	# and the ordering that makes it unreachable lives in another function.
@@ -2242,6 +2513,9 @@ func _process_frame(delta: float) -> void:
 			# The hero turns on its own trunk and the forest stands still. Spinning the cloud
 			# orbited every planted tree around the hero, sweeping trunks through the viewer.
 			tree.rotate_y(AMBIENT_SPIN * delta)
+		elif galaxy.active:
+			# Inside it, a turn is the whole view turning: a quarter rate, level, no tumble.
+			cloud.rotate_y(AMBIENT_SPIN * FlameGalaxy.SPIN_MUL * delta)
 		else:
 			cloud.rotate_y(AMBIENT_SPIN * delta)
 			cloud.rotate_object_local(Vector3.RIGHT, AMBIENT_TILT * delta)
@@ -2267,16 +2541,31 @@ func _process_frame(delta: float) -> void:
 		_tick_orbit()
 		return
 	if tree_mode:
+		# The avenue's path runs through where the hero stands, so it steps aside there.
+		tree.visible = forest.layout == Forest.Layout.GROVE
 		tree.tick(delta)
 		_tick_plant_marker(delta)
+		# Either trigger held glides down the walking avenue; G held on the desktop (the
+		# arrows are the right stick there). Only while nothing else owns the trigger, so a
+		# press on the menu never starts a walk.
+		forest.walk_held = forest.walking() and not _menu_active and not help.is_open() \
+			and (_trig_held[0] or _trig_held[1] or Input.is_key_pressed(KEY_G))
 		forest.tick(delta, xr_camera.global_transform.origin)
+		vignette.set_motion(forest.walk_motion())
 		return
 	# The sculpture's only per-frame work: the ambient clocks, and whatever rebuild breathing
 	# or a SHAPE morph is asking for. Nothing is dispatched, which is what keeps the chaos
 	# game off the GPU while the sculpture is up.
 	if ifs_mode:
-		# A captured handle owns the shape, so the ambient clock stops while it is held.
-		ifs.ambient_hold = ifs_edit.is_editing() or not _xr_focused
+		# DIVE: either trigger, held, while nothing above the sculpture has it. A grip pauses the
+		# dive and carries the step along with the hand.
+		var dive_held: bool = ifs_dive.on and _xr_focused and not help.is_open() \
+			and not _menu_active and not ifs_edit.is_editing() \
+			and (grab == null or not grab.is_grabbing()) and (_trig_held[0] or _trig_held[1])
+		ifs_dive.tick(delta, dive_held, xr_camera.global_transform)
+		# A captured handle owns the shape, so the ambient clock stops while it is held. So does
+		# a dive step: it re-roots by the maps it started with, and a breath would move them.
+		ifs.ambient_hold = ifs_edit.is_editing() or not _xr_focused or ifs_dive.in_step()
 		if ifs.tick(delta):
 			# A morph landed, bringing its preset's own opening rung with it.
 			ifs_detail_idx = _ifs_detail_idx(ifs.detail)
@@ -2382,7 +2671,8 @@ func _handle_input(delta: float) -> void:
 		elif ground_mode:
 			_ground_teleport(right_hand)
 		elif tree_mode:
-			_plant_tree_from_hand(right_hand)
+			if not forest.walking():   # walking, the trigger is held to glide instead
+				_plant_tree_from_hand(right_hand)
 		elif ifs_mode:
 			# The handles own the trigger here, and they are picked in _ifs_edit_pass before
 			# the grab. Falling through would quietly walk the flame gallery behind the
@@ -2402,7 +2692,8 @@ func _handle_input(delta: float) -> void:
 		elif ground_mode:
 			_ground_teleport(left_hand)
 		elif tree_mode:
-			_regrow_forest()
+			if not forest.walking():
+				_regrow_forest()
 		elif ifs_mode:
 			pass   # same as the right trigger: the handles have it
 		elif bulb_mode:
@@ -2789,5 +3080,6 @@ func _mark_help_seen() -> void:
 
 
 func _exit_tree() -> void:
+	RenderingServer.call_on_render_thread(flame_sky.cleanup)
 	RenderingServer.call_on_render_thread(cloud.cleanup)
 	RenderingServer.call_on_render_thread(ground.cleanup)

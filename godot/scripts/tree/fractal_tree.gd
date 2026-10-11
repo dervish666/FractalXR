@@ -144,6 +144,9 @@ var hand_planted := false
 var sprout_delay := 0.0       # seconds after a regrow before this tree starts
 var built := false
 var wind_ref: Node3D = null     # whose x axis is the wind; null = the tree's own (hero)
+## Where this tree's crown and leaves sit on the theme, in turns. 0 draws the ramps as they
+## always were; the avenue walks it down the rows so colour rolls away from you.
+var palette_phase := 0.0
 
 ## Instance index where each recursion level ends; level_ends[i] = branches in levels 0..i.
 var level_ends := PackedInt32Array()
@@ -594,6 +597,12 @@ func set_leaves(on: bool) -> void:
 const _PAL_NAMES: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal4"]
 
 
+func set_palette_phase(p: float) -> void:
+	palette_phase = p
+	_branch_mat.set_shader_parameter(&"palette_phase", p)
+	_leaf_mat.set_shader_parameter(&"palette_phase", p)
+
+
 func set_palette(pal: Array) -> void:
 	for m in [_branch_mat, _leaf_mat]:
 		for i in mini(5, pal.size()):
@@ -618,7 +627,10 @@ func tick(delta: float) -> void:
 	# One wind for a whole forest: a planted tree's random yaw used to give it a private
 	# wind direction. The gust reaches a tree later the further downwind it stands.
 	var wdir := (wind_ref.global_transform.basis.x if wind_ref != null else xf.basis.x).normalized()
-	var phase := -wdir.dot(xf.origin) * 0.9 if wind_ref != null else 0.0
+	# Measured from the wind's owner, not the world origin: the walking avenue slides its
+	# trees toward you every frame, and a phase taken from world position turned that slide
+	# into a faster or slower sway (a Doppler shift on the wind).
+	var phase := -wdir.dot(xf.origin - wind_ref.global_position) * 0.9 if wind_ref != null else 0.0
 	for m in [_branch_mat, _leaf_mat]:
 		m.set_shader_parameter("grow_t", grow_t)
 		m.set_shader_parameter("wind", wind)

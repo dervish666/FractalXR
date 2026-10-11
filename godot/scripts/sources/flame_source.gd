@@ -60,6 +60,19 @@ func set_frame(flat: PackedFloat32Array, n: int, pal: Array, label: String) -> v
 	encode_into(_live, flat, n, pal)
 
 
+## A second source on the same genome, frozen at this moment: the authored preset, or the
+## morph frame in flight. The sky bake iterates its own walkers with it, so a morph that
+## carries on afterwards cannot change what is being baked. No GPU state is shared.
+func snapshot() -> FlameSource:
+	var s := FlameSource.new(_preset)
+	if not _live.is_empty():
+		s._live = _live.duplicate()
+		s._live_pal = _live_pal.duplicate()
+		s._num_t = _num_t
+		s.display_name = display_name
+	return s
+
+
 const MAX_T := 8
 ## Floats per transform in the flat form: rowX, rowY, rowZ, translate (3 each), weight,
 ## colorIndex, then NVAR variation weights.

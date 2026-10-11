@@ -45,6 +45,10 @@ uniform float colour_height = 0.7;
 uniform float bark_hue = 0.0;
 uniform vec3 bark_tint = vec3(1.0);
 uniform float bark_mix = 0.0;
+// Where the crown sits on the theme, in turns (forest.gd's avenue walks it down the rows,
+// with the leaves). The twig end of the ramp moves from pal2 toward pal3 and back; the trunk
+// end never moves. 0 is the ramp exactly as before.
+uniform float palette_phase = 0.0;
 
 // Rotate a colour about the grey axis (Rodrigues). Angle 0 returns it unchanged.
 vec3 hue_turn(vec3 c, float a) {
@@ -104,7 +108,8 @@ void vertex() {
 void fragment() {
 	float u = clamp(v_u, 0.0, 1.0);
 	vec3 root = mix(pal0, pal1, trunk_lift);
-	vec3 base = (u < 0.5) ? mix(root, pal1, u * 2.0) : mix(pal1, pal2, (u - 0.5) * 2.0);
+	vec3 tip = mix(pal2, pal3, 1.0 - abs(fract(palette_phase) * 2.0 - 1.0));
+	vec3 base = (u < 0.5) ? mix(root, pal1, u * 2.0) : mix(pal1, tip, (u - 0.5) * 2.0);
 	if (bark_mix > 0.0 || bark_hue != 0.0) {
 		base = max(hue_turn(base, bark_hue), vec3(0.0));
 		float luma = dot(base, vec3(0.299, 0.587, 0.114));

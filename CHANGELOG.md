@@ -6,6 +6,9 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Changed
+- **The help card knows WALK and DIVE.** TREE's trigger callouts add "WALK: hold to glide"
+  and IFS's add "DIVE: hold, eye a copy", the small second-job line the sticks already use.
+  A three-line trigger block rises half a line per extra line so it clears the stick's label.
 - **Choose a fractal by its picture.** Every mode's chooser (flame presets, bulbs, ground
   families, the 13 tree species, IFS shapes) is now a full-width card showing the current
   fractal's picture, and inside it a page of picture buttons, one per entry, the current one
@@ -53,6 +56,12 @@ All notable changes to FractalXR are documented here. Format based on
   shows the new scheme, with the menu button drawn and each stick's click named.
 
 ### Fixed
+- **BRIGHT's bottom two detents do something.** The point shader's brightness was floored at
+  0.05, so 0.01, 0.02 (the default) and 0.05 all drew at 0.05 and the first two clicks of
+  BRIGHT changed nothing. The floor is gone and the default is now 0.05, the value that was
+  really drawing, so the flame you open on is unchanged. Below it, 0.01 and 0.02 now draw
+  dimmer for real. The label reads 0.050 at start instead of 0.020. GALAXY still lifts the
+  default to 0.12.
 - **A flame morph costs a fraction of what it did.** Every morph frame rebuilt the
   in-between genome as Dictionaries, re-encoded it, applied the palette twice when a theme
   blend ran alongside, and restyled the whole wrist menu each time; on the headset that was
@@ -85,6 +94,84 @@ All notable changes to FractalXR are documented here. Format based on
   than stepping the gallery behind the panel.
 
 ### Added
+- **TREE avenues.** Two new entries in TREE's MAKE card, beside SOW. AVENUE sows two rows
+  of trees from your feet to 50 m down the way you face, 2.5-3 m either side of the path
+  and 3-4 m apart. They sprout as a wave rolling away from you, and each crown's colour
+  steps along the theme with distance, so a colour wave rolls down the rows too. The hero
+  steps out of the path; SOW brings it and the grove back. MIX picks the species: the
+  mixed bag, or the SPECIES tile's one kind for the whole avenue ("sakura rows").
+  WALK makes the avenue endless: hold either trigger and it glides toward you at 1.0 m/s,
+  easing in and out over a second, level and straight, and letting go stops it.
+  You never move; the rows do. Trees sprout as they come within 25 m, wither once they
+  are behind you, and by 5 m behind they are moved to the far end and regrown. A pool of
+  30 trees is built once when WALK starts and never rebuilt, so the walk itself adds no
+  build cost. A tunnel vignette darkens the edges of the view while you glide and clears
+  when you stop (`scripts/xr/comfort_vignette.gd`, written so another mode can reuse it).
+  WALK off keeps the avenue where you stopped and lets its far end grow in. On the
+  desktop, G stands in for the held trigger. `godot/tools/avenue_shot.sh` checks and
+  shoots both from the viewer's position.
+- **IFS DIVE: fly into a copy of the sculpture, for ever.** Turn DIVE on (MAKE card) and hold
+  either trigger: the sculpture swells slowly about a still point near where you look until
+  the copy you were looking at is the size and in the place the hero was, then that copy
+  becomes the hero and the next step begins inside it. Each step is a pure radial expansion
+  with no turn, eased in and out over half a second, at 0.12 octaves a second (a FRAMES step
+  takes about 13 s). The frames being left behind darken and dissolve in the first 40% of
+  the step; the copy's own frames glide from their colours as a child to their colours as the
+  hero, so the re-root changes nothing on screen. No rebuild during a step: the motion is the
+  grab target's transform, the dissolve a flag written once into the hero's buffer, the
+  re-root a transform swap, and only the new deepest generation grows in. The echoes stay put
+  as the fixed reference. A grip mid-step carries the step with your hand; any edit, SHAPE,
+  DETAIL or MOTION press puts the step back; DEPTH returns to 1x, because a stretched
+  sculpture is not a copy of its children. RESET puts the pose back.
+- **IFS SIZE room: stand inside the sculpture.** The LOOK card's SIZE tile switches between
+  the tabletop and room size, where the sculpture's centre (its clearest point, checked per
+  preset) sits at your eyes and its lowest beam on the floor, about 3.2 m across for a
+  standing eye and never under 2.4 m. Room size and the dive draw with a second shader that cuts away any
+  beam within 0.3 m of the eye, so nothing passes through your head; the tabletop shader is
+  unchanged and pays nothing for it.
+- **IFS LAYOUT family: echoes where the sculpture's own maps put its relatives.** The LOOK
+  card's LAYOUT tile switches the echoes from the seeded scatter to the hero's family: its
+  siblings in its parent, its parent's siblings in the grandparent, up to an ancestor about
+  twenty times the hero, with each ancestor's own frame drawn dim around them. The room is
+  then literally the next generations out, and in room size you stand in one corner of
+  something tens of metres across. The layout keeps the echo comfort rules (HEAD_CLEAR, the
+  sight cone, nothing underfoot) and family echoes hold still. Switching LAYOUT, or changing
+  SHAPE while on family, folds the echoes away and grows the new layout back. `godot/tools/ifs_family_shot.sh`
+  captures all three; `godot/tools/ifs_check.sh` checks the family is exact to the maps, the
+  dive lands to a micron and never rebuilds, and room size starts clear of the clip sphere.
+- **The flame at scale: GALAXY, ECHOES and a flame SKY.** Three tiles on FLAME's SCENE card,
+  and SKY on the SCENE card in every mode (so IFS and GROUND now have a SCENE card).
+  - **GALAXY** grows the living flame round you over 8 s, to an RMS radius of 6 m (about
+    24 m across) with its centre 3 m ahead and 0.4 m below the eyes, so the dense middle is
+    never at the head. Spin and drift go off on the way in and come back on the way out
+    (a spin turned back on inside runs at a quarter rate, level), points within 0.6 m of the
+    eye fade out, and per-point brightness rises to at least 0.12, because from inside the
+    same particles cover three times the screen. Press again to shrink back to arm's length
+    over the same 8 s; X or CENTRE puts it back at once; a grip takes over mid-grow.
+  - **ECHOES** (off, four, eight) hangs copies of the living flame round the room, lanterns
+    3 m out to giants 20-40 m out, under the IFS echoes' comfort rules: 1.2 m clear of the
+    head, clear of the floor, out of a 28 degree cone round the line to the hero, and still.
+    Each echo is the hero's own point material on a smaller vertex buffer, reading a
+    block-strided sample of the live particles, so morphs and palettes reach every echo for
+    free. All echoes together draw at most 262,144 points, a quarter of the hero's 1.05M;
+    one out of view is culled. They hide with the flame (bulb, splats, other modes, GALAXY).
+  - **TO SKY** bakes the flame on show into a 2560x1280 HDR equirect, seen from the flame's
+    own centre, and **SKY** hangs it behind GROUND, TREE and IFS (not FLAME, not BULB, and
+    passthrough wins). The bake runs 65,536 walkers through the unchanged `chaos.glsl`,
+    splats 24M samples by direction over about 200 frames, then resolves them with flam3
+    log-density, the curve the live flame on Quest never gets. Static once baked, it fades
+    in over 2 s. It is compute on the RenderingDevice with no viewport or camera, so the XR
+    stereo camera cannot pick it up: the job `renderer.xr.enabled` did in the web build.
+  - Desktop cost, three runs on an Apple M1 Pro through MoltenVK, mono 1280x800
+    (`tools/flame_scale_cost.sh`; under Metal neither GPU timer reports anything): hero draw
+    2.2 / 3.3-3.4 / 4.1-4.5 ms at 629K / 1.05M / 1.47M points, so linear in points; ECHOES
+    0 to +0.3 ms, inside the run-to-run noise of about 0.3 ms; GALAXY 2.8-3.1 ms against the
+    hero's 3.3-3.4 from the same particles; the bake 0.3-0.6 ms of GPU a frame for 198 frames,
+    plus two one-time frames of 10-15 ms; the sky in steady state inside the noise. None of
+    this is a headset number. Guesses from README phase 2, which found the Quest's point draw
+    vertex-bound: echoes add about a quarter of the hero's draw (their share of its points),
+    GALAXY draws about what the hero does, and the bake adds 3-5 ms a frame for about 3 s.
+    Shots and checks: `tools/flame_scale_shot.sh`.
 - **TREE grows a forest.** Entering TREE sows a grove of 16 trees around the hero's trunk,
   0.75-1.6 m out, tall inside and knee-high at the rim, sprouting one after another from
   the hero outward over about 15 s. Thirteen species now, on the SHAPE tile and in the

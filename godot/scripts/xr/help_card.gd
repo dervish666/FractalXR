@@ -236,8 +236,9 @@ class ControlsCard extends Control:
 		var menu_btn := PackedStringArray(["Float the menu", "· again: back on the arm"])
 		var mode_note := "Wrist up for the menu. Point and pull; the other trigger goes back a level."
 		if _mode == "tree":
-			left_trigger = PackedStringArray(["Regrow", "every tree"])
-			right_trigger = PackedStringArray(["Plant a tree", "at the point"])
+			# WALK takes both triggers over: held, they glide down the avenue instead.
+			left_trigger = PackedStringArray(["Regrow", "every tree", "· WALK: hold to glide"])
+			right_trigger = PackedStringArray(["Plant a tree", "at the point", "· WALK: hold to glide"])
 			face = PackedStringArray(["A · B: previous,", "next species"])
 			right_stick = PackedStringArray(["Turn the grove", "· click: spin on, off"])
 			# The grips move the whole grove, hero and planted alike: they are one cloud.
@@ -260,21 +261,26 @@ class ControlsCard extends Control:
 			face = PackedStringArray(["A · B: previous,", "next bulb"])
 			mode_note = "It arrives hand-sized. Both grips make it a room; SURFACE changes how it is drawn."
 		elif _mode == "ifs":
-			# Either trigger picks a handle, and only while EDIT has the guides showing.
-			left_trigger = PackedStringArray(["Hold on a handle", "to sculpt"])
-			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt"])
+			# Either trigger picks a handle, and only while EDIT has the guides showing. With
+			# DIVE on instead, either trigger held flies into the copy nearest your gaze.
+			left_trigger = PackedStringArray(["Hold on a handle", "to sculpt", "· DIVE: hold, eye a copy"])
+			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt", "· DIVE: hold, eye a copy"])
 			right_stick = PackedStringArray(["Turn, push away", "· click: breathing on, off"])
 			face = PackedStringArray(["A · B: previous,", "next sculpture"])
 			left_face = PackedStringArray(["X: reset the shape", "Y: next theme"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
 			mode_note = "SHAPE morphs it; EDIT shows the mirrors; MOTION breathes; ECHOES fills the room"
-		_callout(left["trigger"], 292.0, true, left_trigger)
+		# A third trigger line (WALK, DIVE) would sit on the stick's first line, so the block
+		# rises by half a line for each line past two; there is room under the subtitle.
+		var trig_y := 292.0 - 0.5 * (LABEL_SIZE + 8) * maxf(0.0, left_trigger.size() - 2)
+		_callout(left["trigger"], trig_y, true, left_trigger)
 		_callout(left["stick"], 398.0, true, left_stick)
 		_callout(left["face"], 504.0, true, left_face)
 		_callout(left["menu"], 602.0, true, menu_btn)
 		_callout(left["grip"], 702.0, true, left_grip)
-		_callout(right["trigger"], 292.0, false, right_trigger)
+		_callout(right["trigger"], 292.0 - 0.5 * (LABEL_SIZE + 8) * maxf(0.0, right_trigger.size() - 2),
+			false, right_trigger)
 		_callout(right["stick"], 410.0, false, right_stick)
 		_callout(right["face"], 540.0, false, face)
 		_callout(right["grip"], 672.0, false, right_grip)

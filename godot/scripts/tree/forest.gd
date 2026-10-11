@@ -25,6 +25,23 @@ class_name Forest
 ## budget. The budget follows the measured GPU time: over 85% of the frame it shrinks,
 ## under 65% it grows back. On the headset that means thermal throttling thins the far
 ## trees instead of dropping frames.
+##
+## The avenue (AVENUE, WALK). Two rows either side of a path that starts at your feet and
+## runs 50 m along the way you were facing, 2.5-3 m either side of you, trunks 3-4 m apart
+## along each row. The hero steps aside (main.gd hides it): it would stand in the path,
+## dead centre on the vanishing point. Growth rolls away from you as a wave (STAGGER_STEP
+## per average step), and the crowns walk the theme's palette down the rows, the per-echo
+## palette phase from ifs_echoes.gd (PHASE_SPAN), so colour rolls away too. Trees stand
+## 3 m tall for an oak, so at 3-4 m spacing each crown keeps clear of the next and a row
+## reads as trees, not a hedge (avenue_shot.sh shoots it from where you stand).
+##
+## WALK is the same rows with a held trigger. The viewer never moves: the avenue's root
+## slides toward you along the path, at a held speed only, eased in and out over a
+## second, level and straight, so letting go stops it. A fixed pool of trees is built once.
+## A tree sprouts as it comes within 25 m, withers once it is behind you, and by 5 m behind
+## it is hidden, moved to the far end of its row and left waiting to sprout again. Moving a
+## tree is a transform and two uniforms, never a rebuild, so the walk costs no build at all
+## once the pool is up and the avenue never ends.
 
 const GROVE_COUNT := 16
 const GROVE_R_MIN := 0.75         # metres from the hero's trunk
@@ -38,6 +55,10 @@ const PLANT_MAX := 12             # hand-planted trees, as before
 const PLANT_H := Vector2(0.5, 0.85)   # planted height as a share of the species hero height
 const STAGGER_FIRST := 1.5        # seconds after the hero starts before the first sprout
 const STAGGER_STEP := 0.85        # then one more tree about this often, inside out
+## At least this long between two builds. A build is one long GDScript call (an avenue tree:
+## 4 ms mean, 6-11 ms worst, measured on an M1 Pro; the Quest is slower), and without the gap
+## the walk's pool would build its sixteen far trees on sixteen frames in a row.
+const BUILD_GAP_S := 0.1
 
 ## Instance budget (branches + leaves) for the whole forest, the hero excluded.
 const BUDGET_START := 24000
@@ -49,6 +70,27 @@ const LOD_SIZE := [0.45, 0.22, 0.11]  # height / distance above which LOD 0, 1, 
 const SUCCESSION_S := 45.0        # roughly how often one grove tree withers and is replaced
 const WITHER_RATE := -1.6         # growth clock speed while withering
 
+enum Layout { GROVE, AVENUE, WALK }
+const AVENUE_HALF_W := 2.75       # row line, metres either side of the path's centre
+const AVENUE_HALF_W_JITTER := 0.25  # so trunks land 2.5-3.0 m out
+const AVENUE_STEP := Vector2(3.0, 4.0)  # trunk to trunk along a row
+const AVENUE_FIRST := 2.0         # the nearest trunks, metres ahead of your feet
+const AVENUE_LEN := 50.0
+const AVENUE_H := 3.0             # metres, for a species of the oak's 4.8 m hero height
+const AVENUE_CAP_FAR := 700       # branches at the far end of a standing avenue (near: TREE_CAP_MAX)
+const AVENUE_PHASE_SPAN := 0.8    # palette turns over AVENUE_LEN, as ifs_echoes' PHASE_SPAN
+const AVENUE_PHASE_JITTER := 0.06
+const WALK_PER_ROW := 15          # a pool of 30 trees, built once for the walk, never rebuilt
+## Held speed: a slow stroll, under the 1.3 m/s of a normal walk. 0.3 m/s read as too slow
+## in the headset. The glide is constant, straight, held and level under a vignette, which is
+## where steady speed near walking pace is tolerated; the ramp is what has to stay gentle.
+const WALK_SPEED := 1.0
+const WALK_EASE_S := 1.0          # seconds from still to full speed, and back: 1 m/s², 0.5 m to stop
+const WALK_SPROUT := 25.0         # metres ahead at which a waiting tree sprouts
+const WALK_WITHER := 1.5          # metres behind you at which a grown tree starts to wither
+const WALK_RECYCLE := 5.0         # metres behind you by which it goes to the far end
+const WAITING_T := -0.5           # a built pool tree held hidden (grow_rate 0) until its turn
+
 var plant_mix := true             # each plant draws the next species from a shuffled bag
 var succession := true
 var grove_seed := 0               # 0 = random each sowing
@@ -56,8 +98,24 @@ var budget := BUDGET_START
 var visible_cost := 0
 var gpu_ms := 0.0
 var builds := 0                   # trees built so far (the harness reads it)
+var build_us_max := 0             # the slowest single build, microseconds (the harness reads it)
+var build_us_sum := 0
+var layout := Layout.GROVE
+var walk_held := false            # main.gd: a trigger is held and nothing else owns it
+var walk_speed := 0.0             # m/s, eased
+var walked := 0.0                 # metres walked since the avenue was sown
+var recycles := 0                 # trees moved to the far end so far
 
 var _trees: Array[FractalTree] = []
+## The avenue's root, a child of the forest so grab carries it. _avenue_frame is where it was
+## laid out (in the forest's space: origin at your feet, -Z down the path); the root sits
+## _walk_s metres further toward you along +Z.
+var _avenue := Node3D.new()
+var _avenue_frame := Transform3D()
+var _walk_s := 0.0
+var _row_far := PackedFloat32Array([0.0, 0.0])   # the furthest trunk's z in each row
+var _eye_z := 0.0                 # your z in the avenue's root frame, last tick
+var _build_ready_at := 0.0
 var _wind := 0.3
 var _leaves_on := true
 var _palette: Array = []
@@ -72,6 +130,8 @@ var _succession_at := 0.0
 func _init() -> void:
 	name = "Forest"
 	_rng.randomize()
+	_avenue.name = "Avenue"
+	add_child(_avenue)
 
 
 func trees() -> Array[FractalTree]:
@@ -141,6 +201,7 @@ func sow_grove() -> void:
 	for t in _trees.duplicate():
 		if not t.hand_planted:
 			_remove(t)
+	_set_layout(Layout.GROVE)
 	if grove_seed != 0:
 		_rng.seed = grove_seed
 		grove_seed += 1
@@ -166,7 +227,13 @@ func regrow() -> void:
 	if _trees.is_empty():
 		sow_grove()
 		return
+	# The avenue regrows as a wave from where you stand now, which after a walk is not where
+	# it was sown; trees you planted regrow as before.
+	if layout != Layout.GROVE:
+		_walk_wave(WALK_SPROUT if layout == Layout.WALK else INF, true)
 	for t in _trees.duplicate():
+		if t.get_parent() == _avenue:
+			continue
 		if t.grow_rate < 0.0:
 			_remove(t)
 			continue
@@ -177,6 +244,72 @@ func regrow() -> void:
 func clear() -> void:
 	for t in _trees.duplicate():
 		_remove(t)
+	_set_layout(Layout.GROVE)
+
+
+func walking() -> bool:
+	return layout == Layout.WALK
+
+
+## 0 still, 1 at full walking speed: what a comfort vignette should follow.
+func walk_motion() -> float:
+	return walk_speed / WALK_SPEED
+
+
+## The avenue: two rows from your feet down the way `eye` faces. Every tree goes, planted
+## ones too, since they would stand still while a walk slid the rows past them. MIX picks
+## the species as it does for planting: the bag, or `selected` for the whole avenue.
+## `walk` builds the fixed pool instead, with only the first 25 m sprouting.
+func sow_avenue(eye: Transform3D, walk: bool, selected: String) -> void:
+	clear()
+	_set_layout(Layout.WALK if walk else Layout.AVENUE)
+	if grove_seed != 0:
+		_rng.seed = grove_seed
+		grove_seed += 1
+	place_avenue(eye)
+	var mean := (AVENUE_STEP.x + AVENUE_STEP.y) * 0.5
+	for row in 2:
+		var z := -AVENUE_FIRST - _rng.randf_range(0.0, mean * 0.5)
+		var n := 0
+		while (walk and n < WALK_PER_ROW) or (not walk and -z <= AVENUE_LEN):
+			var far01 := clampf((-z - AVENUE_FIRST) / (AVENUE_LEN - AVENUE_FIRST), 0.0, 1.0)
+			var cap := TREE_CAP_MAX if walk else int(lerpf(TREE_CAP_MAX, AVENUE_CAP_FAR, far01))
+			var t := _new_tree(_draw_species() if plant_mix else selected, _avenue)
+			t.wind_ref = _avenue
+			t.branch_cap = cap
+			var rel := clampf(float(FractalTree.SHAPES[t.shape]["height_m"]) / 4.8, 0.7, 1.35)
+			t.target_height = AVENUE_H * rel * _rng.randf_range(0.9, 1.1)
+			_place_in_row(t, row, z, 1.0)
+			_row_far[row] = z
+			z -= _rng.randf_range(AVENUE_STEP.x, AVENUE_STEP.y)
+			n += 1
+	_walk_wave(WALK_SPROUT if walk else INF, true)
+
+
+## Re-lay the avenue from where you stand now, facing where you face (entering TREE, or a
+## recentre). The trees keep their places along the path relative to you.
+func place_avenue(eye: Transform3D) -> void:
+	if layout == Layout.GROVE:
+		return
+	var fwd := -eye.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 1e-4:
+		fwd = Vector3.FORWARD
+	var feet := Transform3D(Basis.looking_at(fwd.normalized(), Vector3.UP),
+		Vector3(eye.origin.x, 0.0, eye.origin.z))
+	_avenue_frame = global_transform.affine_inverse() * feet
+	walk_speed = 0.0
+	_avenue.transform = _avenue_frame.translated_local(Vector3(0.0, 0.0, _walk_s))
+	_eye_z = -_walk_s
+
+
+## Stop walking and keep the avenue: the trees still waiting beyond 25 m sprout in a wave,
+## and the trigger plants again.
+func stand_still() -> void:
+	if layout != Layout.WALK:
+		return
+	_set_layout(Layout.AVENUE)
+	_walk_wave(INF, false)
 
 
 ## The species the next plant will be: the selected one, or the next from the bag. The
@@ -210,29 +343,115 @@ func plant_at(hit: Vector2, selected: String) -> FractalTree:
 ## Per frame in tree mode. `cam` is the eye in world space, for the LOD.
 func tick(delta: float, cam: Vector3) -> void:
 	_clock += delta
+	if layout == Layout.WALK:
+		_tick_walk(delta, cam)
 	var built_one := false
 	for t in _trees.duplicate():
 		# Build just before the sprout, one tree per frame, so sowing never lands as one
 		# long frame. A planted tree is built at once (it is one tree, on a trigger pull).
-		if not t.built and not built_one and t.grow_t > -0.75:
+		if not t.built and not built_one and t.grow_t > -0.75 and _clock >= _build_ready_at:
 			_build(t)
 			built_one = true
+			_build_ready_at = _clock + BUILD_GAP_S
 		if t.built:
 			t.tick(delta)
 		else:
-			t.grow_t += delta
-		if t.grow_rate < 0.0 and t.grow_t <= 0.0:
+			t.grow_t += delta * t.grow_rate   # a waiting pool tree (rate 0) holds its place
+		# A withered pool tree is recycled by _tick_walk, never freed.
+		if t.grow_rate < 0.0 and t.grow_t <= 0.0 and layout != Layout.WALK:
 			_remove(t)
 	_govern_t += delta
 	if _govern_t >= GOVERN_S:
 		_govern_t = 0.0
 		_govern()
 		apply_lod(cam)
-	if succession:
+	# Succession reseeds the grove's ring; the avenue has no ring to reseed.
+	if succession and layout == Layout.GROVE:
 		_tick_succession()
 
 
-func _new_tree(species: String) -> FractalTree:
+## The walk, before the trees tick: ease the speed toward the held target, slide the root
+## toward you, then sprout, wither and recycle by each tree's distance ahead. No allocation:
+## the loop walks the live array, and a recycle only moves a tree within it.
+func _tick_walk(delta: float, cam: Vector3) -> void:
+	var target := WALK_SPEED if walk_held else 0.0
+	walk_speed = move_toward(walk_speed, target, WALK_SPEED / WALK_EASE_S * delta)
+	if walk_speed > 0.0:
+		_walk_s += walk_speed * delta
+		walked += walk_speed * delta
+		_avenue.transform = _avenue_frame.translated_local(Vector3(0.0, 0.0, _walk_s))
+	_eye_z = _avenue.to_local(cam).z
+	for t in _trees:
+		if t.get_parent() != _avenue:
+			continue
+		var ahead := _eye_z - t.position.z
+		if ahead < -WALK_RECYCLE or (t.grow_rate < 0.0 and t.grow_t <= 0.0):
+			_recycle(t)
+		elif t.grow_rate == 0.0 and ahead < WALK_SPROUT:
+			t.grow_rate = 1.0
+		elif t.grow_rate > 0.0 and ahead < -WALK_WITHER:
+			t.grow_t = minf(t.grow_t, t.grow_s + 1.0)
+			t.grow_rate = WITHER_RATE
+
+
+## A tree that has fallen behind goes to the far end of its own row, turned and resized a
+## little so a pool of thirty does not read as the same thirty trees, and waits there,
+## hidden, to sprout at WALK_SPROUT.
+func _recycle(t: FractalTree) -> void:
+	var row := 0 if t.position.x < 0.0 else 1
+	var z := _row_far[row] - _rng.randf_range(AVENUE_STEP.x, AVENUE_STEP.y)
+	_row_far[row] = z
+	_place_in_row(t, row, z, _rng.randf_range(0.9, 1.1))
+	t.grow_t = WAITING_T
+	t.grow_rate = 0.0
+	recycles += 1
+
+
+## Trunk on the row line (left is row 0), a random turn about it, and a palette phase from how
+## far down the avenue it stands, so colour rolls away from you as growth does.
+func _place_in_row(t: FractalTree, row: int, z: float, s: float) -> void:
+	var x := (-1.0 if row == 0 else 1.0) * (AVENUE_HALF_W
+		+ _rng.randf_range(-AVENUE_HALF_W_JITTER, AVENUE_HALF_W_JITTER))
+	t.transform = Transform3D(Basis(Vector3.UP, _rng.randf() * TAU).scaled(Vector3(s, s, s)),
+		Vector3(x, 0.0, z))
+	t.set_palette_phase(AVENUE_PHASE_SPAN * -z / AVENUE_LEN
+		+ _rng.randf_range(-AVENUE_PHASE_JITTER, AVENUE_PHASE_JITTER))
+
+
+## Growth as a wave rolling away from you: each avenue tree within `reach` sprouts after a
+## delay that grows by STAGGER_STEP per average trunk step past the nearest one taking part,
+## and the rest wait, built and hidden. `all` restarts every tree; otherwise only the ones
+## already waiting join (WALK switched off, so the far end grows in).
+func _walk_wave(reach: float, all: bool) -> void:
+	var mean := (AVENUE_STEP.x + AVENUE_STEP.y) * 0.5
+	var near := INF
+	for t in _trees:
+		if t.get_parent() == _avenue and (all or t.grow_rate == 0.0):
+			near = minf(near, maxf(_eye_z - t.position.z, 0.0))
+	for t in _trees:
+		if t.get_parent() != _avenue or not (all or t.grow_rate == 0.0):
+			continue
+		var ahead := maxf(_eye_z - t.position.z, 0.0)
+		if ahead < reach:
+			t.sprout_delay = STAGGER_FIRST + STAGGER_STEP * (ahead - near) / mean + _rng.randf() * 0.3
+			t.grow_t = -t.sprout_delay
+			t.grow_rate = 1.0
+		else:
+			t.sprout_delay = 0.0
+			t.grow_t = WAITING_T
+			t.grow_rate = 0.0
+
+
+func _set_layout(l: Layout) -> void:
+	layout = l
+	walk_speed = 0.0
+	if l == Layout.GROVE:
+		_walk_s = 0.0
+		walked = 0.0
+		_avenue.transform = Transform3D()
+
+
+func _new_tree(species: String, parent: Node3D = self) -> FractalTree:
 	var t := FractalTree.new()
 	t.shape = species
 	t.seed_value = _rng.randi_range(1, 100000)
@@ -244,7 +463,7 @@ func _new_tree(species: String) -> FractalTree:
 	t.leaves_on = _leaves_on
 	t.set_palette(_palette)
 	t.visible = true
-	add_child(t)
+	parent.add_child(t)
 	_trees.append(t)
 	return t
 
@@ -262,7 +481,11 @@ func _grove_tree(species: String, spot: Vector2) -> FractalTree:
 ## build() restarts the clock; a tree waiting its turn keeps its place in the queue.
 func _build(t: FractalTree) -> void:
 	var keep := t.grow_t
+	var t0 := Time.get_ticks_usec()
 	t.build()
+	var us := Time.get_ticks_usec() - t0
+	build_us_max = maxi(build_us_max, us)
+	build_us_sum += us
 	t.grow_t = minf(keep, 0.0)
 	builds += 1
 
