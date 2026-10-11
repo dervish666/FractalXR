@@ -42,6 +42,8 @@ uniform float leaf_shape = 0.0;
 // over it instead of wrapping: 0 is the ramp exactly as before, 0.25 the bright half, 0.75
 // the deep half, and a tree never jumps from white to dark at a seam.
 uniform float palette_phase = 0.0;
+// CYCLE (main.gd, the COLOUR card), in turns, added to the phase above (tree.gdshader too).
+global uniform float colour_cycle;
 // The far batch (far_forest.gd), as in tree.gdshader: CUSTOM.x is the birth on the shared
 // clock, CUSTOM.y the tree's palette phase and CUSTOM.z its leaf hue. Off, nothing changes.
 uniform bool batch = false;
@@ -76,7 +78,7 @@ vec3 sway(vec3 w, float phase) {
 void vertex() {
 	float birth = INSTANCE_CUSTOM.x;
 	float phase = INSTANCE_CUSTOM.w;
-	float phase_t = batch ? INSTANCE_CUSTOM.y : palette_phase;
+	float phase_t = (batch ? INSTANCE_CUSTOM.y : palette_phase) + colour_cycle;
 	v_hue = 1.0 - abs(fract(COLOR.r * 0.5 + phase_t) * 2.0 - 1.0);
 	v_leaf_hue = INSTANCE_CUSTOM.z;
 	// Leaves open after their branch has finished extending.

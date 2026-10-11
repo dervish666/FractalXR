@@ -49,6 +49,9 @@ uniform float bark_mix = 0.0;
 // with the leaves). The twig end of the ramp moves from pal2 toward pal3 and back; the trunk
 // end never moves. 0 is the ramp exactly as before.
 uniform float palette_phase = 0.0;
+// CYCLE (main.gd, the COLOUR card), in turns: added to every tree's phase, so an avenue's
+// colour rolls along the rows. A global every mode reads; 0 is the colour as before.
+global uniform float colour_cycle;
 // The far batch (far_forest.gd): many trees of one species in one MultiMesh, each instance
 // composed into the avenue's frame. What is per tree there rides in the instance instead of a
 // uniform: COLOR.r the level, COLOR.g the tree's bark hue, CUSTOM.x the birth on the shared
@@ -119,7 +122,7 @@ void vertex() {
 void fragment() {
 	float u = clamp(v_u, 0.0, 1.0);
 	vec3 root = mix(pal0, pal1, trunk_lift);
-	float phase = batch ? v_phase : palette_phase;
+	float phase = (batch ? v_phase : palette_phase) + colour_cycle;
 	float bh = batch ? v_bark_hue : bark_hue;
 	vec3 tip = mix(pal2, pal3, 1.0 - abs(fract(phase) * 2.0 - 1.0));
 	vec3 base = (u < 0.5) ? mix(root, pal1, u * 2.0) : mix(pal1, tip, (u - 0.5) * 2.0);
