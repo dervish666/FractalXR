@@ -138,8 +138,22 @@ var march := BulbMarch.new()
 # This DE needs roughly 48 trace steps to reach a true exterior surface. Lower rungs
 # painted the bounding volume or punched holes, so the performance budget lives in
 # resolution and post-hit shading rather than a misleading step-count preview.
-const SURFACE_STEPS := [0, 48, 64, 80]
-const SURFACE_NAMES := ["splats", "march 48", "march 64", "march 80"]
+const SURFACE_STEPS := [0, 48, 64, 80, 0, 0, 0]
+const SURFACE_NAMES := ["splats", "march 48", "march 64", "march 80", "solid 128", "solid 192", "solid 256"]
+## SOLID (spike, T-48): the bulb meshed on the device with AO and a soft shadow baked into
+## its vertices (scripts/sources/bulb_solid.gd). Grid cells per axis for each SURFACE entry,
+## 0 where the entry is not solid. Appended, so INSIDE_STEPS_IDX still names march 48.
+const SURFACE_SOLID := [0, 0, 0, 0, 128, 192, 256]
+var solid := BulbSolid.new()
+## SOLID re-homes the bulb to the size of the Mandelbulber taste-test render Sam liked
+## (godot/.spike-out/mb2-2026-10-11): 35 cm across, 0.7 m out, 15 cm under the eyes. The
+## splat toy is 1.2 m across at 1.1 m, which puts twice the pixels and triangles in view.
+const SOLID_ACROSS_M := 0.35
+const SOLID_DISTANCE := 0.7
+const SOLID_DROP := 0.15
+## A key light fixed to the shape: upper right and toward the viewer, as in the render.
+const SOLID_KEY_WORLD := Vector3(0.5, 0.8, 0.35)
+var _solid_msaa_saved := -1
 # Splat fill is cheap enough to use the chosen DETAIL. A raymarch is not: even the
 # normal 0.6x floor could sustain a full stereo DE trace for only a handful of frames.
 # Give the surface a dedicated quarter-ish eye buffer; the composition-layer wrist menu
@@ -502,6 +516,7 @@ const BULB_EXPOSURE_IDX := 0      # points are already bright, so do not push th
 func _ready() -> void:
 	add_child(cloud)
 	cloud.add_child(march)
+	cloud.add_child(solid)
 	cloud.add_child(tree)
 	cloud.add_child(forest)
 	cloud.add_child(ifs)
@@ -834,12 +849,14 @@ func _build_menu() -> void:
 			false, _vis_cloud).stepping(func(d: int):
 				density_idx = wrapi(density_idx + d, 0, DENSITY_STEPS.size())
 				_apply_point_look()).minor(),
+		# Splat opacity. Hidden while SURFACE is a solid mesh: it does nothing there, and two
+		# things called solid on one card would be one too many.
 		WristMenu.Item.new("look", "SOLID",
 			func(): return "%d%%" % int(OPACITY_STEPS[opacity_idx] * 100.0),
 			func():
 				opacity_idx = (opacity_idx + 1) % OPACITY_STEPS.size()
 				_apply_point_look(),
-			false, _vis_cloud).stepping(func(d: int):
+			false, func(): return _vis_cloud.call() and SURFACE_SOLID[surface_idx] == 0).stepping(func(d: int):
 				opacity_idx = wrapi(opacity_idx + d, 0, OPACITY_STEPS.size())
 				_apply_point_look()).slider(func(): return opacity_idx, OPACITY_STEPS.size()),
 		WristMenu.Item.new("look", "SIZE",
@@ -960,7 +977,15 @@ func _build_menu() -> void:
 				breath_idx = wrapi(breath_idx + d, 0, BREATH_STEPS.size())),
 		# Splats or a raymarched surface. The ms readout in the footer is the verdict.
 		WristMenu.Item.new("look", "SURFACE",
-			func(): return SURFACE_NAMES[surface_idx],
+			func():
+				if SURFACE_SOLID[surface_idx] > 0:
+					if solid.is_building():
+						return "growing %d%%" % int(solid.progress() * 100.0)
+					if solid.is_ready():
+						return "solid %dk" % int(solid.tri_count / 1000)
+					if solid.get_error() != "":
+						return "solid failed"
+				return SURFACE_NAMES[surface_idx],
 			func(): surface_idx = (surface_idx + 1) % SURFACE_STEPS.size(); _apply_surface(),
 			false, func(): return bulb_mode).stepping(func(d: int):
 				surface_idx = wrapi(surface_idx + d, 0, SURFACE_STEPS.size())
@@ -1565,9 +1590,10 @@ func _perf_tail() -> String:
 			_zoom_text(ground.zoom_factor()), ground.progress(),
 			GROUND_ITER[ground_iter_idx], ground.effective_iter(), GROUND_RELIEF[ground_relief_idx]]
 	if bulb_mode:
-		return head + " mode=bulb surface=%s marching=%s cover=%.2f" % [
+		return head + " mode=bulb surface=%s marching=%s cover=%.2f solid_tris=%d solid_build_ms=%.0f" % [
 			SURFACE_NAMES[surface_idx].replace(" ", "_"), str(march.is_on()),
-			BULB_COVERAGE[coverage_idx]]
+			BULB_COVERAGE[coverage_idx], solid.tri_count if solid.is_ready() else 0,
+			solid.wall_ms if solid.is_ready() else 0.0]
 	return head + " mode=flame morph=%.2f drift=%s" % [_morph_t, str(_drift)]
 
 
@@ -2040,6 +2066,9 @@ func _load_bulb(i: int) -> void:
 		axis[_bulb.slice_axis] = 1.0
 	cloud.set_lines(axis, LINE_WIDTH * _bulb.slice_spacing(), LINE_STRETCH, LINE_CAP)
 	march.configure(_bulb)
+	# SOLID builds a mesh per bulb; the splats show the new one while it grows.
+	if bulb_mode and SURFACE_SOLID[surface_idx] > 0:
+		_apply_surface()
 	# The node transform is deliberately left alone: switching bulbs used to reset the
 	# scale here, which threw away wherever the user had grabbed and sized the cloud to.
 	# Only entering bulb mode (see _set_bulb_mode) puts you inside the surface.
@@ -2606,6 +2635,7 @@ func _process_frame(delta: float) -> void:
 		_bulb.clock += delta * BREATH_STEPS[breath_idx]
 		if march.is_on():
 			march.tick(_bulb, cloud.center, cloud.fit)
+		_tick_solid(delta)
 		if _inside:
 			_guard_inside()
 		elif march.is_on():
@@ -2920,6 +2950,8 @@ func _apply_palette() -> void:
 	cloud.override_palette(pal)
 	_push_menu_palette(pal)
 	march.set_palette(pal)
+	# SOLID on THEME "preset" wears the Mandelbulber echo instead of the bulb's own ramp.
+	solid.set_palette(BulbSolid.CLASSIC_PALETTE if theme_idx < 0 else pal)
 	# This runs every morph and theme-blend frame, so only the modes on screen are
 	# recoloured. Entering ground or tree calls this, so each arrives in the current theme.
 	if ground_mode:
@@ -2989,6 +3021,8 @@ func _apply_point_look() -> void:
 	cloud.set_brightness(BRIGHT_STEPS[bright_idx])
 	march.set_palette_cycles(COLOUR_CYCLES[colour_idx])
 	march.set_gain(BRIGHT_STEPS[bright_idx] * MARCH_GAIN)
+	solid.set_palette_cycles(COLOUR_CYCLES[colour_idx])
+	solid.set_gain(BRIGHT_STEPS[bright_idx] * MARCH_GAIN)
 
 
 ## Show either the splatted cloud or the marched surface, never both. Ground mode owns
@@ -3001,8 +3035,94 @@ func _apply_surface() -> void:
 	else:
 		_apply_march_budget()
 	march.set_steps(SURFACE_STEPS[surface_idx] if bulb_mode else 0)
+	_apply_solid()
 	if not ground_mode:
-		cloud.set_visible_cloud(not marching)
+		# A solid still growing leaves the splats up until it lands (_tick_solid).
+		cloud.set_visible_cloud(not marching and not solid.visible)
+
+
+## SOLID on, off, or at a new grid. Entering it re-homes the bulb to the render's framing;
+## a build already running or finished for this bulb and grid is kept.
+var _solid_key := ""
+
+
+func _apply_solid() -> void:
+	var n: int = SURFACE_SOLID[surface_idx] if bulb_mode and _bulb != null else 0
+	if n == 0:
+		if solid.state != BulbSolid.State.IDLE or _solid_key != "":
+			solid.clear()
+			_solid_key = ""
+			_set_solid_msaa(false)
+		return
+	var entering := _solid_key == ""
+	var key := "%s/%d" % [_bulb.display_name, n]
+	if key == _solid_key and (solid.is_building() or solid.is_ready()):
+		solid.visible = solid.is_ready()
+		return
+	if entering:
+		_solid_home()
+		# A sculpture to look at, not a slideshow: DRIFT would rebuild it every 20 s. And it
+		# opens on the Mandelbulber palette; THEME still recolours it, DRIFT turns back on.
+		_drift = false
+		# The light is baked in and turns with the shape, so the ambient spin would carry the
+		# lit side away from you in forty seconds. A grab still turns it, light and all.
+		spin = false
+		if theme_idx >= 0:
+			_begin_theme_blend()
+			theme_idx = -1
+		_apply_palette()
+	_solid_key = key
+	solid.visible = false
+	var key_state := (cloud.global_transform.basis.orthonormalized().inverse()
+		* SOLID_KEY_WORLD.normalized())
+	solid.request(_bulb, n, key_state)
+
+
+## Main thread, every frame in bulb mode: drive the build on the render thread and swap
+## the splats out for the mesh when it lands.
+func _tick_solid(delta: float) -> void:
+	if solid.state == BulbSolid.State.IDLE:
+		return
+	if solid.is_building():
+		RenderingServer.call_on_render_thread(solid.step)
+	solid.tick(cloud.center, cloud.fit, delta)
+	if solid.just_ready:
+		solid.just_ready = false
+		solid.visible = true
+		cloud.set_visible_cloud(false)
+		_set_solid_msaa(true)
+
+
+func _solid_home() -> void:
+	if _bulb == null:
+		return
+	var cam := xr_camera.global_transform
+	var fwd := -cam.basis.z
+	fwd.y = 0.0
+	if fwd.length_squared() < 1e-4:
+		fwd = Vector3.FORWARD
+	fwd = fwd.normalized()
+	var pos := cam.origin + fwd * SOLID_DISTANCE
+	pos.y = cam.origin.y - SOLID_DROP
+	var s := SOLID_ACROSS_M * 0.5 / maxf(1e-3, BulbSolid.extent_of(_bulb) * cloud.target_fit)
+	var t := Transform3D(Basis().scaled(Vector3.ONE * s), pos)
+	if grab != null:
+		grab.reset(t)
+	else:
+		cloud.global_transform = t
+
+
+## MSAA 4x while the mesh is on screen and only then: project-wide it blurred the points
+## (project.godot), but an opaque mesh with 2-4 px triangles crawls without it.
+func _set_solid_msaa(on: bool) -> void:
+	var vp := get_viewport()
+	if on:
+		if _solid_msaa_saved < 0:
+			_solid_msaa_saved = vp.msaa_3d
+		vp.msaa_3d = Viewport.MSAA_4X
+	elif _solid_msaa_saved >= 0:
+		vp.msaa_3d = _solid_msaa_saved as Viewport.MSAA
+		_solid_msaa_saved = -1
 
 
 ## Marching runs for every shaded pixel in both eyes. Keep the normal render setting for
@@ -3214,6 +3334,7 @@ func _mark_help_seen() -> void:
 
 
 func _exit_tree() -> void:
+	RenderingServer.call_on_render_thread(solid.cleanup)
 	RenderingServer.call_on_render_thread(flame_sky.cleanup)
 	RenderingServer.call_on_render_thread(cloud.cleanup)
 	RenderingServer.call_on_render_thread(ground.cleanup)
