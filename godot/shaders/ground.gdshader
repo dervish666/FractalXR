@@ -79,19 +79,34 @@ uniform vec3 pal4;
 
 varying vec3 v_world;
 
-vec3 palette(float t) {
-	if (palette_cycles > 1.5) {
-		float c = t * palette_cycles;
-		t = abs(fract(c * 0.5) * 2.0 - 1.0);
-	} else {
-		t = abs(fract(t * 0.5) * 2.0 - 1.0);   // ping-pong once, so the ramp never snaps
-	}
+// CYCLE (main.gd, the COLOUR card): Fractint's colour cycling, the ramp sliding along the count
+// so the bands flow. A global in cycles, the same one every mode reads; 0 is the ramp as before.
+// It moves hue and keeps each texel's brightness (keep_luma, as points.gdshader): the ground
+// fills the lower half of the view, and a whole field dimming and brightening is not ambient.
+global uniform float colour_cycle;
+
+vec3 ramp(float t) {
 	float f = t * 4.0;
 	vec3 c = mix(pal0, pal1, clamp(f, 0.0, 1.0));
 	c = mix(c, pal2, clamp(f - 1.0, 0.0, 1.0));
 	c = mix(c, pal3, clamp(f - 2.0, 0.0, 1.0));
 	c = mix(c, pal4, clamp(f - 3.0, 0.0, 1.0));
 	return c;
+}
+
+vec3 keep_luma(vec3 c, float l0) {
+	const vec3 W = vec3(0.2126, 0.7152, 0.0722);
+	c *= min(l0 / max(dot(c, W), 1e-4), 3.0);
+	return c + max(l0 - dot(c, W), 0.0);
+}
+
+vec3 palette(float t) {
+	float k = (palette_cycles > 1.5) ? t * palette_cycles : t;
+	// Ping-pong, so the ramp never snaps; banded, the bands meet at a shared colour.
+	vec3 base = ramp(abs(fract(k * 0.5) * 2.0 - 1.0));
+	if (colour_cycle <= 0.0) return base;
+	return keep_luma(ramp(abs(fract(k * 0.5 + colour_cycle) * 2.0 - 1.0)),
+		dot(base, vec3(0.2126, 0.7152, 0.0722)));
 }
 
 int layer_of(int level) {

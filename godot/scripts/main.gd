@@ -47,6 +47,23 @@ const SPLAT_STEPS := [0.006, 0.010, 0.016, 0.026, 0.042, 0.003]
 const BULB_COVERAGE := [0.9, 1.1, 1.3, 0.5, 0.7]
 var coverage_idx := 0
 const COLOUR_CYCLES := [1.0, 2.0, 3.0, 4.0]
+# CYCLE: every mode's palette scrolls through its ramp, Fractint-style, moving each point's hue
+# and keeping its brightness (the shaders' keep_luma says why). Seconds per full cycle, in which
+# a colour runs out along the ramp, back, and lands where it started: eight palette stops, so
+# "slow" moves a point about one stop every fifteen seconds. "fast" is the speed that looks
+# right on first sight; Sam's rule puts ambient motion well under that, hence slow at six times
+# slower. 0 is off. The last rung is slow plus a walk through the themes (CYCLE_THEME_S).
+const CYCLE_STEPS := [0.0, 120.0, 48.0, 20.0, 120.0]
+const CYCLE_NAMES := ["off", "slow", "medium", "fast", "themes"]
+const CYCLE_THEMES_RUNG := 4
+## The themes rung: another theme every CYCLE_THEME_S, cross-faded over CYCLE_THEME_BLEND_S, so
+## the palette is in motion a third of the time and never cuts.
+const CYCLE_THEME_S := 60.0
+const CYCLE_THEME_BLEND_S := 20.0
+## Off glides the colour home instead of snapping back: at most this many cycles a second,
+## twice "fast", easing in over the last twentieth of a cycle. Half a cycle out looks home in
+## about five seconds.
+const CYCLE_HOME_RATE := 0.1
 # Ascending, so SOLID cycles from ghost to wall instead of jumping about. Unsorted
 # "over" compositing reads thinner than the WebXR build's sorted version at the same
 # alpha, so the top of this ladder is how a bulb gets back to looking solid.
@@ -449,6 +466,13 @@ const LINE_CAP := 6.0
 var splat_on := false
 var splat_idx := 1
 var colour_idx := 0
+## CYCLE, off by default: nothing moves until it is asked to.
+var cycle_idx := 0
+## How far the palette has scrolled, in cycles [0, 1): the colour_cycle shader global, which
+## every colour shader adds to its ramp coordinate. One number for every mode, set once a frame.
+var _cycle := 0.0
+var _cycle_sent := 0.0
+var _cycle_theme_t := 0.0
 var opacity_idx := 2       # 0.35
 var density_idx := 0
 ## -1 means "whatever palette the genome came with". Anything else indexes library.themes,
@@ -462,6 +486,11 @@ var recolor_on_drift := true
 ## as the shape change, and cutting to the new colours undoes the work the morph is doing.
 var _theme_from: Array = []
 var _theme_blend := 1.0
+## Seconds the running blend takes; 0 follows SPEED, so colour and form arrive together.
+var _theme_blend_s := 0.0
+## The palette _apply_palette last pushed, so a blend begun mid-blend starts from what is on
+## screen instead of jumping to the old target first.
+var _pal_shown: Array = []
 var _flame_bright_idx := 2
 var _flame_exposure_idx := 0
 var _flame_opacity_idx := 2
@@ -897,6 +926,11 @@ func _build_menu() -> void:
 				return "theme %d" % (theme_idx + 1) if theme_idx >= 0 else "preset",
 			func(): _cycle_theme()).stepping(func(d: int): _cycle_theme(d)).gallery(
 			func(): return theme_idx + 1, func(): return library.themes.size() + 1, _theme_swatch),
+		# Every mode's palette scrolling through its ramp. Beside THEME because it is the same
+		# palette moving, and like THEME it is on this card in every mode.
+		WristMenu.Item.new("colour", "CYCLE",
+			func(): return _cycle_label(),
+			func(): _step_cycle(1)).stepping(func(d: int): _step_cycle(d)),
 		WristMenu.Item.new("colour", "AUTO",
 			func(): return "on" if recolor_on_drift else "off",
 			func(): recolor_on_drift = not recolor_on_drift,
@@ -2629,6 +2663,9 @@ var _proc_frames := 0
 
 func _process(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()
+	# Ahead of _process_frame and its early returns, so the colour never stalls, and so a theme
+	# the walk picks is applied by the dirty check below in the same frame.
+	_tick_cycle(delta)
 	_process_frame(delta)
 	# After every early return in _process_frame, so whatever recoloured this frame lands.
 	if _palette_dirty:
@@ -2646,9 +2683,14 @@ func _process_frame(delta: float) -> void:
 	_uptime += delta
 	cloud.ease_framing(delta)
 	if _theme_blend < 1.0:
-		# Match the shape transition, so colour and form arrive together.
-		_theme_blend = minf(1.0, _theme_blend + delta / MORPH_STEPS[morph_idx])
-		_palette_dirty = true
+		# Match the shape transition, so colour and form arrive together. CYCLE's theme walk
+		# sets its own, longer span.
+		var span: float = _theme_blend_s if _theme_blend_s > 0.0 else MORPH_STEPS[morph_idx]
+		_theme_blend = minf(1.0, _theme_blend + delta / span)
+		# The walk's twenty seconds recolour every near tree each time. Every fourth frame steps a
+		# channel by about one code value at most, which nobody sees, for a quarter of the script.
+		if _theme_blend_s <= 0.0 or _theme_blend >= 1.0 or Engine.get_process_frames() % 4 == 0:
+			_palette_dirty = true
 	if not _placed and _setup_done and xr_camera.global_transform.origin.length_squared() > 1e-6:
 		_placed = true
 		_recenter()
@@ -2994,6 +3036,7 @@ func _apply_palette() -> void:
 			mixed.append((_theme_from[i] as Vector3).lerp(target[i] as Vector3,
 				Morph.smoothstep_t(_theme_blend)))
 		pal = mixed
+	_pal_shown = pal
 	cloud.override_palette(pal)
 	_push_menu_palette(pal)
 	march.set_palette(pal)
@@ -3048,10 +3091,59 @@ func _theme_palette() -> Array:
 	return _theme_cache[ti]
 
 
-## Start a cross-fade from the palette currently showing to whatever theme_idx now names.
-func _begin_theme_blend() -> void:
-	_theme_from = _theme_palette()
+## Start a cross-fade from the palette currently showing to whatever theme_idx now names, over
+## `seconds`, or SPEED's transition time when that is 0.
+func _begin_theme_blend(seconds: float = 0.0) -> void:
+	var mid := _theme_blend < 1.0 and _pal_shown.size() == _theme_palette().size()
+	_theme_from = _pal_shown if mid else _theme_palette()
 	_theme_blend = 0.0
+	_theme_blend_s = seconds
+
+
+## CYCLE's label: the rung and its seconds per cycle.
+func _cycle_label() -> String:
+	if CYCLE_STEPS[cycle_idx] <= 0.0:
+		return "off"
+	if cycle_idx == CYCLE_THEMES_RUNG:
+		return "slow + themes"
+	return "%s · %ds" % [CYCLE_NAMES[cycle_idx], int(CYCLE_STEPS[cycle_idx])]
+
+
+func _step_cycle(d: int) -> void:
+	cycle_idx = wrapi(cycle_idx + d, 0, CYCLE_STEPS.size())
+	# Onto the themes rung, the first cross-fade starts now: a minute of nothing new would read
+	# as a dead tile.
+	_cycle_theme_t = CYCLE_THEME_S if cycle_idx == CYCLE_THEMES_RUNG else 0.0
+
+
+## CYCLE, once a frame: advance the scroll, or glide it home when off; walk the themes on the
+## last rung; hand every shader the result as one global. Nothing is sent while it sits at 0.
+func _tick_cycle(delta: float) -> void:
+	var period: float = CYCLE_STEPS[cycle_idx]
+	if period > 0.0:
+		_cycle = fposmod(_cycle + delta / period, 1.0)
+	elif _cycle != 0.0:
+		# Home the short way round: the scroll is periodic, so 0.9 is 0.1 from home, not 0.9.
+		var off := _cycle - roundf(_cycle)
+		off = move_toward(off, 0.0, minf(CYCLE_HOME_RATE, absf(off) * 2.0) * delta)
+		# Exactly 0 at the end, so the shaders take their off branch and the look is the old one
+		# to the bit.
+		_cycle = 0.0 if absf(off) < 1e-4 else fposmod(off, 1.0)
+	if _cycle != _cycle_sent:
+		_cycle_sent = _cycle
+		RenderingServer.global_shader_parameter_set(&"colour_cycle", _cycle)
+	if cycle_idx == CYCLE_THEMES_RUNG and library.themes.size() > 1 and _setup_done:
+		_cycle_theme_t += delta
+		if _cycle_theme_t >= CYCLE_THEME_S:
+			_cycle_theme_t = 0.0
+			_begin_theme_blend(CYCLE_THEME_BLEND_S)
+			# Any theme but the one showing: a walk that lands where it stood looks stuck.
+			var n := library.themes.size()
+			var nxt := randi() % n
+			if nxt == theme_idx:
+				nxt = (nxt + 1 + randi() % (n - 1)) % n
+			theme_idx = nxt
+			_palette_dirty = true
 
 
 func _apply_point_look() -> void:

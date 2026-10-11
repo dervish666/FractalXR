@@ -134,6 +134,8 @@ const float COLOUR_STRETCH = 1.0 / 0.75;
 // because the input is already rank-equalised each band gets an equal share of points
 // rather than one swamping the others.
 uniform float palette_cycles = 1.0;
+// CYCLE: the ramp scroll every mode shares (points.gdshader says how). 0 is the ramp as before.
+global uniform float colour_cycle;
 uniform vec3 pal0;
 uniform vec3 pal1;
 uniform vec3 pal2;
@@ -147,24 +149,44 @@ varying float v_alpha;
 const vec2 CORNERS[4] = vec2[4](
 	vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
 
-vec3 palette(float t) {
-	t = clamp(t, 0.0, 1.0);
-	t = clamp(0.5 + (t - 0.5) * COLOUR_STRETCH, 0.0, 1.0);
-	if (palette_cycles > 1.5) {
-		// Ping-pong rather than wrap, so bands meet at a shared colour instead of
-		// snapping from the top of the ramp back to the bottom.
-		float c = t * palette_cycles;
-		t = abs(fract(c * 0.5) * 2.0 - 1.0);
-	}
-	// Piecewise-linear ramp as a mix chain. The previous local vec3[5] with a dynamic
-	// index is the pattern Adreno spills to scratch memory, in a shader that runs once
-	// per vertex for a million vertices.
+// Piecewise-linear ramp as a mix chain. The previous local vec3[5] with a dynamic
+// index is the pattern Adreno spills to scratch memory, in a shader that runs once
+// per vertex for a million vertices.
+vec3 ramp(float t) {
 	float f = t * 4.0;
 	vec3 c = mix(pal0, pal1, clamp(f, 0.0, 1.0));
 	c = mix(c, pal2, clamp(f - 1.0, 0.0, 1.0));
 	c = mix(c, pal3, clamp(f - 2.0, 0.0, 1.0));
 	c = mix(c, pal4, clamp(f - 3.0, 0.0, 1.0));
 	return c;
+}
+
+// CYCLE moves a point's colour and keeps its brightness: the ramp at the scrolled coordinate,
+// scaled to the luma the point had unscrolled. Every theme dims somewhere along its ramp, and
+// scrolling luma with hue took a whole bulb from cream to a dim purple and back. A dark stop on
+// a bright point is scaled at most 3x and the rest made up in grey, so it reads pale, not neon.
+vec3 keep_luma(vec3 c, float l0) {
+	const vec3 W = vec3(0.2126, 0.7152, 0.0722);
+	c *= min(l0 / max(dot(c, W), 1e-4), 3.0);
+	return c + max(l0 - dot(c, W), 0.0);
+}
+
+vec3 palette(float t) {
+	t = clamp(t, 0.0, 1.0);
+	t = clamp(0.5 + (t - 0.5) * COLOUR_STRETCH, 0.0, 1.0);
+	float u = t;
+	if (palette_cycles > 1.5) {
+		// Ping-pong rather than wrap, so bands meet at a shared colour instead of
+		// snapping from the top of the ramp back to the bottom.
+		float c = t * palette_cycles;
+		u = abs(fract(c * 0.5) * 2.0 - 1.0);
+	}
+	vec3 base = ramp(u);
+	if (colour_cycle <= 0.0) return base;
+	// The same ping-pong, slid by the cycle: a whole cycle is out to one end, back, and home.
+	u = (palette_cycles > 1.5) ? abs(fract(t * palette_cycles * 0.5 + colour_cycle) * 2.0 - 1.0)
+		: 1.0 - abs(fract(t * 0.5 + colour_cycle) * 2.0 - 1.0);
+	return keep_luma(ramp(u), dot(base, vec3(0.2126, 0.7152, 0.0722)));
 }
 
 void vertex() {
