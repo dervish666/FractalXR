@@ -24,6 +24,11 @@ var update_mod := 1
 ## and the state axis they stack along. y is up in the world, so the rings lie flat.
 var slices := 0
 var slice_axis := 1
+## The LINES pattern, as how many slice families split the particles between them: 1 is
+## rings (planes across slice_axis), 2 a grid (and across the axis before it), 3 a cross
+## (all three axes). Each family gets 1/n of the points, so n families at the same count
+## put a third or half as many points on every plane.
+var slice_families := 1
 ## The rings are cut at DE = this share of the ring spacing, an inflated bulb whose
 ## crinkles below the spacing are rounded off.
 var slice_offset := 0.3
@@ -377,7 +382,7 @@ func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
 	b.encode_float(76, jitter)
 	b.encode_float(80, ang_a)
 	b.encode_float(84, ang_b)
-	b.encode_float(88, 0.0)
+	b.encode_float(88, float(clampi(slice_families, 1, 3)))
 	b.encode_float(92, 0.0)
 	# vec4 slice at 96: spacing, plane count, axis. Spaced over the shape's measured
 	# extent rather than the seed bound, so "48 rings" means 48 across what you see.

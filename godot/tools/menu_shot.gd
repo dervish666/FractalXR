@@ -151,6 +151,47 @@ func _init() -> void:
 			if anim:
 				await _animate(menu)
 
+	# BULB with LINES on: PATTERN and WIDTH only show then, so the sweep above never drew them.
+	main._set_mode("bulb")
+	main.line_idx = 1
+	for i in 10:
+		await process_frame
+	var lmenu = main.menu
+	lmenu.debug_level("")
+	await _settle(lmenu)
+	var look_key := ""
+	for key in lmenu.debug_level_keys():
+		if _card_visible(lmenu, key) and _card_label(lmenu, key).to_lower() == "look":
+			look_key = key
+	var line_tiles := 0
+	for i in lmenu.items.size():
+		var it = lmenu.items[i]
+		if it.section == "look" and it.label in ["PATTERN", "WIDTH"] and lmenu._widgets[i].visible:
+			line_tiles += 1
+	if look_key == "" or line_tiles != 2:
+		failures.append("lines: look card %s, %d of PATTERN and WIDTH showing" % [look_key, line_tiles])
+	else:
+		lmenu.debug_level(look_key)
+		await _settle(lmenu)
+		lmenu.debug_force(1.0, _first_control(lmenu))
+		await _settle(lmenu)
+		var lr := await _shoot(lmenu, "bulb_look_lines", look_key)
+		shots += 1
+		if lr != "":
+			failures.append(lr)
+		if _has_more(lmenu, look_key):
+			lmenu.debug_more(true)
+			await _settle(lmenu)
+			lr = await _shoot(lmenu, "bulb_look_lines_more", look_key)
+			shots += 1
+			if lr != "":
+				failures.append(lr)
+			lmenu.debug_more(false)
+		lmenu.debug_level("")
+		await _settle(lmenu)
+	print("MENUSHOT lines tiles %s (%d of 2 showing)" % ["PASS" if line_tiles == 2 else "FAIL", line_tiles])
+	main.line_idx = 0
+
 	# The pin: fly off the arm to the float and home again, instantly, and check the panel
 	# really changed parent each time. The float's feel is headset work; the reparent is not.
 	var pin_ok := true

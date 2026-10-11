@@ -102,11 +102,16 @@ uniform float perf_scale = 1.0;
 // without them a shell is opaque enough to hide its far side, but rings leave gaps and
 // the far side's rings show through them as a second, misaligned set.
 uniform vec3 line_axis = vec3(0.0);
+// The LINES pattern: 1 rings, 2 grid, 3 cross. Particle i is in family i % line_families,
+// and family f slices across line_axis swizzled f times (.yzx, then .zxy): with y up, x for
+// the grid's second set and z for the cross's third. bulb.glsl assigns the same axes.
+uniform int line_families = 1;
 uniform float line_width = 0.002;
 uniform float line_stretch = 2.0;
-// Longest a stroke may be, in line widths (sigma). A ring is crinkled below some length,
-// and a stroke longer than that sticks out of it as a hair.
-uniform float line_cap = 6.0;
+// Longest a stroke may be, in state units (sigma). A ring is crinkled below some length,
+// and a stroke longer than that sticks out of it as a hair. That length belongs to the ring
+// spacing, not to the line width, so thinner lines keep the same reach and still close.
+uniform float line_cap = 0.012;
 uniform vec3 density_centre = vec3(0.0);
 uniform int tex_size = 2048;
 uniform float splat_radius = 0.026;
@@ -209,7 +214,12 @@ void vertex() {
 		float l1 = r_local;
 		float l2 = r_local;
 		float thin = splat_thin;
-		vec3 ring = cross(nl, line_axis);
+		vec3 lax = line_axis;
+		if (line_families > 1) {
+			int fam = pid % line_families;
+			lax = (fam == 1) ? line_axis.yzx : ((fam == 2) ? line_axis.zxy : line_axis);
+		}
+		vec3 ring = cross(nl, lax);
 		float ring_l = length(ring);
 		if (ring_l > 1e-4) {
 			t1 = ring / ring_l;
@@ -220,7 +230,7 @@ void vertex() {
 					* bake_scale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
 			}
 			float w = line_width * cloud_fit * perf_scale;
-			l1 = min(len * line_stretch, line_cap * w);
+			l1 = min(len * line_stretch, line_cap * cloud_fit * perf_scale);
 			l2 = min(l1, w);
 			thin = l2 / max(l1, 1e-9);
 			vec3 nv = normalize((MODELVIEW_MATRIX * vec4(nl, 0.0)).xyz);

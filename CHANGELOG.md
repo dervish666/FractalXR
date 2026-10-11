@@ -6,6 +6,20 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **LINES patterns and widths.** BULB > LOOK gains PATTERN (rings, grid, cross) and, under
+  MORE, WIDTH (normal, thin, hair), both showing only while LINES is on. A grid adds a second
+  set of slice planes across x, a cross a third across z; the particles split evenly between
+  the sets and every set is coloured by height, so the bulb reads as one net. On Citadel's
+  flat faces the grid and cross draw what rings could not (its top and bottom read blank as
+  rings). Splitting the points leaves fewer per plane, so grid and cross stop at 24 planes a
+  set: on Classic a grid at 48 kept only 20-25% of its points in closed loops (24: 100%) and
+  a cross at 48 3-15% (24: 88-98%). WIDTH is 0.05, 0.03 or 0.02 of the plane gap; the
+  stroke's reach along its ring no longer shrinks with the width, so thin lines close as
+  well as normal ones. Desktop fill: thin is 0.7x and hair 0.58x of normal. Grid and cross at
+  normal width are 0.97-1.0x of rings on Classic and up to 1.26x on Citadel (they draw the
+  faces rings leave empty), all under the rings-24 rung that was already shipped. Headset not
+  tried. `tools/line_shot.sh` takes patterns and widths, `tools/line_check.py` checks
+  closure per set, and `menu_shot.sh` shoots the LOOK card with LINES on.
 - **SOLID (spike): the bulb as a lit sculpture.** BULB > LOOK > SURFACE now runs on past the
   march steps to `solid 128`, `solid 192` and `solid 256`. The headset meshes the bulb from
   its own distance estimate (surface nets on a grid of that many cells, four compute passes

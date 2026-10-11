@@ -433,13 +433,27 @@ var breath_idx := 0
 ## is the ordinary splatted shell. Same particles, same splats, same bake.
 const LINE_SLICES := [0, 24, 48, 96]
 var line_idx := 0
-## A ring's sigma across the line, as a share of the gap between rings; its length along
-## the ring as a multiple of the baked splat axis (long enough to close the gaps between
-## neighbours, and thin lines make the extra length cheap in fill); and the most that
-## length may be, in line widths, before a stroke stands off a curving ring as a hair.
-const LINE_WIDTH := 0.05
+## PATTERN: rings (one family of planes), grid (two, across y and x) or cross (all three
+## axes). The families share the one particle budget, so each plane of a grid gets half the
+## points a ring did and each plane of a cross a third. LINE_MAX_SLICES caps the planes per
+## family where that leaves too few points for the lines to close. tools/line_check.py on
+## Classic: grid at 24 a family 100% of its points in closed loops, at 48 20-25% (3-4 breaks a
+## plane); cross at 24 88-98%, at 48 3-15%. Citadel closes at both. So LINES steps off / 24 for
+## grid and cross, and off / 24 / 48 / 96 for rings.
+const LINE_PATTERNS := ["rings", "grid", "cross"]
+const LINE_MAX_SLICES := [96, 24, 24]
+var line_pattern_idx := 0
+## WIDTH: a line's sigma across, as a share of the gap between planes.
+const LINE_WIDTHS := [0.05, 0.03, 0.02]
+const LINE_WIDTH_NAMES := ["normal", "thin", "hair"]
+var line_width_idx := 0
+## A stroke's length along the ring as a multiple of the baked splat axis (long enough to
+## close the gaps between neighbours, and thin lines make the extra length cheap in fill);
+## and the most that length may be, as a share of the gap between planes, before a stroke
+## stands off a curving ring as a hair. 0.3 is the old cap of six 0.05 widths, now held
+## whatever the width, so a thinner line reaches as far along its ring and still closes.
 const LINE_STRETCH := 2.0
-const LINE_CAP := 6.0
+const LINE_CAP := 0.3
 var splat_on := false
 var splat_idx := 1
 var colour_idx := 0
@@ -962,9 +976,22 @@ func _build_menu() -> void:
 					cloud.clear_bake(),
 			false, func(): return bulb_mode).toggle(func(): return auto_bake).minor(),
 		WristMenu.Item.new("look", "LINES",
-			func(): return "off" if LINE_SLICES[line_idx] == 0 else "%d rings" % LINE_SLICES[line_idx],
+			func(): return "off" if _line_slices() == 0 else "%d %s" % [_line_slices(),
+				LINE_PATTERNS[line_pattern_idx]],
 			func(): _step_lines(1),
 			false, func(): return bulb_mode).stepping(func(d: int): _step_lines(d)),
+		# Only while LINES is on: with it off there are no lines to pattern or thin.
+		WristMenu.Item.new("look", "PATTERN",
+			func(): return LINE_PATTERNS[line_pattern_idx],
+			func(): _step_line_pattern(1),
+			false, func(): return bulb_mode and _line_slices() > 0).stepping(
+			func(d: int): _step_line_pattern(d)),
+		WristMenu.Item.new("look", "WIDTH",
+			func(): return LINE_WIDTH_NAMES[line_width_idx],
+			func(): _step_line_width(1),
+			false, func(): return bulb_mode and _line_slices() > 0).stepping(
+			func(d: int): _step_line_width(d)).slider(
+			func(): return line_width_idx, LINE_WIDTHS.size()).minor(),
 		WristMenu.Item.new("look", "BREATHE",
 			func():
 				# A frozen cloud cannot show a moving surface, so say so rather than
@@ -2060,11 +2087,9 @@ func _load_bulb(i: int) -> void:
 		_bulb = BulbSource.new(library.bulbs[bulb_idx])
 		_bulb.update_mod = BULB_UPDATE_MOD
 		RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
-	_bulb.slices = LINE_SLICES[line_idx]
-	var axis := Vector3.ZERO
-	if _bulb.slices > 0:
-		axis[_bulb.slice_axis] = 1.0
-	cloud.set_lines(axis, LINE_WIDTH * _bulb.slice_spacing(), LINE_STRETCH, LINE_CAP)
+	_bulb.slices = _line_slices()
+	_bulb.slice_families = line_pattern_idx + 1
+	_apply_line_look()
 	march.configure(_bulb)
 	# SOLID builds a mesh per bulb; the splats show the new one while it grows.
 	if bulb_mode and SURFACE_SOLID[surface_idx] > 0:
@@ -2083,7 +2108,45 @@ func _load_bulb(i: int) -> void:
 ## again, so this reseeds, and the settle re-bakes; seeds stay hidden until they land, so
 ## the rings draw themselves in rather than a ball of noise collapsing.
 func _step_lines(d: int) -> void:
-	line_idx = wrapi(line_idx + d, 0, LINE_SLICES.size())
+	# Rungs past the pattern's cap would only repeat the capped count, a press that does nothing.
+	for i in LINE_SLICES.size():
+		line_idx = wrapi(line_idx + d, 0, LINE_SLICES.size())
+		if LINE_SLICES[line_idx] <= LINE_MAX_SLICES[line_pattern_idx]:
+			break
+	_reload_lines()
+
+
+## Planes per family for the current rung and pattern, 0 when LINES is off.
+func _line_slices() -> int:
+	return mini(LINE_SLICES[line_idx], LINE_MAX_SLICES[line_pattern_idx])
+
+
+## PATTERN moves points between families, so like LINES it reseeds and re-bakes.
+func _step_line_pattern(d: int) -> void:
+	line_pattern_idx = wrapi(line_pattern_idx + d, 0, LINE_PATTERNS.size())
+	# Down to the pattern's cap, so the next LINES press moves from what the tile shows.
+	while LINE_SLICES[line_idx] > LINE_MAX_SLICES[line_pattern_idx]:
+		line_idx -= 1
+	_reload_lines()
+
+
+## WIDTH is the renderer's alone: the points stay where they are.
+func _step_line_width(d: int) -> void:
+	line_width_idx = wrapi(line_width_idx + d, 0, LINE_WIDTHS.size())
+	if _bulb != null:
+		_apply_line_look()
+
+
+func _apply_line_look() -> void:
+	var axis := Vector3.ZERO
+	if _bulb.slices > 0:
+		axis[_bulb.slice_axis] = 1.0
+	var h := _bulb.slice_spacing()
+	cloud.set_lines(axis, LINE_WIDTHS[line_width_idx] * h, LINE_STRETCH, LINE_CAP * h,
+		_bulb.slice_families)
+
+
+func _reload_lines() -> void:
 	if not bulb_mode:
 		return
 	# Rings are particles, and a marched surface hides the particles.
