@@ -19,6 +19,10 @@ extends SceneTree
 
 const OUT := "res://.spike-out/flame-scale-2026-10-10"
 const FWD := Vector3(-8.0, 0.0, 0.0)
+## The galaxy's ease is timed in seconds and this window is not vsynced, so its frame count
+## swings with the machine: the grow measured 1,903 and 1,995 frames, and a cap of 2,000 cut
+## the ease out short with the fade still on.
+const GALAXY_MAX_FRAMES := 6000
 
 var _fails := 0
 
@@ -70,7 +74,7 @@ func _galaxy(main, home_s: Dictionary) -> void:
 		and main.BRIGHT_STEPS[main.bright_idx] == maxf(main.BRIGHT_STEPS[bright0], FlameGalaxy.BRIGHT)
 	var mid: Image = null
 	var frames := 0
-	while main.galaxy.is_moving() and frames < 2000:
+	while main.galaxy.is_moving() and frames < GALAXY_MAX_FRAMES:
 		await process_frame
 		frames += 1
 		if mid == null and frames > 0 and main.galaxy._t > 0.5:
@@ -109,7 +113,7 @@ func _galaxy(main, home_s: Dictionary) -> void:
 
 	tile.advance.call()
 	frames = 0
-	while main.galaxy.is_moving() and frames < 2000:
+	while main.galaxy.is_moving() and frames < GALAXY_MAX_FRAMES:
 		await process_frame
 		frames += 1
 	await process_frame
