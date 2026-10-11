@@ -1,0 +1,23 @@
+[
+ {
+  "name": "Ember",
+  "file": "ember.webp",
+  "gain": 1.0,
+  "face": 2048,
+  "source": "8192x4096 equirect, 2147M samples"
+ },
+ {
+  "name": "Nautilus",
+  "file": "nautilus.webp",
+  "gain": 1.0,
+  "face": 2048,
+  "source": "8192x4096 equirect, 2147M samples"
+ },
+ {
+  "name": "Geode",
+  "file": "geode.webp",
+  "gain": 1.0,
+  "face": 2048,
+  "source": "8192x4096 equirect, 2147M samples"
+ }
+]

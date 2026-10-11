@@ -10,7 +10,7 @@ class_name FlameSky
 ## walkers are copied from the live cloud's first rows and stepped by the unchanged chaos.glsl
 ## through a FlameSource snapshot of their own (the live cloud is never touched, frozen or
 ## not), and after each step sky_splat.glsl adds every walker's colour into an accumulator by
-## direction. SAMPLES splats in all, a fixed slice per frame, then sky_resolve.glsl turns the
+## direction. `samples` splats in all, a fixed slice per frame, then sky_resolve.glsl turns the
 ## sums into flam3 log-density in an RGBA16F texture and the accumulator is freed.
 ##
 ## WHY IT CANNOT RENDER THROUGH THE STEREO CAMERA. The web build switched renderer.xr off
@@ -25,14 +25,24 @@ class_name FlameSky
 ##
 ## COST. The atomics are the price: the README measured 707,788 atomic splats at 36.6 ms on
 ## Adreno. ROUNDS_PER_FRAME * 65,536 = 131,072 splats a frame is about a fifth of that, so a
-## guess of 5-7 ms a frame on the headset for about 2.6 s, once per bake. Steady state is one
-## texture fetch per background pixel. Memory: the sky is 26 MB, the accumulator 39 MB while
-## baking only.
+## guess of 5-7 ms a frame on the headset, once per bake. The bake runs a fixed slice a frame,
+## so on the headset it lasts frames / 72 seconds whatever the GPU: tools/sky_bake.sh measure
+## counts the frames at each SKY RES. Steady state is one texture fetch per background pixel.
+## Memory, the RGBA16F sky and the accumulator (3 x u32 a texel, while baking only):
+## 25 + 38 MiB at 2560, 64 + 96 at 4096, 144 + 216 at 6144 (README, "The sky's resolution").
+##
+## PRESETS. art/skies/ holds skies baked offline on the Mac through this same bake (8192 wide,
+## many times the samples) and resampled to compressed cubemaps by tools/sky_cube.py: sharper
+## and cleaner than the live bake, no wait and no stutter, and there in BULB before any flame
+## has been baked. Their colours are baked in. SKY PICK steps live / the presets.
 
-## Equirect size. 2560 across is 7.1 texels a degree; the eye buffer is 17-21 pixels a degree,
-## so the sky is a little soft, which a backdrop can afford and a static image needs anyway.
-const W := 2560
-const H := 1280
+## Equirect width of the live bake, by the SKY RES step; the height is half. 2560 across is 7.1
+## texels a degree against the eye buffer's 17-21 pixels a degree, and Sam asked for it
+## sharper; 4096 is 11.4; 6144 is 17.1, about a texel a pixel, as far as a sky without mipmaps
+## should go (past it the sky is minified and sparkles).
+const RES_STEPS := [2560, 4096, 6144]
+const RES_NAMES := ["2.5k", "4k", "6k"]
+const RES_DEFAULT := 1
 ## Walkers: this many rows of the cloud's state image (2048 wide): 65,536 of them.
 const WALKER_ROWS := 32
 ## Chaos steps per frame, each followed by a splat of every walker.
@@ -40,11 +50,17 @@ const ROUNDS_PER_FRAME := 2
 ## Steps before the first splat, so walkers copied from a cloud that was still settling have
 ## reached this genome's attractor first.
 const FUSE_ROUNDS := 12
-## About 7 splats per texel on average; the flame covers the sphere unevenly, so the dense
-## half gets many more.
-const SAMPLES := 24 * 1024 * 1024
+## About 7.7 splats per texel on average (the first sky's 24M over 2560 x 1280); the flame
+## covers the sphere unevenly, so the dense half gets many more. Held per texel rather than in
+## total: resolution without samples is only finer grain.
+const SAMPLES_PER_TEXEL := 24.0 * 1024.0 * 1024.0 / (2560.0 * 1280.0)
 const FIXED := 1024.0
-## A row near the pole averages at most this many texels.
+## A row near the pole averages at most this many texels. A row wants 1/cos(latitude) of them
+## to cover the solid angle of a texel at the equator; past the cap the rows round the pole
+## each hold a narrow sliver of samples, and within 0.9 degrees of the zenith there is a faint
+## pinwheel (seen at 2560 with the sky brightened 5x, barely at 4096). 256 shrinks it to 0.22
+## degrees and made the resolve frame at 6144 9.8 ms on the Mac against 8.0: not worth it.
+## The SKY PICK presets are cubemaps and have no pole.
 const MAX_TAPS := 64
 ## The curve. Relative density 1.0 is the flame spread evenly over the sphere. Picked from a
 ## desktop sweep in TREE (seven curves over one bake): the first try (0.35, 1.0, gamma 1.6) lit
@@ -58,6 +74,22 @@ const HI_DESAT := 0.3
 const MIN_R := 0.002
 ## The sky comes up over this long once it is shown, rather than snapping in at the edges.
 const FADE_S := 2.0
+
+## The live bake's size and sample count, from set_width(). Read when a bake starts, so a
+## change takes effect at the next bake.
+var width := 4096
+var height := 2048
+var samples := 0
+## Chaos steps a frame. The offline bake (tools/sky_bake.sh) raises it; the headset does not.
+var rounds_per_frame := ROUNDS_PER_FRAME
+
+## Pre-rendered skies, from art/skies/skies.json: [{name, path, gain}]. pick 0 is the live
+## bake, pick i > 0 is presets[i - 1].
+const PRESET_DIR := "res://art/skies/"
+var presets: Array = []
+var pick := 0
+## An imported cube is a CompressedCubemap, which is a TextureLayered and not a Cubemap.
+var _cube: TextureLayered = null
 
 ## Main-thread readable state.
 var baking := false
@@ -91,6 +123,15 @@ var _src: FlameSource = null
 var _push := PackedByteArray()
 var _walkers := 0
 var _row_w := 0
+## The size of the bake in flight, fixed at _begin so a SKY RES step mid-bake cannot tear it,
+## and the size of the texture on show.
+var _bw := 0
+var _bh := 0
+var _bs := 0
+var _tex_w := 0
+var _tex_h := 0
+## Frames left to read timestamps after a bake ends.
+var _tail := 0
 var _round := 0
 var _splatted := 0
 
@@ -112,6 +153,65 @@ func _init() -> void:
 	# never read. Smallest size and a one-shot process keep its one-time cost down.
 	_sky.radiance_size = Sky.RADIANCE_SIZE_32
 	_sky.process_mode = Sky.PROCESS_MODE_QUALITY
+	set_width(RES_STEPS[RES_DEFAULT])
+	_load_presets()
+
+
+## The live bake's equirect width; the height is half and the samples scale with the texels.
+func set_width(w: int) -> void:
+	width = maxi(256, w)
+	height = width / 2
+	samples = int(SAMPLES_PER_TEXEL * float(width) * float(height))
+
+
+func _load_presets() -> void:
+	var f := FileAccess.open(PRESET_DIR + "skies.json", FileAccess.READ)
+	if f == null:
+		push_warning("[sky] no %sskies.json; SKY PICK has only the live bake" % PRESET_DIR)
+		return
+	var parsed = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) != TYPE_ARRAY:
+		push_warning("[sky] %sskies.json is not a list; no presets" % PRESET_DIR)
+		return
+	for e in parsed:
+		if typeof(e) == TYPE_DICTIONARY and ResourceLoader.exists(PRESET_DIR + str(e.get("file", ""))):
+			presets.append({"name": str(e.get("name", "?")), "path": PRESET_DIR + str(e["file"]),
+				"gain": float(e.get("gain", 1.0))})
+		else:
+			push_warning("[sky] preset %s is listed but not imported" % str(e))
+
+
+## What SKY PICK shows: "live" or the preset's name.
+func pick_name() -> String:
+	return "live" if pick == 0 else str(presets[pick - 1]["name"])
+
+
+## Choose the live bake (0) or a preset (1..). A preset loads on demand and the previous one is
+## dropped, so only the sky on show holds memory. It fades in again when it changes on screen.
+func set_pick(i: int) -> void:
+	i = wrapi(i, 0, presets.size() + 1)
+	if i == pick:
+		return
+	pick = i
+	_cube = null
+	if pick > 0:
+		_cube = load(presets[pick - 1]["path"]) as TextureLayered
+		# An image imported as a plain texture or an array would bind as garbage, silently.
+		if _cube != null and _cube.get_layered_type() != TextureLayered.LAYERED_TYPE_CUBEMAP:
+			_cube = null
+		if _cube == null:
+			push_error("[sky] could not load %s" % presets[pick - 1]["path"])
+			pick = 0
+	_mat.set_shader_parameter(&"sky_cube", _cube)
+	_mat.set_shader_parameter(&"use_cube", _cube != null)
+	_mat.set_shader_parameter(&"cube_gain", float(presets[pick - 1]["gain"]) if pick > 0 else 1.0)
+	if _shown:
+		_fade = 0.0
+
+
+## True when there is something to hang: a preset, or a finished live bake.
+func has_sky() -> bool:
+	return _cube != null or ready
 
 
 func setup(env: Environment) -> void:
@@ -144,9 +244,9 @@ func request_bake(cloud: ParticleCloud, pal: Array, cycles: float) -> bool:
 ## Once a frame from the host, in every mode. Steps a bake in flight and shows or hides the
 ## sky. `want` is the host's whole rule (sky on, a mode that hangs it, no passthrough).
 func sync(want: bool, delta: float) -> void:
-	if baking:
+	if baking or _tail > 0:
 		RenderingServer.call_on_render_thread(_step)
-	var show := want and ready and _env != null
+	var show := want and has_sky() and _env != null
 	if show != _shown:
 		_set_shown(show)
 	if _shown and _fade < 1.0:
@@ -192,20 +292,48 @@ func _ensure_gpu() -> bool:
 		return false
 	_splat_pipeline = _rd.compute_pipeline_create(_splat_shader)
 	_resolve_pipeline = _rd.compute_pipeline_create(_resolve_shader)
+	_pal_buf = _rd.storage_buffer_create(80)
+	_gpu_ok = _pal_buf.is_valid()
+	if not _gpu_ok:
+		push_error("[sky] palette buffer creation failed")
+	return _gpu_ok
+
+
+## The sky texture at the bake's size: made at the first resolve, remade when SKY RES has
+## changed. The old one is freed after the material points at the new one, and the device
+## destroys it once this frame's work is done.
+func _ensure_sky_tex() -> bool:
+	if _sky_tex.is_valid() and _tex_w == _bw and _tex_h == _bh:
+		return true
 	var fmt := RDTextureFormat.new()
-	fmt.width = W
-	fmt.height = H
+	fmt.width = _bw
+	fmt.height = _bh
 	fmt.format = RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT
-	# CAN_COPY_FROM so the shot harness can read the bake back whole.
+	# CAN_COPY_FROM so the shot harness and the offline bake can read the sky back whole.
 	fmt.usage_bits = RenderingDevice.TEXTURE_USAGE_STORAGE_BIT | RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT \
 		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT
-	_sky_tex = _rd.texture_create(fmt, RDTextureView.new(), [])
+	var tex := _rd.texture_create(fmt, RDTextureView.new(), [])
+	if not tex.is_valid():
+		push_error("[sky] %dx%d texture creation failed" % [_bw, _bh])
+		return false
+	var old := _sky_tex
+	_sky_tex = tex
+	_tex_w = _bw
+	_tex_h = _bh
 	_sky_texture.texture_rd_rid = _sky_tex
-	_pal_buf = _rd.storage_buffer_create(80)
-	_gpu_ok = _sky_tex.is_valid() and _pal_buf.is_valid()
-	if not _gpu_ok:
-		push_error("[sky] texture or buffer creation failed")
-	return _gpu_ok
+	if old.is_valid():
+		_rd.free_rid(old)
+	return true
+
+
+## Render thread: the live sky's RenderingDevice texture, for anything that reads it back.
+func sky_texture_rid() -> RID:
+	return _sky_tex
+
+
+## The live sky texture's size as it stands; zero before the first bake.
+func texture_size() -> Vector2i:
+	return Vector2i(_tex_w, _tex_h)
 
 
 func _compile(path: String) -> RID:
@@ -260,8 +388,15 @@ func _begin(src: FlameSource, state: RID, tex_size: int, centre: Vector3, rot: B
 	# A bake restarted mid-flight drops the old sums with their buffer; the set goes with it.
 	if _acc_buf.is_valid():
 		_rd.free_rid(_acc_buf)
-	_acc_buf = _rd.storage_buffer_create(W * H * 3 * 4)
-	_rd.buffer_clear(_acc_buf, 0, W * H * 3 * 4)
+	_bw = width
+	_bh = height
+	_bs = samples
+	_acc_buf = _rd.storage_buffer_create(_bw * _bh * 3 * 4)
+	if not _acc_buf.is_valid():
+		push_error("[sky] the %d MB accumulator was refused" % (_bw * _bh * 12 / 1048576))
+		baking = false
+		return
+	_rd.buffer_clear(_acc_buf, 0, _bw * _bh * 3 * 4)
 	var uw := RDUniform.new()
 	uw.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
 	uw.binding = 0
@@ -279,8 +414,8 @@ func _begin(src: FlameSource, state: RID, tex_size: int, centre: Vector3, rot: B
 	_push.encode_float(52, centre.y)
 	_push.encode_float(56, centre.z)
 	_push.encode_float(60, cycles)
-	_push.encode_s32(64, W)
-	_push.encode_s32(68, H)
+	_push.encode_s32(64, _bw)
+	_push.encode_s32(68, _bh)
 	_push.encode_s32(72, _walkers)
 	_push.encode_s32(76, _row_w)
 	_push.encode_float(80, FIXED)
@@ -300,13 +435,18 @@ func _ssbo(binding: int, buf: RID) -> RDUniform:
 
 
 func _step() -> void:
-	if not baking or _src == null or not _acc_buf.is_valid():
+	if not baking:
+		# A few frames on, so the resolve frame's own timestamps are read too.
+		_tail -= 1
+		_read_timestamp()
+		return
+	if _src == null or not _acc_buf.is_valid():
 		return
 	_read_timestamp()
 	_rd.capture_timestamp("sky_begin")
 	var groups := int(ceil(float(_walkers) / 256.0))
 	var cl := _rd.compute_list_begin()
-	for r in ROUNDS_PER_FRAME:
+	for r in rounds_per_frame:
 		_src.encode(cl, _walkers, _round + 1, false)
 		_rd.compute_list_add_barrier(cl)
 		if _round >= FUSE_ROUNDS:
@@ -318,13 +458,20 @@ func _step() -> void:
 			_splatted += _walkers
 		_round += 1
 	_rd.compute_list_end()
-	if _splatted >= SAMPLES:
+	if _splatted >= _bs:
 		_resolve()
 	_rd.capture_timestamp("sky_end")
-	progress = clampf(float(_splatted) / float(SAMPLES), 0.0, 1.0)
+	progress = clampf(float(_splatted) / float(maxi(1, _bs)), 0.0, 1.0)
 
 
 func _resolve() -> void:
+	if not _ensure_sky_tex():
+		_rd.free_rid(_acc_buf)
+		_acc_buf = RID()
+		_src.cleanup()
+		_src = null
+		baking = false
+		return
 	_resolve_pass()
 	if not keep_accumulator:
 		# Freed now, destroyed by the device once this frame's work is done; both sets go with it.
@@ -334,6 +481,7 @@ func _resolve() -> void:
 	_src = null
 	baking = false
 	ready = true
+	_tail = 4
 	print("[sky] baked %s: %d splats over %d rounds" % [baked_name, _splatted, _round])
 
 
@@ -351,8 +499,8 @@ func _resolve_pass() -> void:
 	var set := _rd.uniform_set_create([_ssbo(0, _acc_buf), u], _resolve_shader, 0)
 	var pc := PackedByteArray()
 	pc.resize(48)
-	pc.encode_s32(0, W)
-	pc.encode_s32(4, H)
+	pc.encode_s32(0, _bw)
+	pc.encode_s32(4, _bh)
 	pc.encode_s32(8, MAX_TAPS)
 	pc.encode_s32(12, 0)
 	pc.encode_float(16, exposure)
@@ -367,7 +515,7 @@ func _resolve_pass() -> void:
 	_rd.compute_list_bind_compute_pipeline(cl, _resolve_pipeline)
 	_rd.compute_list_bind_uniform_set(cl, set, 0)
 	_rd.compute_list_set_push_constant(cl, pc, pc.size())
-	_rd.compute_list_dispatch(cl, int(ceil(W / 8.0)), int(ceil(H / 8.0)), 1)
+	_rd.compute_list_dispatch(cl, int(ceil(_bw / 8.0)), int(ceil(_bh / 8.0)), 1)
 	_rd.compute_list_end()
 	# The set is a dependent of the accumulator and would go with it; a re-resolve makes its own.
 	_rd.free_rid(set)

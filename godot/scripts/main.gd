@@ -130,6 +130,8 @@ var flame_sky := FlameSky.new()
 var sky_on := false
 ## BULB's own SKY switch, off until pressed there: the splats sit at the budget line already.
 var sky_bulb_on := false
+## SKY RES: the live bake's equirect width, an index into FlameSky.RES_STEPS.
+var sky_res_idx := FlameSky.RES_DEFAULT
 var _galaxy_saved := {}
 var _near_fade := 0.0
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
@@ -819,6 +821,20 @@ func _build_menu() -> void:
 		WristMenu.Item.new("scene", "SKY",
 			func(): return _sky_label(),
 			func(): _toggle_sky()).toggle(func(): return _sky_switch()),
+		# Which sky: the live bake of a flame, or one of the skies pre-rendered on the Mac
+		# (art/skies/), which need no bake and so are there in BULB from the start.
+		WristMenu.Item.new("scene", "SKY PICK",
+			func(): return flame_sky.pick_name(),
+			func(): _step_sky_pick(1),
+			false, func(): return not flame_sky.presets.is_empty()).stepping(
+			func(d: int): _step_sky_pick(d)),
+		# The live bake's resolution. Each step re-bakes the flame on show; a bake is a frame
+		# count, 2.8 s, 6.9 s and 15.4 s at 72 Hz (tools/sky_bake.sh measure).
+		WristMenu.Item.new("scene", "SKY RES",
+			func(): return FlameSky.RES_NAMES[sky_res_idx],
+			func(): _step_sky_res(1),
+			false, _vis_flame).stepping(func(d: int): _step_sky_res(d)).slider(
+			func(): return sky_res_idx, FlameSky.RES_STEPS.size()).minor(),
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
@@ -2418,6 +2434,26 @@ func _step_flame_echoes(d: int) -> void:
 func _bake_sky() -> void:
 	if flame_sky.request_bake(cloud, _theme_palette(), COLOUR_CYCLES[colour_idx]):
 		sky_on = true
+		# Baking this flame is asking for the live sky over any preset.
+		flame_sky.set_pick(0)
+
+
+## SKY PICK: live or a preset. Choosing a sky is asking to see it, so a preset switches SKY on;
+## back to live with nothing baked, FLAME bakes the flame on show (BULB has none to bake).
+func _step_sky_pick(d: int) -> void:
+	flame_sky.set_pick(flame_sky.pick + d)
+	if flame_sky.pick > 0 and not _sky_switch():
+		_toggle_sky()
+	elif flame_sky.pick == 0 and _sky_switch() and not flame_sky.has_sky() and not flame_sky.baking:
+		_bake_sky()
+
+
+## SKY RES: set the live bake's width, and re-bake the flame on show if a live sky is up.
+func _step_sky_res(d: int) -> void:
+	sky_res_idx = wrapi(sky_res_idx + d, 0, FlameSky.RES_STEPS.size())
+	flame_sky.set_width(FlameSky.RES_STEPS[sky_res_idx])
+	if flame_sky.pick == 0 and (flame_sky.ready or flame_sky.baking):
+		_bake_sky()
 
 
 ## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds
@@ -2427,7 +2463,7 @@ func _toggle_sky() -> void:
 		sky_bulb_on = not sky_bulb_on
 	else:
 		sky_on = not sky_on
-	if _sky_switch() and not flame_sky.ready and not flame_sky.baking:
+	if _sky_switch() and not flame_sky.has_sky() and not flame_sky.baking:
 		_bake_sky()
 
 
@@ -2441,7 +2477,7 @@ func _sky_label() -> String:
 		return "baking %d%%" % int(flame_sky.progress * 100.0)
 	if not _sky_switch():
 		return "off"
-	return "on" if flame_sky.ready else "no flame"
+	return "on" if flame_sky.has_sky() else "no flame"
 
 
 func _fail(msg: String) -> void:

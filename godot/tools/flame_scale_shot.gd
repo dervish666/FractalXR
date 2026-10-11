@@ -409,25 +409,31 @@ func _dump_sky(main) -> void:
 	for i in 3:
 		await process_frame
 	var data: PackedByteArray = holder[0]
-	if data.size() != FlameSky.W * FlameSky.H * 8:
-		_ok("sky dump", false, "%d bytes" % data.size())
+	var size: Vector2i = main.flame_sky.texture_size()
+	var sw := size.x
+	var sh := size.y
+	print("FLAMESCALE sky texture %dx%d (SKY RES %d wide)" % [sw, sh, main.flame_sky.width])
+	if data.size() != sw * sh * 8 or sw != main.flame_sky.width:
+		_ok("sky dump", false, "%d bytes for %dx%d" % [data.size(), sw, sh])
 		return
-	var img := Image.create_from_data(FlameSky.W, FlameSky.H, false, Image.FORMAT_RGBAH, data)
+	var img := Image.create_from_data(sw, sh, false, Image.FORMAT_RGBAH, data)
 	var peak := 0.0
 	var lit := 0
 	var n := 0
-	for y in range(0, FlameSky.H, 4):
-		for x in range(0, FlameSky.W, 4):
+	for y in range(0, sh, 4):
+		for x in range(0, sw, 4):
 			var c := img.get_pixel(x, y)
 			var m := maxf(c.r, maxf(c.g, c.b))
 			peak = maxf(peak, m)
 			if m > 0.02:
 				lit += 1
 			n += 1
-	var out := Image.create(FlameSky.W / 2, FlameSky.H / 2, false, Image.FORMAT_RGB8)
+	# 1280 across whatever the bake's size, so the PNG and the walk over it stay cheap.
+	var step := maxi(1, sw / 1280)
+	var out := Image.create(sw / step, sh / step, false, Image.FORMAT_RGB8)
 	for y in out.get_height():
 		for x in out.get_width():
-			var c := img.get_pixel(x * 2, y * 2)
+			var c := img.get_pixel(x * step, y * step)
 			out.set_pixel(x, y, Color(c.r / (1.0 + c.r), c.g / (1.0 + c.g), c.b / (1.0 + c.b)).linear_to_srgb())
 	out.save_png("%s/sky-equirect.png" % OUT)
 	_ok("sky texture", lit > n / 50 and peak > 0.2 and is_finite(peak),
