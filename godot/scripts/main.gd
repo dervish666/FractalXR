@@ -216,6 +216,9 @@ var forest := Forest.new()
 var vignette := ComfortVignette.new()
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
+## The FLOOR and BARK tiles' words, by Forest.FLOOR_STEPS and Forest.BARK_STEPS.
+const FLOOR_LABELS := ["off", "fractal ground", "fallen leaves", "ground + leaves"]
+const BARK_LABELS := ["plain", "fractal veins", "julia lace"]
 const TREE_DEPTH_DELTA := [0, 1, 2, -1, -2]
 var tree_shape_idx := 0
 var tree_wind_idx := 0
@@ -325,6 +328,9 @@ var _prev := {}
 ## both have to read the same stored answer rather than poll the button twice. Left, right.
 var _trig := [false, false]
 var _trig_held := [false, false]
+## WALK: the right stick held forward past WALK_STICK reads as a held trigger (_handle_input).
+var _walk_stick := false
+const WALK_STICK := 0.5
 ## True when the IFS editor took this frame's trigger. Nothing below it in the priority order
 ## gets a second go at the same press.
 var _trig_owned := false
@@ -746,12 +752,25 @@ func _build_menu() -> void:
 			func(): _step_tree_count(1),
 			false, _vis_tree).stepping(func(d: int): _step_tree_count(d)).slider(
 			func(): return forest.count_idx, Forest.STEPS.size()),
-		# Surface roots on the avenue's two inner rows, bent toward the middle so they edge a
-		# path (scripts/tree/tree_roots.gd). Off by default.
-		WristMenu.Item.new("make", "ROOTS",
-			func(): return "edge the path" if forest.roots_on else "off",
-			func(): forest.set_roots(not forest.roots_on),
-			false, _vis_tree).toggle(func(): return forest.roots_on),
+		# How fast WALK glides (scripts/tree/forest.gd WALK_PACES): 0.75 m/s unless you pick.
+		WristMenu.Item.new("make", "PACE",
+			func(): return "%.2f m/s" % forest.walk_pace(),
+			func(): forest.set_pace(wrapi(forest.pace_idx + 1, 0, Forest.WALK_PACES.size())),
+			false, _vis_tree).stepping(func(d: int): forest.set_pace(forest.pace_idx + d)).slider(
+			func(): return forest.pace_idx, Forest.WALK_PACES.size()),
+		# Something under the trees, in theme: a faint fractal ground, fallen leaves round every
+		# trunk, or both (forest_floor.gd, tree_litter.gd). Off by default.
+		WristMenu.Item.new("make", "FLOOR",
+			func(): return FLOOR_LABELS[forest.floor_idx],
+			func(): _set_tree_floor(wrapi(forest.floor_idx + 1, 0, Forest.FLOOR_STEPS.size())),
+			false, _vis_tree).stepping(func(d: int):
+				_set_tree_floor(wrapi(forest.floor_idx + d, 0, Forest.FLOOR_STEPS.size()))),
+		# A fractal grown into the wood (tree.gdshader BARK). Plain by default; far trees stay plain.
+		WristMenu.Item.new("make", "BARK",
+			func(): return BARK_LABELS[forest.bark_style],
+			func(): _set_tree_bark(wrapi(forest.bark_style + 1, 0, Forest.BARK_STEPS.size())),
+			false, _vis_tree).stepping(func(d: int):
+				_set_tree_bark(wrapi(forest.bark_style + d, 0, Forest.BARK_STEPS.size()))),
 
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
@@ -1650,6 +1669,22 @@ func _set_forest_leaves(on: bool) -> void:
 func _set_forest_palette(pal: Array) -> void:
 	tree.set_palette(pal)
 	forest.set_palette(pal)
+	if pal.size() > 2:
+		vignette.set_rest_tint(pal[2])
+
+
+## FLOOR: the forest's step, and the hero's fallen leaves with it (the hero is not in the forest's
+## LOD pass, so it is always near enough).
+func _set_tree_floor(i: int) -> void:
+	forest.set_floor(i)
+	tree.litter_near = true
+	tree.set_litter(forest.litter_on())
+
+
+## BARK: the hero and every forest tree drawn whole.
+func _set_tree_bark(i: int) -> void:
+	forest.set_bark(i)
+	tree.set_bark(forest.bark_style)
 
 
 ## Regrow the hero and the forest, staggered; an empty forest is sown afresh.
@@ -2706,8 +2741,10 @@ func _process_frame(delta: float) -> void:
 		# arrows are the right stick there). Only while nothing else owns the trigger, so a
 		# press on the menu never starts a walk.
 		forest.walk_held = forest.walking() and not _menu_active and not help.is_open() \
-			and (_trig_held[0] or _trig_held[1] or Input.is_key_pressed(KEY_G))
+			and (_trig_held[0] or _trig_held[1] or _walk_stick or Input.is_key_pressed(KEY_G))
 		forest.tick(delta, xr_camera.global_transform.origin)
+		# The walk's tunnel: tighter than the dive's, shut early, with the rest frame in it.
+		vignette.set_profile(ComfortVignette.WALK)
 		vignette.set_motion(forest.walk_motion())
 		return
 	# The sculpture's only per-frame work: the ambient clocks, and whatever rebuild breathing
@@ -2723,6 +2760,7 @@ func _process_frame(delta: float) -> void:
 		# Room size flies the beams past your face, so the periphery dims while a step moves,
 		# eased with the step as the walk's is. At table size the sculpture moves in front of
 		# you and the view is left alone.
+		vignette.set_profile(ComfortVignette.DIVE)
 		vignette.set_motion(ifs_dive.motion() if ifs_room else 0.0)
 		# A captured handle owns the shape, so the ambient clock stops while it is held. So does
 		# a dive step: it re-roots by the maps it started with, and a breath would move them.
@@ -2750,8 +2788,9 @@ func _process_frame(delta: float) -> void:
 # Left menu (≡)          pin the wrist menu open, press again to let go
 # Left stick click       passthrough on / off
 # Right stick click      the mode's ambient motion on / off
-# Right stick            turn, push away and pull back (ground: turn and zoom)
-# Left stick             grow and shrink (ground: walk)
+# Right stick            turn, push away and pull back (ground: turn and zoom; tree WALK:
+#                        forward glides like the trigger, and nothing else)
+# Left stick             grow and shrink (ground: walk; off during tree WALK)
 # Triggers               THE MODE'S OWN: prev/next flame or bulb, glide (ground),
 #                        regrow/plant (tree), sculpt a handle (ifs)
 # Right menu             the Quest system button; the app never sees it. Not bound.
@@ -2784,6 +2823,7 @@ func _handle_input(delta: float) -> void:
 	if xr == null:
 		rs = Vector2(Input.get_axis("ui_left", "ui_right"), Input.get_axis("ui_down", "ui_up"))
 
+	_walk_stick = false
 	if ground_mode:
 		# Left stick walks the fractal under you, in the direction you face; right stick
 		# Y zooms about the ground under your feet.
@@ -2802,6 +2842,13 @@ func _handle_input(delta: float) -> void:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
 			if absf(rs.x) > 0.15 and not menu.wants_stick():
 				ground.rotate_about_head(-rs.x * GROUND_TURN_RAD_S * delta)
+	# WALK owns the sticks. The right stick pushed forward glides like a held trigger, under
+	# the same pace, ease and tunnel; it used to shove the whole avenue at 1.5 m/s with no
+	# vignette. Turning and scaling the avenue mid-walk are off: a smooth turn swung the rows
+	# about the cloud's origin, and Meta's guidance makes smooth turning opt-in at most. Turn
+	# your body instead; the avenue re-lays ahead of you on a recentre.
+	elif tree_mode and forest.walking():
+		_walk_stick = rs.y > WALK_STICK and not _menu_active
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
 	# the sculpture moves out from under the plane you are dragging.

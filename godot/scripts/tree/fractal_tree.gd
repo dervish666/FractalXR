@@ -163,6 +163,12 @@ var tier_far := false
 var far := false
 var shape_data: Dictionary = {}
 var shape_key := ""
+## BARK (tree.gdshader's bark_style): 0 plain, 1 veins, 2 julia. Set before adopt or with set_bark().
+var bark_style := 0
+## FLOOR's fallen leaves: wanted at all (litter_on), and near enough to be worth a draw (the
+## forest's LOD pass decides litter_near; the hero sets it once). Both must hold to show.
+var litter_on := false
+var litter_near := false
 
 ## Instance index where each recursion level ends; level_ends[i] = branches in levels 0..i.
 var level_ends := PackedInt32Array()
@@ -170,7 +176,7 @@ var lod := 0
 
 var _branches: MultiMeshInstance3D = null
 var _leaves: MultiMeshInstance3D = null
-var _roots: MultiMeshInstance3D = null    # ROOTS (tree_roots.gd), drawn with the branch material
+var _litter: MultiMeshInstance3D = null   # FLOOR's fallen leaves (tree_litter.gd), drawn with the leaf material
 var _branch_mat: ShaderMaterial = null
 var _leaf_mat: ShaderMaterial = null
 var _palette: Array = []
@@ -233,6 +239,7 @@ func _guts() -> void:
 	if not _palette.is_empty():
 		set_palette(_palette)
 	set_palette_phase(palette_phase)
+	_branch_mat.set_shader_parameter(&"bark_style", bark_style)
 	_leaves.visible = leaves_on
 
 
@@ -490,8 +497,10 @@ static func compute(spec_in: Dictionary) -> Dictionary:
 		buf[o + 4] = basis.x.y; buf[o + 5] = basis.y.y; buf[o + 6] = basis.z.y; buf[o + 7] = origin.y
 		buf[o + 8] = basis.x.z; buf[o + 9] = basis.y.z; buf[o + 10] = basis.z.z; buf[o + 11] = origin.z
 		var level_frac := float(level) / float(maxi(depth - 1, 1))
-		# Colour: the palette position by level; the shader mixes the real palette.
-		buf[o + 12] = level_frac; buf[o + 13] = 0.0; buf[o + 14] = 0.0; buf[o + 15] = 1.0
+		# Colour: the palette position by level; the shader mixes the real palette. COLOR.b is
+		# BARK's coordinate along the wood: metres from the tree's base to this segment's start
+		# (a child starts where its parent ends, so the pattern runs on unbroken).
+		buf[o + 12] = level_frac; buf[o + 13] = 0.0; buf[o + 14] = float(s[5]) * k; buf[o + 15] = 1.0
 		# Custom: birth (0..1 along the growth), taper (child radius / own), level, phase.
 		var birth: float = (s[5] * k) / maxf(total_dist * k, 1e-3)
 		# The apical leader continues the trunk at 0.85 of its radius (see the queue above);
@@ -579,6 +588,7 @@ func adopt(d: Dictionary) -> int:
 		_leaf_mat.set_shader_parameter(key, d[key])
 	_fed = false
 	grow_t = 0.0
+	_sync_litter()
 	return n_b
 
 
@@ -618,30 +628,63 @@ func _upload(d: Dictionary) -> void:
 	_leaves.custom_aabb = d["aabb"]
 
 
-## Surface roots (forest.gd's ROOTS): a shared root MultiMesh under a node of their own, turned
-## and scaled by `xf` in the tree's frame. They use the branch material, so they grow, colour
-## and hide with the tree. null takes them away.
-func set_roots(mm: MultiMesh, xf: Transform3D, aabb: AABB) -> void:
-	if mm == null:
-		if _roots != null:
-			_roots.queue_free()
-			_roots = null
+## BARK: 0 plain, 1 veins, 2 julia (tree.gdshader). One uniform; no rebuild.
+func set_bark(style: int) -> void:
+	bark_style = style
+	if _branch_mat != null:
+		_branch_mat.set_shader_parameter(&"bark_style", style)
+
+
+## FLOOR's fallen leaves (tree_litter.gd): a shared litter MultiMesh under a node of its own, drawn
+## with this tree's leaf material, so the discs wear its leaf colour and shape and grow and wither
+## with it. The node is scaled to the crown's reach, so it rides a walk recycle for free.
+func set_litter(on: bool) -> void:
+	litter_on = on
+	_sync_litter()
+
+
+## The forest's LOD pass: only the nearest trees spend a draw on litter (the shader fades it out
+## before the line, so nothing pops).
+func set_litter_near(near: bool) -> void:
+	if near == litter_near:
 		return
-	_guts()
-	if _roots == null:
-		_roots = MultiMeshInstance3D.new()
-		_roots.name = "Roots"
-		_roots.material_override = _branch_mat
-		_roots.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		add_child(_roots)
-	_roots.multimesh = mm
-	_roots.transform = xf
-	_roots.custom_aabb = aabb
-	_roots.visible = _branches.visible and not far
+	litter_near = near
+	_sync_litter()
 
 
-func roots_node() -> MultiMeshInstance3D:
-	return _roots
+func litter_node() -> MultiMeshInstance3D:
+	return _litter
+
+
+func _litter_shows() -> bool:
+	return litter_on and litter_near and not far and _branches != null and _branches.visible \
+		and branch_count > 0
+
+
+func _sync_litter() -> void:
+	if not litter_on:
+		if _litter != null:
+			_litter.visible = false
+		return
+	if _branches == null or not built or branch_count == 0:
+		return
+	if _litter == null:
+		_litter = MultiMeshInstance3D.new()
+		_litter.name = "Litter"
+		_litter.material_override = _leaf_mat
+		_litter.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		# Per node, not per material: the leaf MultiMesh shares the material and stays a canopy.
+		_litter.set_instance_shader_parameter(&"litter", 1.0)
+		add_child(_litter)
+	_litter.multimesh = TreeLitter.shape(seed_value)
+	# Unit frame: radius 1 is the crown's reach, the larger of its two floor half-extents.
+	var box: AABB = shape_data.get("aabb", AABB(Vector3(-1, 0, -1), Vector3(2, 1, 2)))
+	var reach := maxf(maxf(-box.position.x, box.end.x), maxf(-box.position.z, box.end.z))
+	reach = clampf(reach * 0.9, 0.3, height_m * 0.6)
+	_litter.transform = Transform3D(Basis(Vector3.UP, float(seed_value % 360) * 0.0174533)
+		.scaled(Vector3(reach, reach, reach)), Vector3.ZERO)
+	_litter.custom_aabb = AABB(Vector3(-1.1, -0.05, -1.1), Vector3(2.2, 0.2, 2.2))
+	_litter.visible = _litter_shows()
 
 
 ## Handed to the far batch: the tree's own nodes go dark and give their buffers back. The
@@ -652,8 +695,8 @@ func release() -> void:
 		return
 	_branches.visible = false
 	_leaves.visible = false
-	if _roots != null:
-		_roots.visible = false
+	if _litter != null:
+		_litter.visible = false
 	_branches.multimesh.instance_count = 0
 	_leaves.multimesh.instance_count = 0
 
@@ -798,14 +841,14 @@ func tick(delta: float) -> void:
 	if grow_t <= 0.0:
 		_branches.visible = false
 		_leaves.visible = false
-		if _roots != null:
-			_roots.visible = false
+		if _litter != null:
+			_litter.visible = false
 		return
 	if not _branches.visible:
 		_branches.visible = true
 		_leaves.visible = leaves_on
-		if _roots != null:
-			_roots.visible = true
+		if _litter != null:
+			_litter.visible = _litter_shows()
 	var xf := global_transform
 	var wxf := wind_ref.global_transform if wind_ref != null else xf
 	var g := minf(grow_t, grow_s + 2.0)

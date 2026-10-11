@@ -56,6 +56,26 @@ uniform float palette_phase = 0.0;
 // line below reads exactly as before.
 uniform bool batch = false;
 
+// --- BARK (T-55): a fractal pattern grown into the wood. Additive to the above: at bark_style 0,
+// and in the far batch whatever the style, every line reads exactly as before. ------------------
+// 1 veins: a 3D Kaliset (p = |p| / p.p - c), the orbit's step lengths summed into veins. Organic
+//          and cellular, lit from inside like the flames' filaments.
+// 2 julia: the San Marco Julia set's orbit trap, a lace of Julia filigree up the wood.
+// Mapping: around the branch, the cylinder's own cross-section times the local radius, so the
+// pattern wraps with no seam, and a twig a few millimetres of pattern round comes out smooth, as
+// twigs are. Along it, metres from the tree's base: fractal_tree.gd passes the distance to each
+// segment's start in COLOR.b, so the pattern runs on unbroken from a segment into its child. Both
+// from the undeformed, fully grown vertex, as the colour is: wind and growth never slide it, and
+// the viewer moving changes nothing.
+// Stereo: past a footprint of BARK_FADE pattern units per pixel the pattern fades to its mean
+// (fwidth, per eye), and its lines widen with the footprint before that, so nothing finer than a
+// few pixels is drawn. A fragment past the fade skips the loop, so far trees pay nothing extra.
+// It modulates the tree's own ramp and lifts toward the crown's tip colour, so a theme or a
+// cycling palette recolours it for free.
+uniform int bark_style = 0;
+uniform float bark_cell = 0.2;   // metres of tree per pattern unit (the julia lace runs 1.5x that)
+uniform float bark_glow = 1.0;   // how much the brightest lines lean toward the crown's tip colour
+
 // Rotate a colour about the grey axis (Rodrigues). Angle 0 returns it unchanged.
 vec3 hue_turn(vec3 c, float a) {
 	const vec3 k = vec3(0.57735027);
@@ -68,6 +88,69 @@ varying vec3 v_normal_w;
 varying vec3 v_world;
 varying flat float v_phase;
 varying flat float v_bark_hue;
+varying vec3 v_bark;   // BARK's coordinate, in pattern units (see the uniforms)
+
+// BARK's two patterns, each scaled to 0..1, and their means over branches 2-10 cm thick and 3 m of
+// wood (a numpy port of these functions, 200k samples). The fade lands on the mean, and the colour
+// is built so the mean gives the plain bark exactly: a far trunk is the colour its near pattern
+// averages to, and the far batch's plain trees match it.
+const float BARK_FADE = 0.1;      // pattern units a pixel: on the Quest, going at 7 m, gone by 18
+const float VEINS_SCALE = 2.3;    // the veins' 99th percentile is 0.44
+const float VEINS_MEAN = 0.32;    // 0.139 x VEINS_SCALE
+const float VEINS_HI = 2.2;       // the brightest vein, against the plain bark
+const float JULIA_MEAN = 0.07;
+const float JULIA_HI = 4.0;
+
+float bark_veins(vec3 p, float soft) {
+	p = abs(mod(p + 0.37, 2.0) - 1.0);
+	const vec3 c = vec3(0.7, 0.4, 0.6);
+	float acc = 0.0;
+	float prev = 0.0;
+	for (int i = 0; i < 7; i++) {
+		p = abs(p) / max(dot(p, p), 1e-4) - c;
+		float l = length(p);
+		acc += exp(-soft * abs(l - prev));
+		prev = l;
+	}
+	return acc / 7.0;
+}
+
+float bark_julia(vec3 p, float soft) {
+	// Around: arc length from the branch's front, mirrored at the back so the wrap has no seam.
+	float around = abs(atan(p.z, p.x)) * length(p.xz);
+	vec2 f = abs(mod(vec2(around, p.y) / 1.5, 2.0) - 1.0);
+	vec2 z = vec2(f.x * 1.5, (f.y * 2.0 - 1.0) * 1.1);
+	// A ring trap (the orbit's closest pass to |z| = 0.5) draws the San Marco set's chain of
+	// bulbs as a lace round the wood; an axis trap filled whole regions with glow.
+	float trap = 1e3;
+	for (int i = 0; i < 10; i++) {
+		z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + vec2(-0.75, 0.11);
+		trap = min(trap, abs(length(z) - 0.5));
+		if (dot(z, z) > 64.0) {
+			break;
+		}
+	}
+	return exp(-trap * soft);
+}
+
+// The ramp colour `base` with the pattern in it: darker wood between the lines, brighter lines
+// leaning toward the crown's tip colour. Linear in the pattern and pinned so its mean gives `base`.
+vec3 bark(vec3 base, vec3 p, vec3 tip) {
+	vec3 fw = fwidth(p);
+	float foot = max(max(fw.x, fw.y), fw.z);
+	float detail = 1.0 - smoothstep(BARK_FADE * 0.4, BARK_FADE, foot);
+	bool veins = bark_style == 1;
+	float mean = veins ? VEINS_MEAN : JULIA_MEAN;
+	float hi = veins ? VEINS_HI : JULIA_HI;
+	float v = mean;
+	if (detail > 0.0) {
+		float soft = 1.0 / (1.0 + foot * 30.0);   // lines widen as the footprint grows
+		v = veins ? min(bark_veins(p, 5.0 * soft) * VEINS_SCALE, 1.0) : bark_julia(p, 30.0 * soft);
+		v = mix(mean, v, detail);
+	}
+	float lo = (1.0 - hi * mean) / (1.0 - mean);
+	return base * mix(lo, hi, v) + tip * (bark_glow * 0.3 * max(v - mean, 0.0));
+}
 
 // One displacement field for branches and leaves: lateral bend growing with the square
 // of height (a cantilever), a slow body sway, a faster ripple up the trunk, and a small
@@ -108,6 +191,14 @@ void vertex() {
 	vec3 w0 = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	float h01 = clamp(dot(w0 - tree_origin, tree_up) / max(th * tree_scale, 1e-3), 0.0, 1.0);
 	v_u = mix(level, h01, colour_height);
+	v_bark = vec3(0.0);
+	if (bark_style > 0 && !batch) {
+		// The basis is (r, len, r) times the node's scale; tree_scale takes the node back out.
+		float ts = max(tree_scale, 1e-3);
+		float r_here = length(MODEL_MATRIX[0].xyz) / ts * mix(1.0, taper, y01);
+		float along = COLOR.b + y01 * length(MODEL_MATRIX[1].xyz) / ts;
+		v_bark = vec3(VERTEX.x * r_here, along, VERTEX.z * r_here) / bark_cell;
+	}
 	vec3 w = (MODEL_MATRIX * vec4(v, 1.0)).xyz;
 	w = sway(w, flutter_phase(w0));
 	v_world = w;
@@ -127,6 +218,9 @@ void fragment() {
 		base = max(hue_turn(base, bh), vec3(0.0));
 		float luma = dot(base, vec3(0.299, 0.587, 0.114));
 		base = mix(base, bark_tint * max(luma * 1.6, 0.05), bark_mix);
+	}
+	if (bark_style > 0 && !batch) {
+		base = bark(base, v_bark, tip);
 	}
 	vec3 n = normalize(v_normal_w);
 	vec3 key = normalize(vec3(0.5, 0.8, 0.3));

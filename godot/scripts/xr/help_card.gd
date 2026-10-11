@@ -240,7 +240,8 @@ class ControlsCard extends Control:
 			left_trigger = PackedStringArray(["Regrow", "every tree", "· WALK: hold to glide"])
 			right_trigger = PackedStringArray(["Plant a tree", "at the point", "· WALK: hold to glide"])
 			face = PackedStringArray(["A · B: previous,", "next species"])
-			right_stick = PackedStringArray(["Turn the grove", "· click: spin on, off"])
+			# WALK takes the right stick too: forward glides, the turn and push are off.
+			right_stick = PackedStringArray(["Turn the grove", "· click: spin on, off", "· WALK: push to glide"])
 			# The grips move the whole grove, hero and planted alike: they are one cloud.
 			left_grip = PackedStringArray(["Hold to grab", "the whole grove"])
 			right_grip = PackedStringArray(["Both grips:", "scale the grove"])
