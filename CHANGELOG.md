@@ -6,6 +6,10 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Changed
+- **DIVE dims the edges of the view at room size.** The avenue walk's tunnel vignette now
+  also follows a dive step at room size, where the beams fly past your face: it eases in and
+  out with the step's own half-second ease and clears when the step stops. Table size leaves
+  the view alone, since the sculpture moves in front of you there.
 - **The help card knows WALK and DIVE.** TREE's trigger callouts add "WALK: hold to glide"
   and IFS's add "DIVE: hold, eye a copy", the small second-job line the sticks already use.
   A three-line trigger block rises half a line per extra line so it clears the stick's label.

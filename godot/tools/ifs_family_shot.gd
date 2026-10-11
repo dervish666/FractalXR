@@ -3,7 +3,7 @@ extends SceneTree
 ## FAMILY, room size and DIVE through the real main scene. Enters IFS the way the wrist strip
 ## does, works the LAYOUT, SIZE and DIVE tiles, and captures what draws. Prints the numbers a
 ## PNG cannot show: echo counts, the hero's width and where the eyes sit in it, and the dive's
-## progress and landing.
+## progress and landing, and whether the comfort vignette is up when a room-size step moves.
 ##
 ##   tools/ifs_family_shot.sh
 
@@ -133,6 +133,28 @@ func _init() -> void:
 	dive.advance.call()
 	await _dive_to(main, 0.5)
 	await _shot(main, "room-dive-50.png", LEVEL)
+
+	# The comfort vignette, through main's own tick: up while a room-size step moves, gone once
+	# the hold has eased out, and off at table size with a step moving just as fast.
+	var room_on: Array = await _held_frame(main)
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 1000:   # twice the dive's EASE_S, in the real time main eases by
+		await process_frame
+	var released := [main.vignette.motion, main.ifs_dive.motion(), main.vignette.visible]
+	dive.advance.call()
+	size.advance.call()
+	for i in 4:
+		await process_frame
+	dive.advance.call()
+	main.xr_camera.rotation_degrees = TABLE
+	var table: Array = await _held_frame(main)
+	_ok("vignette", room_on[3] and room_on[2] and room_on[0] > 0.5 \
+			and absf(room_on[0] - room_on[1]) < 1e-6 and not released[2] and released[0] == 0.0 \
+			and table[3] and table[1] > 0.5 and not table[2] and table[0] == 0.0,
+		("room mid-step %.2f (dive %.2f, shown=%s); released %.2f (dive %.2f, shown=%s); "
+			+ "table mid-step %.2f (dive %.2f, shown=%s), size '%s'") % [room_on[0], room_on[1],
+		str(room_on[2]), released[0], released[1], str(released[2]), table[0], table[1],
+		str(table[2]), size.read.call()])
 	dive.advance.call()
 	_ok("dive off", not main.ifs_dive.on and not main.ifs_dive.in_step(),
 		"tile '%s', in step=%s" % [dive.read.call(), str(main.ifs_dive.in_step())])
@@ -163,6 +185,19 @@ func _dive_to(main, p: float) -> void:
 		float(n) * DT, main.ifs_dive.steps,
 		float(main.ifs.material().get_shader_parameter(&"dive_fade"))])
 	await process_frame
+
+
+## A second of held dive ticks, so the eased hold is full, then two real frames. main's tick
+## sees no trigger on the desktop and eases the hold down by a frame or two, so the step is
+## still moving when the vignette is read: [vignette motion, dive motion, shown, in step].
+func _held_frame(main) -> Array:
+	var cam: Transform3D = main.xr_camera.global_transform
+	for i in 72:
+		main.ifs_dive.tick(DT, true, cam)
+	await process_frame
+	await process_frame
+	return [main.vignette.motion, main.ifs_dive.motion(), main.vignette.visible,
+		main.ifs_dive.in_step()]
 
 
 func _settle_relayout(main) -> void:

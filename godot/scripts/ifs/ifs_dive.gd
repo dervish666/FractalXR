@@ -76,6 +76,14 @@ func progress() -> float:
 	return _t
 
 
+## 0 at rest, 1 at full speed: the eased hold while a step is moving, what a comfort
+## vignette should follow. 0 between steps, where nothing moves however the trigger sits.
+func motion() -> float:
+	if not on or _target < 0:
+		return 0.0
+	return _v * _v * (3.0 - 2.0 * _v)
+
+
 func set_on(v: bool) -> void:
 	if not v:
 		cancel()
@@ -96,7 +104,7 @@ func tick(delta: float, held: bool, head: Transform3D) -> void:
 		if not held or not begin(head):
 			return
 	_rebase()
-	var e := _v * _v * (3.0 - 2.0 * _v)
+	var e := motion()
 	if e <= 0.0:
 		return
 	_t += delta * e * OCT_S * log(2.0) / log(_k)
