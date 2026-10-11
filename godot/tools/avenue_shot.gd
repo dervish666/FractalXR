@@ -13,6 +13,11 @@ extends SceneTree
 
 const SPEED := 4.0    # forest clocks run on frame delta; this only shortens the waits
 const WALK_GAME_S := 90.0
+## The walk loop ends on distance walked, so a G key that stops reading as held (the window lost
+## focus) would otherwise spin until the shell's 420 s watchdog. 90 game seconds at 8x is about
+## 700 frames at 60 Hz; the cap leaves room for a fast window, the stall check fires in 2 s.
+const WALK_MAX_FRAMES := 6000
+const WALK_STALL_FRAMES := 120
 
 
 func _init() -> void:
@@ -67,7 +72,13 @@ func _init() -> void:
 
 	# Mid-wave: near trees up, far ones still to come.
 	Engine.time_scale = SPEED
+	var sprout_frames := 0
 	while _sprouted_frac(forest) < 0.5:
+		sprout_frames += 1
+		if sprout_frames > 8000:
+			_abort("half the avenue never sprouted (%.2f after %d frames)" % [
+				_sprouted_frac(forest), sprout_frames])
+			return
 		await process_frame
 	var mid_grown := _grown_frac(forest)
 	var mid_unsprouted := 0
@@ -175,8 +186,19 @@ func _init() -> void:
 	var seen_behind := 0.0   # furthest behind any drawn tree stood
 	var passed_young := 0
 	Engine.time_scale = SPEED * 2.0
+	var walk_frames := 0
+	var stalled := 0
+	var walked_last := forest.walked
 	while t_game < WALK_GAME_S:
 		await process_frame
+		walk_frames += 1
+		stalled = stalled + 1 if forest.walked <= walked_last else 0
+		walked_last = forest.walked
+		if stalled >= WALK_STALL_FRAMES or walk_frames >= WALK_MAX_FRAMES:
+			_abort("the walk stopped short: %.1f of %.0f m after %d frames, no progress for %d, walk_held=%s (G lost? check window focus)" % [
+				forest.walked, WALK_GAME_S * Forest.WALK_SPEED, walk_frames, stalled,
+				str(forest.walk_held)])
+			return
 		_sample(main, walking)
 		t_game = forest.walked / Forest.WALK_SPEED
 		var av: Node3D = forest.get_node("Avenue")
@@ -340,3 +362,13 @@ func _key(code: Key, down: bool) -> void:
 func _save(name: String) -> void:
 	var img := root.get_viewport().get_texture().get_image()
 	img.save_png("res://.spike-out/%s.png" % name)
+
+
+## Stop now with the reason, rather than wait for the shell's watchdog to kill a run that can
+## no longer pass. Everything after a broken wait would only measure the breakage.
+func _abort(why: String) -> void:
+	Engine.time_scale = 1.0
+	_key(KEY_G, false)
+	print("AVENUESHOT problem: ", why)
+	print("AVENUESHOT FAIL (aborted)")
+	quit(1)
