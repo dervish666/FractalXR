@@ -45,6 +45,20 @@ uniform float palette_phase = 0.0;
 // The far batch (far_forest.gd), as in tree.gdshader: CUSTOM.x is the birth on the shared
 // clock, CUSTOM.y the tree's palette phase and CUSTOM.z its leaf hue. Off, nothing changes.
 uniform bool batch = false;
+// --- FLOOR's fallen leaves (T-55). Additive to the above; off, nothing changes. -----------------
+// scripts/tree/tree_litter.gd draws these same discs flat on the floor round the trunk, with this
+// same material on a second MultiMesh, told apart by this per-node instance uniform (the canopy's
+// node leaves it at 0). A litter disc lies in its instance's own xz plane, never sways or spins,
+// and falls in over the 2 s after the canopy is out: INSTANCE_CUSTOM.x is when, as a share of that
+// fall. The tree stops feeding grow_t at grow_s + 2, so the fall has to finish by then; withering
+// runs the clock back down and takes the litter first.
+instance uniform float litter = 0.0;
+// Fallen leaves sit dimmer than the canopy's, so the floor stays darker than the trees.
+uniform float litter_gain = 0.9;
+// Metres from the eye: full size inside x, gone by y. The forest only gives litter to trees near
+// you (forest.gd LITTER_NEAR); this shrinks it away before that line, so it never pops, and keeps
+// 5 cm discs from shimmering at a distance where they would be a pixel or two.
+uniform vec2 litter_fade = vec2(9.0, 13.0);
 
 vec3 hue_turn(vec3 c, float a) {
 	const vec3 k = vec3(0.57735027);
@@ -89,6 +103,11 @@ void vertex() {
 	float a = sin(TIME * 2.7 + phase) * 0.4 * (0.3 + wind);
 	vec2 q = vec2(VERTEX.x * cos(a) - VERTEX.y * sin(a), VERTEX.x * sin(a) + VERTEX.y * cos(a));
 	vec3 w = sway(center, flutter_phase(center)) + right * (q.x * size) + up * (q.y * size);
+	if (litter > 0.5) {
+		float lg = clamp((grow_t - grow_s - 0.2 - birth) / 0.8, 0.0, 1.0);
+		lg *= 1.0 - smoothstep(litter_fade.x, litter_fade.y, distance(center, CAMERA_POSITION_WORLD));
+		w = center + (MODEL_MATRIX[0].xyz * VERTEX.x + MODEL_MATRIX[2].xyz * VERTEX.y) * lg;
+	}
 	v_uv = VERTEX.xy;
 	POSITION = PROJECTION_MATRIX * (VIEW_MATRIX * vec4(w, 1.0));
 }
@@ -121,4 +140,7 @@ void fragment() {
 	}
 	ALBEDO = c * a * brightness * leaf_gain;
 	ALPHA = a;
+	if (litter > 0.5) {
+		ALBEDO *= litter_gain;
+	}
 }

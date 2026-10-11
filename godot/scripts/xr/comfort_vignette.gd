@@ -7,9 +7,9 @@ class_name ComfortVignette
 ## while something is actually moving you.
 ##
 ## Reuse: parent one to the XRCamera3D and call set_motion() every frame with 0 (still) to
-## 1 (full speed). Ease the input yourself (the avenue walk eases over half a second); the
-## vignette follows it exactly, so it can never lag behind the motion it is hiding. Nothing
-## else to wire: hidden at 0, it costs no draw.
+## 1 (full speed), after set_profile() (DIVE or WALK, below). Ease the input yourself (the
+## avenue walk eases over 0.4 s); the vignette follows it exactly, times the profile's gain, so it
+## can never lag behind the motion it is hiding. Hidden at 0, it costs no draw.
 ##
 ## Cost: one alpha-blended ring per eye. The ring's inner edge tracks the clear window
 ## (vignette.gdshader), so at low strength it is a thin band past the edge of the view, and
@@ -19,7 +19,26 @@ class_name ComfortVignette
 const DIST := 0.5       # metres ahead of the head; the shader's `dist` must match
 const SEGMENTS := 48
 
+## How hard the tunnel closes, per caller. clear: the clear window's half-angle at full strength
+## (radians). open: its half-angle as strength leaves 0. feather: radians from clear to darkest.
+## alpha: the darkest it gets. gain: strength is motion times this, capped at 1, so above 1 the
+## tunnel is shut before the motion peaks and stays shut until it has nearly stopped. rest: the
+## rest frame's brightness (vignette.gdshader), 0 for none.
+##
+## DIVE is the original tunnel: clear to 36 degrees off centre, darkest past 59. A Quest 3 eye sees
+## to roughly 48 degrees above and below centre; on a 96-degree field (tools/comfort_shot.sh) it
+## took 50% of the light at the top and bottom edges and 43% at the sides, and the walk at 1 m/s
+## under it made Sam mildly sick (2026-10-11). WALK clears to 29 degrees and is at its darkest by
+## 49: 95% and 92% there, half dark from 39 degrees out. It starts closing at the field's edge the
+## moment you move and is shut by half the pace. Dynamic field-of-view restriction (Fernandes and
+## Feiner, IEEE 3DUI 2016) cut sickness without most users noticing it, and Meta's locomotion
+## guidance is vignettes during movement.
+const DIVE := {"clear": 0.62, "open": 1.65, "feather": 0.4, "alpha": 0.9, "gain": 1.0, "rest": 0.0}
+const WALK := {"clear": 0.5, "open": 0.95, "feather": 0.35, "alpha": 0.95, "gain": 2.0, "rest": 0.15}
+
 var motion := 0.0
+var profile: Dictionary = DIVE
+var _gain := 1.0
 var _mat := ShaderMaterial.new()
 
 
@@ -35,9 +54,27 @@ func _init() -> void:
 	visible = false
 
 
+## DIVE or WALK (above). Writes nothing when it is already the one in use.
+func set_profile(p: Dictionary) -> void:
+	if p == profile:
+		return
+	profile = p
+	_gain = float(p["gain"])
+	_mat.set_shader_parameter(&"clear_full", float(p["clear"]))
+	_mat.set_shader_parameter(&"clear_open", float(p["open"]))
+	_mat.set_shader_parameter(&"feather", float(p["feather"]))
+	_mat.set_shader_parameter(&"max_alpha", float(p["alpha"]))
+	_mat.set_shader_parameter(&"rest", float(p["rest"]))
+
+
+## The rest frame's colour: the theme's, so the lattice in the dark is the scene's own hue.
+func set_rest_tint(c: Vector3) -> void:
+	_mat.set_shader_parameter(&"rest_tint", c)
+
+
 ## 0 still, 1 full speed. Writes nothing when the value has not moved.
 func set_motion(m: float) -> void:
-	m = clampf(m, 0.0, 1.0)
+	m = clampf(m * _gain, 0.0, 1.0)
 	if m == motion:
 		return
 	motion = m

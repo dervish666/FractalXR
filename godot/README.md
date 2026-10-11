@@ -380,6 +380,9 @@ tools/selftest.sh          # verify the compute chain on this machine, writes .s
 tools/card_shot.sh         # render the first-launch controls card to .spike-out/help_card.png
 tools/flame_flicker.sh     # flame flicker per cause, frame to frame, scored by tools/flicker_metric.py
 tools/menu_shot.sh         # render and walk the wrist menu (galleries, bar, float) to .spike-out/menu_*.png
+tools/avenue_shot.sh       # TREE's avenue, WALK, FLOOR and COUNT through the real scene, shot from eye height
+tools/tree_look_shot.sh    # FLOOR and BARK shots, and their GPU time on this Mac (Vulkan), .spike-out/look_*.png
+tools/comfort_shot.sh      # the comfort tunnel's DIVE and WALK profiles measured on a grey world
 tools/thumb_bake.sh        # re-bake the menu's gallery pictures to art/thumbs/ (commit the result)
 tools/build.sh             # export build/fractalxr-debug.apk (debug-signed, the dev loop)
 tools/build.sh release     # export build/fractalxr.apk, signed for the store

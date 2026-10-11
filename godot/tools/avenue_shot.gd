@@ -125,8 +125,9 @@ func _init() -> void:
 		forest.build_us_sum / 1000.0 / maxf(1.0, forest.builds), forest.build_us_max / 1000.0,
 		forest.builds])
 
-	# ROOTS (T-51), switched on here and left on through the walk so recycling carries them.
-	bad.append_array(await _roots_standing(main, forest))
+	# FLOOR (T-55), each step shot standing; left on "both" through the walk so recycling carries
+	# the fallen leaves and the ground follows the glide.
+	bad.append_array(await _floor_standing(main, forest))
 
 	# Planting still works in the standing avenue.
 	if not main._plant_tree_at(Vector2(0.0, -6.0)):
@@ -210,11 +211,11 @@ func _init() -> void:
 		walked_last = forest.walked
 		if stalled >= WALK_STALL_FRAMES or walk_frames >= WALK_MAX_FRAMES:
 			_abort("the walk stopped short: %.1f of %.0f m after %d frames, no progress for %d, walk_held=%s (G lost? check window focus)" % [
-				forest.walked, WALK_GAME_S * Forest.WALK_SPEED, walk_frames, stalled,
+				forest.walked, WALK_GAME_S * forest.walk_pace(), walk_frames, stalled,
 				str(forest.walk_held)])
 			return
 		_sample(main, walking)
-		t_game = forest.walked / Forest.WALK_SPEED
+		t_game = forest.walked / forest.walk_pace()
 		var av: Node3D = forest.get_node("Avenue")
 		var ez: float = av.to_local(main.xr_camera.global_position).z
 		for t in forest.trees():
@@ -229,8 +230,10 @@ func _init() -> void:
 	for i in 40:
 		await process_frame   # real speed, so the vignette shot is at full motion
 		_sample(main, walking)
-	var vig_on: bool = main.vignette.visible and main.vignette.motion > 0.99
+	var vig_on: bool = main.vignette.visible and main.vignette.motion > 0.99 \
+		and main.vignette.profile == ComfortVignette.WALK
 	_save("walk_moving")
+	bad.append_array(_floor_follows(main, forest, "gliding"))
 	var moved: float = forest.get_node("Avenue").global_position.distance_to(root_before)
 	var walked_then := forest.walked
 	var eye_moved: float = main.xr_camera.global_position.distance_to(eye_before)
@@ -249,9 +252,11 @@ func _init() -> void:
 	_save("walk")
 	rows = _rows(forest)
 	bad.append_array(_check_rows(rows, 1e9))
-	# The roots went round with their trees: every recycled inner-row tree still edges the path.
-	bad.append_array(_roots_tips(forest, "after the walk"))
-	forest.set_roots(false)
+	# The fallen leaves went round with their trees, and the ground stayed under the viewer.
+	forest.apply_lod(main.xr_camera.global_position)
+	bad.append_array(_litter_check(main, forest, "after the walk"))
+	bad.append_array(_floor_follows(main, forest, "after the walk"))
+	main._set_tree_floor(0)
 
 	if forest.builds != builds_before:
 		bad.append("walking rebuilt %d trees (the pool must only move)" % (forest.builds - builds_before))
@@ -275,9 +280,12 @@ func _init() -> void:
 		bad.append("vignette still up after stopping")
 	if stop_s > Forest.WALK_EASE_S + 0.25:
 		bad.append("took %.2f s to stop" % stop_s)
+	if absf(forest.walk_pace() - Forest.WALK_PACES[Forest.WALK_PACE_DEFAULT]) > 1e-4:
+		bad.append("walked at %.2f m/s, not the default pace" % forest.walk_pace())
 	print("AVENUESHOT walk walked=%.1fm recycles=%d builds_during=%d seen_far=%.1f seen_behind=%.1f stop=%.2fs vignette_on=%s off=%s script_ms still %s; walking %s" % [
 		forest.walked, forest.recycles, forest.builds - builds_before, seen_far, -seen_behind,
 		stop_s, str(vig_on), str(vig_off), _ms(still), _ms(walking)])
+	bad.append_array(await _stick_walk(main, forest))
 
 	# WALK off keeps the avenue and lets the far end grow in; SOW brings the grove back.
 	main._toggle_walk()
@@ -312,88 +320,160 @@ func _init() -> void:
 	quit(0 if ok else 1)
 
 
-## ROOTS on the grown default avenue: the same views from eye height without and with, what they
-## cost, and where the tips land. Leaves ROOTS on.
-func _roots_standing(main, forest: Forest) -> Array[String]:
+## FLOOR on the grown default avenue: every step shot from eye height and looking down, what each
+## costs in triangles, how bright the floor band gets (it must stay dim: the void is the mood),
+## and the fallen leaves' placement. Leaves FLOOR on "both".
+func _floor_standing(main, forest: Forest) -> Array[String]:
 	var bad: Array[String] = []
 	var views := {"": Vector3(-3.0, 0.0, 0.0), "_down": Vector3(-20.0, 0.0, 0.0)}
-	var off := {}
-	for v in views:
-		main.xr_camera.rotation_degrees = views[v]
-		var dp := await _tree_draws(main, forest)
-		off[v] = dp.y
-		_save("avenue_noroots%s" % v)
-	var m0 := _meter(main)
-	for i in 60:
-		await process_frame
-		_sample(main, m0)
-	var t0 := Time.get_ticks_usec()
-	forest.set_roots(true)
-	var on_ms := float(Time.get_ticks_usec() - t0) / 1000.0
-	var on := {}
-	for v in views:
-		main.xr_camera.rotation_degrees = views[v]
-		var dp := await _tree_draws(main, forest)
-		on[v] = dp.y
-		_save("avenue_roots%s" % v)
-	var m1 := _meter(main)
-	for i in 60:
-		await process_frame
-		_sample(main, m1)
+	var tris := {}
+	var band := {}
+	for step in Forest.FLOOR_STEPS.size():
+		var name: String = Forest.FLOOR_STEPS[step]
+		var t0 := Time.get_ticks_usec()
+		main._set_tree_floor(step)
+		var switch_ms := float(Time.get_ticks_usec() - t0) / 1000.0
+		forest.apply_lod(main.xr_camera.global_position)
+		# The litter falls over the 2 s after a canopy is out; these trees are long grown, so it
+		# is down at once. A few frames for the LOD pass and the uniforms.
+		for i in 10:
+			await process_frame
+		for v in views:
+			main.xr_camera.rotation_degrees = views[v]
+			var dp := await _tree_draws(main, forest)
+			tris[name + v] = dp.y
+			await process_frame
+			_save("avenue_floor_%s%s" % [name, v])
+			band[name + v] = _band_luma(root.get_viewport().get_texture().get_image())
+		print("AVENUESHOT floor %-8s switch %.2fms; tris eye %d, down %d; floor band luma eye %.4f, down %.4f; litter on %d trees" % [
+			name, switch_ms, tris[name], tris[name + "_down"], band[name], band[name + "_down"],
+			forest.litter_drawn if forest.litter_on() else 0])
 	main.xr_camera.rotation_degrees = views[""]
-	var rooted := 0
-	var inner := 0
-	var segs := 0
-	for t in forest.trees():
-		if t.row == 0 or t.row == 1:
-			inner += 1
-		if t.roots_node() != null:
-			rooted += 1
-			segs += t.roots_node().multimesh.instance_count
-	print("AVENUESHOT roots rooted=%d of %d inner-row trees, %d root segments (%.0f a tree), switch %.2fms; tris in view %d -> %d (eye level), %d -> %d (looking down); draws +%d; script_ms off %s; on %s" % [
-		rooted, inner, segs, float(segs) / maxi(1, rooted), on_ms, off[""], on[""], off["_down"],
-		on["_down"], rooted, _ms(m0), _ms(m1)])
-	if rooted != inner or rooted == 0:
-		bad.append("ROOTS: %d of %d inner-row trees have roots" % [rooted, inner])
-	if on["_down"] <= off["_down"]:
-		bad.append("ROOTS: drew nothing more looking down (%d -> %d triangles)" % [off["_down"], on["_down"]])
-	bad.append_array(_roots_tips(forest, "standing"))
+	# The ground is two triangles and lights the floor band, dimly; the leaves add discs.
+	if band["fractal_down"] <= band["off_down"] + 0.002:
+		bad.append("FLOOR fractal: the floor band did not brighten (%.4f -> %.4f)" % [
+			band["off_down"], band["fractal_down"]])
+	if band["both_down"] > 0.12:
+		bad.append("FLOOR both: the floor band reached %.3f mean luma; the void has to stay dark" % band["both_down"])
+	if tris["leaves_down"] <= tris["off_down"]:
+		bad.append("FLOOR leaves: drew nothing more looking down (%d -> %d triangles)" % [
+			tris["off_down"], tris["leaves_down"]])
+	bad.append_array(_litter_check(main, forest, "standing"))
+	bad.append_array(_floor_follows(main, forest, "standing"))
 	return bad
 
 
-## Where the root tips land, in the avenue's frame: none inside ROOT_CLEAR of the centre line (the
-## walk stays open), every rooted tree reaching within 0.35 m of that edge (they do reach for the
-## middle), and the whole system on the floor (no root higher than 0.4 m).
-func _roots_tips(forest: Forest, when: String) -> Array[String]:
-	var bad: Array[String] = []
-	var av: Node3D = forest.get_node("Avenue")
-	var closest := INF
-	var furthest_short := 0.0
-	var top := 0.0
+## Mean luma of the image's lower third, where the floor is from eye height: every 4th pixel.
+func _band_luma(img: Image) -> float:
+	var w := img.get_width()
+	var h := img.get_height()
+	var sum := 0.0
 	var n := 0
+	for y in range(h * 2 / 3, h, 4):
+		for x in range(0, w, 4):
+			var c := img.get_pixel(x, y)
+			sum += 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+			n += 1
+	return sum / maxf(1.0, n)
+
+
+## The fallen leaves: no more than LITTER_NEAR trees carry them, all within LITTER_FAR, each layer
+## centred on its own trunk, and every shape reaching the trunk on all sides (no sector of the
+## inner quarter of the crown left bare). Nothing above 2 cm.
+func _litter_check(main, forest: Forest, when: String) -> Array[String]:
+	var bad: Array[String] = []
+	var cam: Vector3 = main.xr_camera.global_position
+	var shown := 0
+	var furthest := 0.0
+	var off_trunk := 0.0
 	for t in forest.trees():
-		var r: MultiMeshInstance3D = t.roots_node()
-		if r == null or not t.is_inside_tree():
+		var l: MultiMeshInstance3D = t.litter_node()
+		if l == null or not l.is_visible_in_tree():
 			continue
-		n += 1
-		var xf: Transform3D = av.global_transform.affine_inverse() * r.global_transform
-		var near_x := INF
-		var shape := TreeRoots.shape(t.seed_value)
-		for tip in shape["tips"]:
-			near_x = minf(near_x, absf((xf * tip).x))
-		closest = minf(closest, near_x)
-		furthest_short = maxf(furthest_short, near_x - Forest.ROOT_CLEAR)
-		top = maxf(top, (xf * Vector3(0.0, float(shape["top"]), 0.0)).y)
-	print("AVENUESHOT roots %s: %d rooted, nearest tip %.2f m from the centre line (clear %.2f), the shortest tree stops %.2f m short of the edge, highest %.2f m" % [
-		when, n, closest, Forest.ROOT_CLEAR, furthest_short, top])
-	if n == 0:
-		bad.append("ROOTS %s: no rooted trees" % when)
-	elif closest < Forest.ROOT_CLEAR - 0.01:
-		bad.append("ROOTS %s: a tip %.2f m from the centre line blocks the path" % [when, closest])
-	elif furthest_short > 0.35:
-		bad.append("ROOTS %s: a tree's roots stop %.2f m short of the path" % [when, furthest_short])
-	elif top > 0.4:
-		bad.append("ROOTS %s: roots reach %.2f m up" % [when, top])
+		shown += 1
+		furthest = maxf(furthest, cam.distance_to(t.global_position))
+		off_trunk = maxf(off_trunk, l.position.length())
+	var sectors_bare := 0
+	var top := 0.0
+	var inner := 1.0
+	for v in TreeLitter.VARIANTS:
+		var mm := TreeLitter.shape(v)
+		var hit := PackedInt32Array()
+		hit.resize(8)
+		for i in mm.instance_count:
+			var p := mm.get_instance_transform(i).origin
+			var r := Vector2(p.x, p.z).length()
+			inner = minf(inner, r)
+			top = maxf(top, p.y)
+			if r < 0.25:
+				hit[int(posmod(int(floor((atan2(p.z, p.x) + PI) / TAU * 8.0)), 8))] += 1
+		for k in 8:
+			if hit[k] == 0:
+				sectors_bare += 1
+	print("AVENUESHOT litter %s: on %d trees (cap %d), furthest %.1f m (cap %.0f), off its trunk %.3f m; shapes: innermost disc at %.3f of the reach, %d bare sectors of %d, highest %.4f" % [
+		when, shown, Forest.LITTER_NEAR, furthest, Forest.LITTER_FAR, off_trunk, inner,
+		sectors_bare, 8 * TreeLitter.VARIANTS, top])
+	if shown == 0:
+		bad.append("FLOOR leaves %s: no tree carries any" % when)
+	if shown > Forest.LITTER_NEAR:
+		bad.append("FLOOR leaves %s: %d trees carry litter (cap %d)" % [when, shown, Forest.LITTER_NEAR])
+	if furthest > Forest.LITTER_FAR + 2.0:
+		bad.append("FLOOR leaves %s: litter on a tree %.1f m away" % [when, furthest])
+	if off_trunk > 1e-3:
+		bad.append("FLOOR leaves %s: a litter layer sits %.3f m off its trunk" % [when, off_trunk])
+	if sectors_bare > 0:
+		bad.append("FLOOR leaves: %d sectors of the trunk's surround have no leaves" % sectors_bare)
+	if top > 0.02:
+		bad.append("FLOOR leaves: a disc %.3f up" % top)
+	return bad
+
+
+## The fractal ground re-centres on the viewer, in the avenue's frame, every frame it shows.
+func _floor_follows(main, forest: Forest, when: String) -> Array[String]:
+	var bad: Array[String] = []
+	var f: ForestFloor = forest.floor_node()
+	if not forest.ground_on():
+		return bad
+	var e: Vector3 = forest.get_node("Avenue").to_local(main.xr_camera.global_position)
+	var off := Vector2(f.position.x - e.x, f.position.z - e.z).length()
+	print("AVENUESHOT floor %s: shown %s, centre %.3f m from the viewer" % [when, str(f.is_visible_in_tree()), off])
+	if not f.is_visible_in_tree():
+		bad.append("FLOOR %s: the ground is not showing" % when)
+	elif off > 0.05:
+		bad.append("FLOOR %s: the ground's centre is %.2f m from the viewer" % [when, off])
+	return bad
+
+
+## WALK's right stick: held forward it glides like the trigger, and the cloud does not move (the
+## old push shoved the whole avenue at 1.5 m/s with no vignette). The desktop's up arrow is the stick.
+func _stick_walk(main, forest: Forest) -> Array[String]:
+	var bad: Array[String] = []
+	var cloud_before: Transform3D = main.cloud.global_transform
+	var w0 := forest.walked
+	_key(KEY_UP, true)
+	var held := false
+	var vig := 0.0
+	# A second of real time, held: past the ease, so the glide reaches its pace.
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 1000:
+		await process_frame
+		held = held or forest.walk_held
+		vig = maxf(vig, main.vignette.motion)
+	_key(KEY_UP, false)
+	for i in 40:
+		await process_frame
+	var cloud_moved: float = main.cloud.global_transform.origin.distance_to(cloud_before.origin)
+	var turned: bool = not main.cloud.global_transform.basis.is_equal_approx(cloud_before.basis)
+	print("AVENUESHOT stick walk: held=%s walked %.2f m, vignette peak %.2f, cloud moved %.3f m, turned %s, held after release %s" % [
+		str(held), forest.walked - w0, vig, cloud_moved, str(turned), str(forest.walk_held)])
+	if not held or forest.walked - w0 < 0.4:
+		bad.append("the right stick did not glide in WALK (walked %.2f m)" % (forest.walked - w0))
+	if cloud_moved > 1e-4 or turned:
+		bad.append("the right stick still moved the avenue in WALK (%.3f m, turned %s)" % [cloud_moved, str(turned)])
+	if vig < 0.99:
+		bad.append("the stick's glide ran without the full tunnel (%.2f)" % vig)
+	if forest.walk_held:
+		bad.append("still walking after the stick was let go")
 	return bad
 
 
@@ -493,6 +573,33 @@ func _count_step(main, forest: Forest, i: int, top: bool) -> Array[String]:
 		if computes > FractalTree.SHAPE_NAMES.size() * int(st["variants"]):
 			bad.append("COUNT %d: %d shape computes for a library of %d" % [int(st["n"]), computes,
 				FractalTree.SHAPE_NAMES.size() * int(st["variants"])])
+		bad.append_array(await _top_floor_bark(main, forest, prims, draws))
+	return bad
+
+
+## FLOOR "both" and BARK veins on the top step: what they add in triangles and draws, the script
+## frames under them, and a shot. Back to off and plain after.
+func _top_floor_bark(main, forest: Forest, prims0: int, draws0: int) -> Array[String]:
+	var bad: Array[String] = []
+	var n := int(forest.step()["n"])
+	main._set_tree_floor(3)
+	main._set_tree_bark(1)
+	forest.apply_lod(main.xr_camera.global_position)
+	var m := _meter(main)
+	for k in 60:
+		await process_frame
+		_sample(main, m)
+	var dp := await _tree_draws(main, forest)
+	var draws: int = 2 * forest.whole_drawn() + 2 * forest.far_batch().batch_count() \
+		+ forest.litter_drawn + 1
+	_save("avenue_%d_floor_bark" % n)
+	print("AVENUESHOT count %d floor both + bark veins: prims %d -> %d (+%d), draws %d -> %d (+%d: litter on %d trees, ground 1); script %s" % [
+		n, prims0, dp.y, dp.y - prims0, draws0, draws, draws - draws0, forest.litter_drawn, _ms(m)])
+	if forest.litter_drawn > Forest.LITTER_NEAR:
+		bad.append("COUNT %d: litter on %d trees (cap %d)" % [n, forest.litter_drawn, Forest.LITTER_NEAR])
+	bad.append_array(_caps("COUNT %d floor+bark" % n, [m]))
+	main._set_tree_floor(0)
+	main._set_tree_bark(0)
 	return bad
 
 
