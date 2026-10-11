@@ -68,6 +68,27 @@ All notable changes to FractalXR are documented here. Format based on
   shows the new scheme, with the menu button drawn and each stick's click named.
 
 ### Fixed
+- **The flame flickers far less while you look at it.** Each point's brightness used to
+  depend on where its centre fell inside a pixel: full at the middle, fading out, and nothing
+  at all in the corners (a fifth of all positions). A Quest head is never still, so every
+  point re-rolled its brightness every frame, and each eye rolled its own. Points are now
+  drawn as a half-pixel square that lands on the pixels it overlaps in proportion, so a point
+  is equally bright wherever it falls and slides between pixels instead of jumping. Average
+  brightness is unchanged and glow is untouched. On a desktop stand-in for the headset (the
+  Quest's pixel density, a one-degree-a-second head drift, `godot/tools/flame_flicker.sh`)
+  the share of the flame's light that changes from one frame to the next fell from 14.3% to
+  5.8% with the cloud still, and from 16.6% to 9.2% mid-transition. A new AA tile under
+  FLAME > LOOK > MORE sets the square (0.5 px; 0 is crisper and hops, 1 smoother and softer)
+  and has the old kernel as "old", to compare in the headset.
+- **Transitions start and land without a fizz.** A transition moved a sixth of the cloud
+  every frame from its first frame to its last, then iterated every particle every frame for
+  half a second as it landed: the most flicker the flame made, just as the shape stops
+  moving. The chaos game now moves fewer particles while the genome moves slowly, one
+  twenty-fourth a frame at either end rising to a sixth through the middle, taken in turn so
+  no particle falls further behind the shape than before, and the landing settles at one
+  twenty-fourth a frame with the framing held still. On the flicker harness the first and
+  last tenth of a transition went from 9.2% and 10.8% of the light changing per frame to 6.3%
+  and 6.4%, and the landing from 18% to 2.7%.
 - **BRIGHT's bottom two detents do something.** The point shader's brightness was floored at
   0.05, so 0.01, 0.02 (the default) and 0.05 all drew at 0.05 and the first two clicks of
   BRIGHT changed nothing. The floor is gone and the default is now 0.05, the value that was

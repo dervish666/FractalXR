@@ -17,6 +17,11 @@ const RESEED_PROB := 0.0015
 var reseed_prob := RESEED_PROB
 ## 1 = every particle every frame (maximum flicker), 4 = a quarter per frame.
 var update_mod := 4
+## Of those update_mod slabs, how many move per frame. They are taken in turn from a pointer
+## that runs round all of them, so a transition can vary its rate here without the slabs
+## re-partitioning under a particle and leaving it waiting (main.gd, _morph_slabs).
+var slabs_per_frame := 1
+var _slab := 0
 
 var _preset: Dictionary = {}
 var _num_t := 1
@@ -38,6 +43,10 @@ func is_frozen() -> bool:
 
 func update_stride() -> int:
 	return maxi(1, update_mod)
+
+
+func update_slabs() -> int:
+	return clampi(slabs_per_frame, 1, update_stride())
 
 
 func set_preset(p: Dictionary) -> void:
@@ -179,8 +188,16 @@ func params_bytes(count: int, frame: int, seeding: bool) -> PackedByteArray:
 	b.encode_s32(24, 1 if seeding else 0)
 	# The seed pass must touch every particle, so staggering is disabled for it.
 	b.encode_s32(28, 1 if seeding else update_mod)
-	b.encode_s32(32, 0 if seeding else (frame % maxi(1, update_mod)))
-	b.encode_s32(36, 0)
+	if seeding:
+		b.encode_s32(32, 0)
+		b.encode_s32(36, 1)
+	else:
+		var mod := update_stride()
+		var k := update_slabs()
+		_slab %= mod
+		b.encode_s32(32, _slab)
+		b.encode_s32(36, k)
+		_slab = (_slab + k) % mod
 	return b
 
 

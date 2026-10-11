@@ -69,6 +69,12 @@ func update_stride() -> int:
 	return 1
 
 
+## How many of those slabs move in one frame. The shader takes them one after another from its
+## phase, so the host dispatches this many slabs' worth.
+func update_slabs() -> int:
+	return 1
+
+
 ## Per-type storage buffer contents. Return an empty array for a type that needs none.
 func param_buffer_floats() -> PackedFloat32Array:
 	return PackedFloat32Array()
@@ -166,7 +172,8 @@ func encode(cl: int, count: int, frame: int, seeding: bool) -> void:
 		return
 	var n := _tex_size * _tex_size if seeding else count
 	var stride := 1 if seeding else maxi(1, update_stride())
-	var invocations := int(ceil(float(n) / float(stride)))
+	var slabs := 1 if seeding else clampi(update_slabs(), 1, stride)
+	var invocations := int(ceil(float(n) / float(stride))) * slabs
 	_rd.compute_list_bind_compute_pipeline(cl, _pipeline)
 	_rd.compute_list_bind_uniform_set(cl, _uniform_set, 0)
 	_rd.compute_list_set_push_constant(cl, params_bytes(n, frame, seeding), push_constant_size())

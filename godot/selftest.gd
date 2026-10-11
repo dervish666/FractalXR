@@ -49,6 +49,10 @@ func _init() -> void:
 		if msg != "":
 			failures.append(msg)
 
+	var slab_msg := _check_slabs(rd, cloud, lib)
+	if slab_msg != "":
+		failures.append(slab_msg)
+
 	# The bake is three new compute shaders and a prefix sum, which is exactly the shape
 	# of thing that silently writes zeros. A visual check cannot tell "no anisotropy"
 	# from "the scan is off by a block", so check the numbers here.
@@ -288,6 +292,44 @@ func _check(rd: RenderingDevice, cloud: ParticleCloud, name: String) -> String:
 		return "%s: flat in z (%.4f) — missing a z-injector?" % [name, extent.z]
 	print("  %-10s extent %.2f x %.2f x %.2f   nan=%d far=%d of %d" % [
 		name, extent.x, extent.y, extent.z, nan_count, far_count, n])
+	return ""
+
+
+## A transition moves a varying number of its 24 slabs a frame (main.gd, _morph_slabs), taken
+## in turn from a pointer. Whatever the counts, each cycle has to visit every slab exactly once:
+## one moved twice and another skipped looks like nothing much in a picture, so count which
+## particles moved after each frame against the slabs scheduled so far.
+func _check_slabs(rd: RenderingDevice, cloud: ParticleCloud, lib: PresetLibrary) -> String:
+	var src := FlameSource.new(lib.at(0))
+	if not cloud.set_source(src):
+		return "slabs: %s" % cloud.get_error()
+	src.update_mod = 1
+	for f in 30:
+		cloud.iterate()
+	src.reseed_prob = 0.0
+	src.update_mod = 24
+	var before := rd.texture_get_data(cloud.state_texture_rid(), 0)
+	var done := 0
+	var shares: Array[String] = []
+	for k in [1, 2, 3, 4, 4, 4, 3, 2, 1]:
+		src.slabs_per_frame = k
+		cloud.iterate()
+		done += k
+		var now := rd.texture_get_data(cloud.state_texture_rid(), 0)
+		var moved := 0
+		var n := 0
+		var i := 0
+		while i < COUNT:
+			n += 1
+			if now.decode_float(i * 16) != before.decode_float(i * 16):
+				moved += 1
+			i += 97
+		var share := float(moved) / float(n)
+		shares.append("%.3f" % share)
+		if absf(share - float(done) / 24.0) > 0.01:
+			return "slabs: after %d of 24, %.3f of the cloud had moved, want %.3f" % [
+				done, share, float(done) / 24.0]
+	print("  slabs      1+2+3+4+4+4+3+2+1 of 24 moved %s of the cloud" % ", ".join(shares))
 	return ""
 
 

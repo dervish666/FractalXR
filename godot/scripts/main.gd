@@ -27,7 +27,17 @@ const PARTICLE_STEPS := [0.25, 0.35, 0.45, 0.6, 0.15]
 const POINT_STEPS := [1.0, 1.25, 1.5, 2.0]
 # Softer, not tighter. A point that fades across its whole sprite changes weight
 # smoothly as sub-pixel position drifts; a hard-edged one flips on and off.
+# Only the legacy kernel (AA "old") draws with these; the area kernel keeps each step's
+# average brightness from them and nothing else.
 const SHARPNESS := [3.0, 3.0, 3.5, 4.0]
+# AA: the side of the little square each point is drawn as at SIZE 1.0, in pixels
+# (points.gdshader, point_kernel 1). Each point now lands equally bright wherever it falls
+# inside a pixel, which is what stops the flame flickering as the head moves; the side sets
+# how smoothly a point crosses from one pixel to the next. 0.5 is the measured knee
+# (tools/flame_flicker.sh). 0.0 is the crispest and hops; 1.0 is smoothest and softest; -1 is
+# the old kernel, for comparing in the headset.
+const AA_STEPS := [0.5, 0.0, 1.0, -1.0]
+var aa_idx := 0
 # Splat radius in metres, before the cloud's own scale. Bulbs want the larger end: a
 # distance-estimate shell is a surface, and a surface wants overlapping discs.
 const SPLAT_STEPS := [0.006, 0.010, 0.016, 0.026, 0.042, 0.003]
@@ -70,15 +80,23 @@ const STABILITY := [0, 1, 2, 4, 8, 16]   # 1/n of the cloud per frame; 0 = froze
 # particles are already on the final attractor. Only a fresh load needs a long settle.
 const CONVERGE_FRAMES := 150             # ~2s at 72Hz, for a cold start
 const FUSE_FRAMES := 5                   # reseed-free tail before a freeze (5 x 4 iterations)
-const SETTLE_FRAMES := 30                # after a morph, which has already converged it
 const MEASURE_EVERY := 12                # frames between framing updates while moving
-# A sixth of the cloud per frame during a transition. This is NOT a performance trade:
-# the cost is the same either way. It is sampling. Every particle the chaos game touches
-# teleports elsewhere on the attractor, so the more of them that move per frame, the more
-# of the image is uncorrelated frame to frame, which reads as a loss of detail. Over a
-# six-second morph a sixth still gives each particle around fifty updates, far more than
-# enough to track a genome changing that slowly.
+# A sixth of the cloud per frame at the height of a transition, less towards either end
+# (_morph_slabs: 4 of 24 slabs down to 1). This is sampling, not performance. Every particle
+# the chaos game touches teleports elsewhere on the attractor, so the more of them that move
+# per frame, the more of the image changes frame to frame, which reads as flicker and a loss
+# of detail. The price of moving fewer is lag: a particle updated every n frames shows the
+# genome as it was up to n frames ago. Over a six-second morph a sixth still gives each
+# particle around fifty updates, far more than enough to track a genome changing that slowly.
 const MORPH_UPDATE_MOD := 6
+const MORPH_STRIDE_MAX := 24
+# After a transition lands: every particle gets SETTLE_UPDATES reseed-free updates at the
+# calmest stride, the twenty fused iterations a cold start gets (FUSE_FRAMES x 4). It used to
+# be thirty frames of every particle every frame, the most flicker the flame ever made
+# (tools/flame_flicker.sh: 18% of the light changing per frame, against 2.7% now), at the
+# moment the shape stops moving and flicker shows most.
+const SETTLE_UPDATES := 5
+const SETTLE_FRAMES := SETTLE_UPDATES * MORPH_STRIDE_MAX
 # Ambient tumble. Rigid rotation is temporally coherent, so it adds life without the
 # per-pixel churn that iterating the chaos game causes. Two near-coprime rates on
 # different axes read as a slow swirl rather than a turntable.
@@ -276,6 +294,8 @@ var bright_idx := 2        # 0.05
 var render_idx := 2        # full recommended eye buffer; sharpness matters more than the ~1ms
 var stability_idx := 0     # frozen: a settled cloud is dramatically cleaner
 var _converge := CONVERGE_FRAMES
+## True while _converge is counting down a transition's settle rather than a cold start.
+var _settling := false
 var spin := true
 var exposure_idx := 0      # measured on-device as the best-looking end of the range
 var iter_idx := 2          # 4 iterations
@@ -545,6 +565,7 @@ func _load_preset(i: int) -> bool:
 	# set_source reseeds into a ball; without a fresh converge window a frozen stability
 	# (the default) never iterates it, and a flame loaded after a bulb stays a ball.
 	_converge = CONVERGE_FRAMES
+	_settling = false
 	_apply_tone(preset)
 	# set_source touches the RenderingDevice, so it has to happen on the render thread.
 	# Failures surface through cloud.get_error() on a later frame rather than here.
@@ -815,6 +836,12 @@ func _build_menu() -> void:
 			false, _vis_flame).stepping(func(d: int):
 				point_idx = wrapi(point_idx + d, 0, POINT_STEPS.size())
 				_apply_point_look()).slider(func(): return point_idx, POINT_STEPS.size()),
+		WristMenu.Item.new("look", "AA",
+			func(): return "old" if AA_STEPS[aa_idx] < 0.0 else "%.1f px" % AA_STEPS[aa_idx],
+			func(): aa_idx = (aa_idx + 1) % AA_STEPS.size(); _apply_point_look(),
+			false, _vis_flame).stepping(func(d: int):
+				aa_idx = wrapi(aa_idx + d, 0, AA_STEPS.size())
+				_apply_point_look()).minor(),
 		WristMenu.Item.new("colour", "THEME",
 			func():
 				if recolor_on_drift:
@@ -1201,6 +1228,7 @@ func _morph_to_preset(i: int) -> void:
 	_morph_plan = Morph.plan(_morph_from, _morph_to)
 	_morph_t = 0.0
 	_converge = CONVERGE_FRAMES
+	_settling = false
 
 
 ## Generate a flame, add it to the gallery, and morph to it. Generated flames are
@@ -2067,17 +2095,31 @@ func _sync_iteration() -> void:
 		return
 	# A frozen cloud that is morphing would keep the old attractor's points while the
 	# genome moved out from under them, so a morph always forces iteration.
+	src.slabs_per_frame = 1
 	if _morph_t < 1.0:
-		src.update_mod = MORPH_UPDATE_MOD
+		src.update_mod = MORPH_STRIDE_MAX
+		src.slabs_per_frame = _morph_slabs(_morph_t)
 	elif _converge > 0:
-		src.update_mod = 1
+		src.update_mod = MORPH_STRIDE_MAX if _settling else 1
 	else:
 		src.update_mod = STABILITY[stability_idx]
 	# flam3 fuses 15-20 unplotted iterations after a reseed; here a reseeded point is
 	# stored after whatever is left of the frame. Stop reseeding for the last few settle
 	# frames so anything that will be frozen has had at least FUSE_FRAMES * iterations.
-	var fusing := _morph_t >= 1.0 and _converge > 0 and _converge <= FUSE_FRAMES
+	# A transition's settle is reseed-free throughout: SETTLE_UPDATES updates of each particle.
+	var fusing := _morph_t >= 1.0 and _converge > 0 and (_settling or _converge <= FUSE_FRAMES)
 	src.reseed_prob = 0.0 if fusing else FlameSource.RESEED_PROB
+
+
+## Slabs of MORPH_STRIDE_MAX the chaos game moves per frame during a transition. smoothstep
+## moves the genome fastest at the middle and barely at either end, where the flicker shows
+## most, so the rate follows the speed and the lag (frames between a particle's updates x the
+## genome's speed) stays at what a sixth a frame costs at the peak: 4 of 24 through the middle,
+## 2 a tenth of the way in or out, 1 at the very ends.
+func _morph_slabs(t: float) -> int:
+	var speed := 6.0 * t * (1.0 - t)   # smoothstep's slope: 1.5 at the middle
+	var per_peak := float(MORPH_STRIDE_MAX) / float(MORPH_UPDATE_MOD) / 1.5
+	return clampi(ceili(speed * per_peak), 1, MORPH_STRIDE_MAX / MORPH_UPDATE_MOD)
 
 
 func _tick_morph(delta: float) -> void:
@@ -2105,6 +2147,11 @@ func _tick_morph(delta: float) -> void:
 		cloud.set_framing(
 			(fa["center"] as Vector3).lerp(fb["center"] as Vector3, k),
 			lerpf(fa["fit"], fb["fit"], k))
+	elif _settling and _converge > 0 and b_known:
+		# Landed on a known framing: hold it through the settle. Measuring every 12 frames
+		# here eased the whole picture toward a fresh, noisy estimate each time (a pixel over
+		# the settle on the flicker harness), and the settle's own measure still refreshes it.
+		pass
 	elif _should_iterate():
 		_measure_countdown -= 1
 		if _measure_countdown <= 0:
@@ -2126,10 +2173,11 @@ func _tick_morph(delta: float) -> void:
 	var was := _morph_t
 	_morph_t = minf(1.0, _morph_t + delta / MORPH_STEPS[morph_idx])
 	if was < 1.0 and _morph_t >= 1.0:
-		# The morph already iterated it onto the final genome; a brief settle is enough.
+		# The morph already iterated it onto the final genome; a calm settle is enough.
 		# The old two-second convergence meant two seconds of every particle re-rolling
 		# after each transition, which read as a churn before it went still.
 		_converge = SETTLE_FRAMES
+		_settling = true
 	var src := cloud.source as FlameSource
 	if _morph_t >= 1.0 or _morph_plan == null:
 		# Land on the real genome, not an interpolated copy of it: everything that reads
@@ -2777,6 +2825,7 @@ func _handle_input(delta: float) -> void:
 	if _key(KEY_S) and not ground_mode and not tree_mode and not ifs_mode:
 		cloud.request_seed()
 		_converge = CONVERGE_FRAMES
+		_settling = false
 	if _key(KEY_6):
 		_step_detail(1)
 
@@ -2899,6 +2948,8 @@ func _apply_point_look() -> void:
 	cloud.set_coverage(BULB_COVERAGE[coverage_idx] if bulb_mode else 0.0)
 	cloud.set_point_size(POINT_STEPS[point_idx])
 	cloud.set_sharpness(SHARPNESS[point_idx])
+	cloud.set_point_kernel(0 if AA_STEPS[aa_idx] < 0.0 else 1)
+	cloud.set_aa_width(maxf(0.0, AA_STEPS[aa_idx]))
 	cloud.set_brightness(BRIGHT_STEPS[bright_idx])
 	march.set_palette_cycles(COLOUR_CYCLES[colour_idx])
 	march.set_gain(BRIGHT_STEPS[bright_idx] * MARCH_GAIN)
