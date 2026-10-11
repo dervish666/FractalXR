@@ -98,6 +98,17 @@ All notable changes to FractalXR are documented here. Format based on
   than stepping the gallery behind the panel.
 
 ### Added
+- **LINES: a bulb as stacked contour rings (spike, T-49).** A LINES tile on BULB > LOOK
+  steps off / 24 / 48 / 96 rings. Each particle snaps to the nearest of that many horizontal
+  planes and Newton-projects inside it, so the shell becomes a stack of closed rings, like a
+  topographic model. The rings are cut from the bulb inflated by 0.3 of the ring spacing,
+  which rounds off crinkles finer than the rings can show: cut from the true surface they
+  read as worms from every angle but side-on. Each splat is drawn as a thin stroke along its
+  ring, coloured by height, with back faces faded so the far side does not show through the
+  gaps. Same 147k particles, bake and sort; at 48 rings the splats rasterise about a fifth of
+  the pixels they do as a shell. Not yet seen on the headset. `godot/tools/line_shot.sh`
+  renders LINES against splats from three angles and dumps the particles for
+  `godot/tools/line_check.py` (ring closure and a fill model).
 - **TREE avenues.** Two new entries in TREE's MAKE card, beside SOW. AVENUE sows two rows
   of trees from your feet to 50 m down the way you face, 2.5-3 m either side of the path
   and 3-4 m apart. They sprout as a wave rolling away from you, and each crown's colour

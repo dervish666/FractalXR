@@ -567,6 +567,17 @@ func set_coverage(c: float) -> void:
 	_apply_bake_scale()
 
 
+## LINES: draw every splat as a stretch of its slice ring. axis is the slice axis in state
+## space (zero is off, ordinary splats); width is the line's sigma across, in state units;
+## stretch is the length along the ring as a multiple of the splat's baked axis, and cap
+## the most that length may be, in line widths.
+func set_lines(axis: Vector3, width: float, stretch: float, cap: float) -> void:
+	_splat_material.set_shader_parameter("line_axis", axis)
+	_splat_material.set_shader_parameter("line_width", maxf(1e-6, width))
+	_splat_material.set_shader_parameter("line_stretch", stretch)
+	_splat_material.set_shader_parameter("line_cap", cap)
+
+
 func _apply_bake_scale() -> void:
 	if _bake_mean <= 0.0:
 		return
