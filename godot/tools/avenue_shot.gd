@@ -125,6 +125,9 @@ func _init() -> void:
 		forest.build_us_sum / 1000.0 / maxf(1.0, forest.builds), forest.build_us_max / 1000.0,
 		forest.builds])
 
+	# ROOTS (T-51), switched on here and left on through the walk so recycling carries them.
+	bad.append_array(await _roots_standing(main, forest))
+
 	# Planting still works in the standing avenue.
 	if not main._plant_tree_at(Vector2(0.0, -6.0)):
 		bad.append("could not plant in the standing avenue")
@@ -201,6 +204,7 @@ func _init() -> void:
 	var walked_last := forest.walked
 	while t_game < WALK_GAME_S:
 		await process_frame
+		_hold_g(forest)
 		walk_frames += 1
 		stalled = stalled + 1 if forest.walked <= walked_last else 0
 		walked_last = forest.walked
@@ -245,6 +249,9 @@ func _init() -> void:
 	_save("walk")
 	rows = _rows(forest)
 	bad.append_array(_check_rows(rows, 1e9))
+	# The roots went round with their trees: every recycled inner-row tree still edges the path.
+	bad.append_array(_roots_tips(forest, "after the walk"))
+	forest.set_roots(false)
 
 	if forest.builds != builds_before:
 		bad.append("walking rebuilt %d trees (the pool must only move)" % (forest.builds - builds_before))
@@ -303,6 +310,91 @@ func _init() -> void:
 		print("AVENUESHOT problem: ", b)
 	print("AVENUESHOT %s" % ("PASS" if ok else "FAIL"))
 	quit(0 if ok else 1)
+
+
+## ROOTS on the grown default avenue: the same views from eye height without and with, what they
+## cost, and where the tips land. Leaves ROOTS on.
+func _roots_standing(main, forest: Forest) -> Array[String]:
+	var bad: Array[String] = []
+	var views := {"": Vector3(-3.0, 0.0, 0.0), "_down": Vector3(-20.0, 0.0, 0.0)}
+	var off := {}
+	for v in views:
+		main.xr_camera.rotation_degrees = views[v]
+		var dp := await _tree_draws(main, forest)
+		off[v] = dp.y
+		_save("avenue_noroots%s" % v)
+	var m0 := _meter(main)
+	for i in 60:
+		await process_frame
+		_sample(main, m0)
+	var t0 := Time.get_ticks_usec()
+	forest.set_roots(true)
+	var on_ms := float(Time.get_ticks_usec() - t0) / 1000.0
+	var on := {}
+	for v in views:
+		main.xr_camera.rotation_degrees = views[v]
+		var dp := await _tree_draws(main, forest)
+		on[v] = dp.y
+		_save("avenue_roots%s" % v)
+	var m1 := _meter(main)
+	for i in 60:
+		await process_frame
+		_sample(main, m1)
+	main.xr_camera.rotation_degrees = views[""]
+	var rooted := 0
+	var inner := 0
+	var segs := 0
+	for t in forest.trees():
+		if t.row == 0 or t.row == 1:
+			inner += 1
+		if t.roots_node() != null:
+			rooted += 1
+			segs += t.roots_node().multimesh.instance_count
+	print("AVENUESHOT roots rooted=%d of %d inner-row trees, %d root segments (%.0f a tree), switch %.2fms; tris in view %d -> %d (eye level), %d -> %d (looking down); draws +%d; script_ms off %s; on %s" % [
+		rooted, inner, segs, float(segs) / maxi(1, rooted), on_ms, off[""], on[""], off["_down"],
+		on["_down"], rooted, _ms(m0), _ms(m1)])
+	if rooted != inner or rooted == 0:
+		bad.append("ROOTS: %d of %d inner-row trees have roots" % [rooted, inner])
+	if on["_down"] <= off["_down"]:
+		bad.append("ROOTS: drew nothing more looking down (%d -> %d triangles)" % [off["_down"], on["_down"]])
+	bad.append_array(_roots_tips(forest, "standing"))
+	return bad
+
+
+## Where the root tips land, in the avenue's frame: none inside ROOT_CLEAR of the centre line (the
+## walk stays open), every rooted tree reaching within 0.35 m of that edge (they do reach for the
+## middle), and the whole system on the floor (no root higher than 0.4 m).
+func _roots_tips(forest: Forest, when: String) -> Array[String]:
+	var bad: Array[String] = []
+	var av: Node3D = forest.get_node("Avenue")
+	var closest := INF
+	var furthest_short := 0.0
+	var top := 0.0
+	var n := 0
+	for t in forest.trees():
+		var r: MultiMeshInstance3D = t.roots_node()
+		if r == null or not t.is_inside_tree():
+			continue
+		n += 1
+		var xf: Transform3D = av.global_transform.affine_inverse() * r.global_transform
+		var near_x := INF
+		var shape := TreeRoots.shape(t.seed_value)
+		for tip in shape["tips"]:
+			near_x = minf(near_x, absf((xf * tip).x))
+		closest = minf(closest, near_x)
+		furthest_short = maxf(furthest_short, near_x - Forest.ROOT_CLEAR)
+		top = maxf(top, (xf * Vector3(0.0, float(shape["top"]), 0.0)).y)
+	print("AVENUESHOT roots %s: %d rooted, nearest tip %.2f m from the centre line (clear %.2f), the shortest tree stops %.2f m short of the edge, highest %.2f m" % [
+		when, n, closest, Forest.ROOT_CLEAR, furthest_short, top])
+	if n == 0:
+		bad.append("ROOTS %s: no rooted trees" % when)
+	elif closest < Forest.ROOT_CLEAR - 0.01:
+		bad.append("ROOTS %s: a tip %.2f m from the centre line blocks the path" % [when, closest])
+	elif furthest_short > 0.35:
+		bad.append("ROOTS %s: a tree's roots stop %.2f m short of the path" % [when, furthest_short])
+	elif top > 0.4:
+		bad.append("ROOTS %s: roots reach %.2f m up" % [when, top])
+	return bad
 
 
 ## One COUNT step, standing: sow, grow at speed, settle, measure, shoot.
@@ -441,6 +533,7 @@ func _count_walk(main, forest: Forest) -> Array[String]:
 	Engine.time_scale = SPEED * 2.0
 	while forest.walked - w0 < TOP_WALK_M:
 		await process_frame
+		_hold_g(forest)
 		frames += 1
 		stalled = stalled + 1 if forest.walked <= walked_last else 0
 		walked_last = forest.walked
@@ -635,6 +728,15 @@ func _grown_frac(forest: Forest) -> float:
 		if t.built and t.grow_t > t.grow_s + 1.0:
 			n += 1
 	return float(n) / maxf(1.0, forest.tree_count())
+
+
+## Godot releases every held key when the window loses focus, and on a shared desktop something
+## else takes it now and then (two walks aborted at 31 and 66 m that way). Pressing G again
+## whenever the walk stops reading it as held keeps the run about the forest; the stall check
+## still catches a walk that will not move with G down.
+func _hold_g(forest: Forest) -> void:
+	if not forest.walk_held:
+		_key(KEY_G, true)
 
 
 func _key(code: Key, down: bool) -> void:
