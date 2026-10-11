@@ -691,6 +691,13 @@ func _build_menu() -> void:
 			func(): return "%d trees" % forest.tree_count(),
 			func(): _clear_forest(),
 			false, _vis_tree),
+		# How many trees AVENUE, WALK and SOW grow (scripts/tree/forest.gd STEPS). A step sows
+		# the current layout again at the new size.
+		WristMenu.Item.new("make", "COUNT",
+			func(): return "%d trees" % int(forest.step()["n"]),
+			func(): _step_tree_count(1),
+			false, _vis_tree).stepping(func(d: int): _step_tree_count(d)).slider(
+			func(): return forest.count_idx, Forest.STEPS.size()),
 
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
@@ -1259,8 +1266,9 @@ func _set_tree_mode(on: bool) -> void:
 		if tree.branch_count == 0:
 			tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
 		_set_forest_wind(TREE_WIND[tree_wind_idx])
-		_regrow_forest()
+		# Recentre first: a grove sown on entry keeps clear of you from where you will stand.
 		_recenter()
+		_regrow_forest()
 		_apply_palette()
 	else:
 		_recenter()
@@ -1586,6 +1594,21 @@ func _sow_grove() -> void:
 ## Two rows from your feet down the way you face; the hero steps out of the path.
 func _sow_avenue(walk: bool) -> void:
 	forest.sow_avenue(xr_camera.global_transform, walk, FractalTree.SHAPE_NAMES[tree_shape_idx])
+
+
+## COUNT: the next size up or down, sown again in the layout on show.
+func _step_tree_count(d: int) -> void:
+	var i := clampi(forest.count_idx + d, 0, Forest.STEPS.size() - 1)
+	if i == forest.count_idx:
+		return
+	forest.set_count(i)
+	match forest.layout:
+		Forest.Layout.GROVE:
+			_sow_grove()
+		Forest.Layout.AVENUE:
+			_sow_avenue(false)
+		Forest.Layout.WALK:
+			_sow_avenue(true)
 
 
 ## WALK on sows the endless avenue; off stops where you are and lets the far end grow in.

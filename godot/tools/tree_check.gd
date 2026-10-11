@@ -111,8 +111,67 @@ func _init() -> void:
 	print("  forest: inner tree avg %d instances, rim tree avg %d, worst build %.1f ms" % [
 		inner_total / FractalTree.SHAPE_NAMES.size(), rim_total / FractalTree.SHAPE_NAMES.size(), worst_ms])
 
+	var count_ok := _count_checks()
+
 	var ok := shapes == FractalTree.SHAPE_NAMES.size() and min_b > 0 and min_l > 0 and ctl == 0 \
-		and same and differs and faces == CYL_TRIS and forest_ok
-	print("TREECHECK %s shapes=%d min_branches=%d max_branches=%d min_leaves=%d cyl_tris=%d control=%d forest=%s" % [
-		"PASS" if ok else "FAIL", shapes, min_b, max_b, min_l, faces, ctl, str(forest_ok)])
+		and same and differs and faces == CYL_TRIS and forest_ok and count_ok
+	print("TREECHECK %s shapes=%d min_branches=%d max_branches=%d min_leaves=%d cyl_tris=%d control=%d forest=%s count=%s" % [
+		"PASS" if ok else "FAIL", shapes, min_b, max_b, min_l, faces, ctl, str(forest_ok), str(count_ok)])
 	quit(0 if ok else 1)
+
+
+## COUNT. A shape computed on a worker thread is the shape computed here, byte for byte (the
+## forest builds off the main thread and shares one result between trees); and at each step
+## with a far batch, every species' far tree keeps its trunk, stays inside the step's caps, and
+## costs what the step's budget assumed. The top step's whole library is built on the pool.
+func _count_checks() -> bool:
+	var ok := true
+	var spec := {"shape": "oak", "seed": 1003, "depth_delta": 0, "variety": 1.0,
+		"target_height": Forest.AVENUE_H, "branch_cap": Forest.TREE_CAP_MAX, "whole_levels": true,
+		"lod_ready": true}
+	var here := FractalTree.compute(spec)
+	var holder := [null, 0]
+	var id := WorkerThreadPool.add_task(FractalTree.compute_into.bind(spec, holder), false, "check")
+	WorkerThreadPool.wait_for_task_completion(id)
+	var there: Dictionary = holder[0]
+	var same: bool = there != null and there["buf"] == here["buf"] and there["lbuf"] == here["lbuf"]
+	print("  thread: worker result identical=%s (%d branches, %d leaves, %.1f ms on the worker)" % [
+		str(same), here["n_b"], here["n_l"], holder[1] / 1000.0])
+	ok = ok and same
+	var top: Dictionary = Forest.STEPS[Forest.STEPS.size() - 1]
+	var lib: Array = []
+	var ids: Array = []
+	var t0 := Time.get_ticks_usec()
+	for s in FractalTree.SHAPE_NAMES:
+		for v in int(top["variants"]):
+			var h := [null, 0]
+			var rel := clampf(float(FractalTree.SHAPES[s]["height_m"]) / 4.8, 0.7, 1.35)
+			var sp := spec.duplicate()
+			sp["shape"] = s
+			sp["seed"] = Forest.VARIANT_SEED + v
+			sp["target_height"] = Forest.AVENUE_H * rel
+			ids.append(WorkerThreadPool.add_task(FractalTree.compute_into.bind(sp, h), false, "lib"))
+			lib.append([s, h])
+	for i in ids:
+		WorkerThreadPool.wait_for_task_completion(i)
+	var wall := (Time.get_ticks_usec() - t0) / 1000.0
+	var worst := 0.0
+	var sum := 0.0
+	for e in lib:
+		worst = maxf(worst, e[1][1] / 1000.0)
+		sum += e[1][1] / 1000.0
+	print("  library: %d shapes for COUNT %d in %.0f ms wall on the pool (%.1f ms mean, %.1f worst each)" % [
+		lib.size(), int(top["n"]), wall, sum / lib.size(), worst])
+	for st in Forest.STEPS:
+		if int(st["near"]) <= 0:
+			continue
+		var line := "  far at COUNT %3d (caps %d/%d):" % [int(st["n"]), int(st["far_b"]), int(st["far_l"])]
+		var tot := 0
+		for e in lib:
+			var d: Dictionary = e[1][0]
+			var c := FractalTree.far_counts(d, int(st["far_b"]), int(st["far_l"]))
+			ok = ok and c.x >= 1 and c.x <= int(st["far_b"]) and c.y >= 1 and c.y <= int(st["far_l"])
+			tot += c.x + c.y
+		line += " mean %d instances a far tree" % (tot / lib.size())
+		print(line)
+	return ok
