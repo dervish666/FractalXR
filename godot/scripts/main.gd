@@ -147,6 +147,8 @@ var flame_sky := FlameSky.new()
 var sky_on := false
 ## BULB's own SKY switch, off until pressed there: the splats sit at the budget line already.
 var sky_bulb_on := false
+## SKY RES: the live bake's equirect width, an index into FlameSky.RES_STEPS.
+var sky_res_idx := FlameSky.RES_DEFAULT
 var _galaxy_saved := {}
 var _near_fade := 0.0
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
@@ -456,13 +458,27 @@ var breath_idx := 0
 ## is the ordinary splatted shell. Same particles, same splats, same bake.
 const LINE_SLICES := [0, 24, 48, 96]
 var line_idx := 0
-## A ring's sigma across the line, as a share of the gap between rings; its length along
-## the ring as a multiple of the baked splat axis (long enough to close the gaps between
-## neighbours, and thin lines make the extra length cheap in fill); and the most that
-## length may be, in line widths, before a stroke stands off a curving ring as a hair.
-const LINE_WIDTH := 0.05
+## PATTERN: rings (one family of planes), grid (two, across y and x) or cross (all three
+## axes). The families share the one particle budget, so each plane of a grid gets half the
+## points a ring did and each plane of a cross a third. LINE_MAX_SLICES caps the planes per
+## family where that leaves too few points for the lines to close. tools/line_check.py on
+## Classic: grid at 24 a family 100% of its points in closed loops, at 48 20-25% (3-4 breaks a
+## plane); cross at 24 88-98%, at 48 3-15%. Citadel closes at both. So LINES steps off / 24 for
+## grid and cross, and off / 24 / 48 / 96 for rings.
+const LINE_PATTERNS := ["rings", "grid", "cross"]
+const LINE_MAX_SLICES := [96, 24, 24]
+var line_pattern_idx := 0
+## WIDTH: a line's sigma across, as a share of the gap between planes.
+const LINE_WIDTHS := [0.05, 0.03, 0.02]
+const LINE_WIDTH_NAMES := ["normal", "thin", "hair"]
+var line_width_idx := 0
+## A stroke's length along the ring as a multiple of the baked splat axis (long enough to
+## close the gaps between neighbours, and thin lines make the extra length cheap in fill);
+## and the most that length may be, as a share of the gap between planes, before a stroke
+## stands off a curving ring as a hair. 0.3 is the old cap of six 0.05 widths, now held
+## whatever the width, so a thinner line reaches as far along its ring and still closes.
 const LINE_STRETCH := 2.0
-const LINE_CAP := 6.0
+const LINE_CAP := 0.3
 var splat_on := false
 var splat_idx := 1
 var colour_idx := 0
@@ -853,6 +869,20 @@ func _build_menu() -> void:
 		WristMenu.Item.new("scene", "SKY",
 			func(): return _sky_label(),
 			func(): _toggle_sky()).toggle(func(): return _sky_switch()),
+		# Which sky: the live bake of a flame, or one of the skies pre-rendered on the Mac
+		# (art/skies/), which need no bake and so are there in BULB from the start.
+		WristMenu.Item.new("scene", "SKY PICK",
+			func(): return flame_sky.pick_name(),
+			func(): _step_sky_pick(1),
+			false, func(): return not flame_sky.presets.is_empty()).stepping(
+			func(d: int): _step_sky_pick(d)),
+		# The live bake's resolution. Each step re-bakes the flame on show; a bake is a frame
+		# count, 2.8 s, 6.9 s and 15.4 s at 72 Hz (tools/sky_bake.sh measure).
+		WristMenu.Item.new("scene", "SKY RES",
+			func(): return FlameSky.RES_NAMES[sky_res_idx],
+			func(): _step_sky_res(1),
+			false, _vis_flame).stepping(func(d: int): _step_sky_res(d)).slider(
+			func(): return sky_res_idx, FlameSky.RES_STEPS.size()).minor(),
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
@@ -1015,9 +1045,22 @@ func _build_menu() -> void:
 					cloud.clear_bake(),
 			false, func(): return bulb_mode).toggle(func(): return auto_bake).minor(),
 		WristMenu.Item.new("look", "LINES",
-			func(): return "off" if LINE_SLICES[line_idx] == 0 else "%d rings" % LINE_SLICES[line_idx],
+			func(): return "off" if _line_slices() == 0 else "%d %s" % [_line_slices(),
+				LINE_PATTERNS[line_pattern_idx]],
 			func(): _step_lines(1),
 			false, func(): return bulb_mode).stepping(func(d: int): _step_lines(d)),
+		# Only while LINES is on: with it off there are no lines to pattern or thin.
+		WristMenu.Item.new("look", "PATTERN",
+			func(): return LINE_PATTERNS[line_pattern_idx],
+			func(): _step_line_pattern(1),
+			false, func(): return bulb_mode and _line_slices() > 0).stepping(
+			func(d: int): _step_line_pattern(d)),
+		WristMenu.Item.new("look", "WIDTH",
+			func(): return LINE_WIDTH_NAMES[line_width_idx],
+			func(): _step_line_width(1),
+			false, func(): return bulb_mode and _line_slices() > 0).stepping(
+			func(d: int): _step_line_width(d)).slider(
+			func(): return line_width_idx, LINE_WIDTHS.size()).minor(),
 		WristMenu.Item.new("look", "BREATHE",
 			func():
 				# A frozen cloud cannot show a moving surface, so say so rather than
@@ -2129,11 +2172,9 @@ func _load_bulb(i: int) -> void:
 		_bulb = BulbSource.new(library.bulbs[bulb_idx])
 		_bulb.update_mod = BULB_UPDATE_MOD
 		RenderingServer.call_on_render_thread(cloud.set_source.bind(_bulb))
-	_bulb.slices = LINE_SLICES[line_idx]
-	var axis := Vector3.ZERO
-	if _bulb.slices > 0:
-		axis[_bulb.slice_axis] = 1.0
-	cloud.set_lines(axis, LINE_WIDTH * _bulb.slice_spacing(), LINE_STRETCH, LINE_CAP)
+	_bulb.slices = _line_slices()
+	_bulb.slice_families = line_pattern_idx + 1
+	_apply_line_look()
 	march.configure(_bulb)
 	# SOLID builds a mesh per bulb; the splats show the new one while it grows.
 	if bulb_mode and SURFACE_SOLID[surface_idx] > 0:
@@ -2152,7 +2193,45 @@ func _load_bulb(i: int) -> void:
 ## again, so this reseeds, and the settle re-bakes; seeds stay hidden until they land, so
 ## the rings draw themselves in rather than a ball of noise collapsing.
 func _step_lines(d: int) -> void:
-	line_idx = wrapi(line_idx + d, 0, LINE_SLICES.size())
+	# Rungs past the pattern's cap would only repeat the capped count, a press that does nothing.
+	for i in LINE_SLICES.size():
+		line_idx = wrapi(line_idx + d, 0, LINE_SLICES.size())
+		if LINE_SLICES[line_idx] <= LINE_MAX_SLICES[line_pattern_idx]:
+			break
+	_reload_lines()
+
+
+## Planes per family for the current rung and pattern, 0 when LINES is off.
+func _line_slices() -> int:
+	return mini(LINE_SLICES[line_idx], LINE_MAX_SLICES[line_pattern_idx])
+
+
+## PATTERN moves points between families, so like LINES it reseeds and re-bakes.
+func _step_line_pattern(d: int) -> void:
+	line_pattern_idx = wrapi(line_pattern_idx + d, 0, LINE_PATTERNS.size())
+	# Down to the pattern's cap, so the next LINES press moves from what the tile shows.
+	while LINE_SLICES[line_idx] > LINE_MAX_SLICES[line_pattern_idx]:
+		line_idx -= 1
+	_reload_lines()
+
+
+## WIDTH is the renderer's alone: the points stay where they are.
+func _step_line_width(d: int) -> void:
+	line_width_idx = wrapi(line_width_idx + d, 0, LINE_WIDTHS.size())
+	if _bulb != null:
+		_apply_line_look()
+
+
+func _apply_line_look() -> void:
+	var axis := Vector3.ZERO
+	if _bulb.slices > 0:
+		axis[_bulb.slice_axis] = 1.0
+	var h := _bulb.slice_spacing()
+	cloud.set_lines(axis, LINE_WIDTHS[line_width_idx] * h, LINE_STRETCH, LINE_CAP * h,
+		_bulb.slice_families)
+
+
+func _reload_lines() -> void:
 	if not bulb_mode:
 		return
 	# Rings are particles, and a marched surface hides the particles.
@@ -2424,6 +2503,26 @@ func _step_flame_echoes(d: int) -> void:
 func _bake_sky() -> void:
 	if flame_sky.request_bake(cloud, _theme_palette(), COLOUR_CYCLES[colour_idx]):
 		sky_on = true
+		# Baking this flame is asking for the live sky over any preset.
+		flame_sky.set_pick(0)
+
+
+## SKY PICK: live or a preset. Choosing a sky is asking to see it, so a preset switches SKY on;
+## back to live with nothing baked, FLAME bakes the flame on show (BULB has none to bake).
+func _step_sky_pick(d: int) -> void:
+	flame_sky.set_pick(flame_sky.pick + d)
+	if flame_sky.pick > 0 and not _sky_switch():
+		_toggle_sky()
+	elif flame_sky.pick == 0 and _sky_switch() and not flame_sky.has_sky() and not flame_sky.baking:
+		_bake_sky()
+
+
+## SKY RES: set the live bake's width, and re-bake the flame on show if a live sky is up.
+func _step_sky_res(d: int) -> void:
+	sky_res_idx = wrapi(sky_res_idx + d, 0, FlameSky.RES_STEPS.size())
+	flame_sky.set_width(FlameSky.RES_STEPS[sky_res_idx])
+	if flame_sky.pick == 0 and (flame_sky.ready or flame_sky.baking):
+		_bake_sky()
 
 
 ## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds
@@ -2433,7 +2532,7 @@ func _toggle_sky() -> void:
 		sky_bulb_on = not sky_bulb_on
 	else:
 		sky_on = not sky_on
-	if _sky_switch() and not flame_sky.ready and not flame_sky.baking:
+	if _sky_switch() and not flame_sky.has_sky() and not flame_sky.baking:
 		_bake_sky()
 
 
@@ -2447,7 +2546,7 @@ func _sky_label() -> String:
 		return "baking %d%%" % int(flame_sky.progress * 100.0)
 	if not _sky_switch():
 		return "off"
-	return "on" if flame_sky.ready else "no flame"
+	return "on" if flame_sky.has_sky() else "no flame"
 
 
 func _fail(msg: String) -> void:

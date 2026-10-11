@@ -15,7 +15,10 @@ extends SceneTree
 ##
 ## Mac numbers: read them as ratios between modes, not as Quest milliseconds.
 ##
-##   tools/line_shot.sh [Classic,Citadel] [0,24,48,96]
+##   tools/line_shot.sh [Classic,Citadel] [0,24,48,96] [rings,grid,cross] [normal,thin,hair]
+##
+## Every bulb runs every rung of every pattern at every width; rung 0 (splats) runs once.
+## Tags are <bulb>_<pattern><planes>, plus _<width> when it is not the normal one.
 
 ## name: [tilt of the slice axis toward the camera in degrees, cloud offset from the eye
 ## in metres, cloud node scale]. The first three are the kill-criterion views at the
@@ -34,10 +37,16 @@ func _init() -> void:
 	var args := OS.get_cmdline_user_args()
 	var bulbs: PackedStringArray = ["Classic", "Citadel"]
 	var modes: Array = [0, 24, 48, 96]
+	var patterns: PackedStringArray = ["rings"]
+	var widths: PackedStringArray = ["normal"]
 	if args.size() > 0:
 		bulbs = args[0].split(",")
 	if args.size() > 1:
 		modes = Array(args[1].split(",")).map(func(s): return int(s))
+	if args.size() > 2:
+		patterns = args[2].split(",")
+	if args.size() > 3:
+		widths = args[3].split(",")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 
 	var main = (load("res://main.tscn") as PackedScene).instantiate()
@@ -69,14 +78,30 @@ func _init() -> void:
 			print("LINESHOT FAIL no bulb named %s" % bname)
 			ok = false
 			continue
+		var runs: Array = []
 		for slices in modes:
+			if slices == 0:
+				runs.append([0, "rings", "normal"])
+				continue
+			for pat in patterns:
+				for wn in widths:
+					runs.append([slices, pat, wn])
+		for run in runs:
+			var slices: int = run[0]
 			var li: int = main.LINE_SLICES.find(slices)
-			if li < 0:
-				print("LINESHOT FAIL %d is not a LINES rung" % slices)
+			var pi: int = main.LINE_PATTERNS.find(run[1])
+			var wi: int = main.LINE_WIDTH_NAMES.find(run[2])
+			if li < 0 or pi < 0 or wi < 0:
+				print("LINESHOT FAIL %s is not a LINES rung, pattern and width" % str(run))
 				ok = false
 				continue
 			# The menu path, minus the press: reseed, reload, settle, bake.
 			main.line_idx = li
+			main.line_pattern_idx = pi
+			main.line_width_idx = wi
+			if main._line_slices() != slices:
+				print("LINESHOT note %s: %s is capped at %d planes" % [bname, run[1], main._line_slices()])
+				slices = main._line_slices()
 			cloud.request_seed()
 			main._load_bulb(bi)
 			var sim := 0.0
@@ -104,7 +129,9 @@ func _init() -> void:
 				print("LINESHOT FAIL %s/%d: bake never landed (%d frames)" % [bname, slices, g])
 				ok = false
 			var sim_ms := (sim / ns / 1000.0) if ns > 0 else 0.0
-			var tag := "%s_%s" % [bname.to_lower(), "splats" if slices == 0 else "lines%d" % slices]
+			var tag := "%s_%s" % [bname.to_lower(), "splats" if slices == 0 else "%s%d" % [run[1], slices]]
+			if slices > 0 and run[2] != "normal":
+				tag += "_" + str(run[2])
 
 			for vname in VIEWS:
 				var v: Array = VIEWS[vname]
@@ -126,8 +153,8 @@ func _init() -> void:
 					await process_frame
 				var m2 := await _measure(vp)
 				root.get_viewport().scaling_3d_scale = 1.0
-				print("LINESHOT bulb=%s slices=%d view=%-5s draw_gpu_ms=%s draw_gpu_ms_x2=%s frame_ms=%.3f sim_settle_ms=%s png=%s" % [
-					bname, slices, vname, _fmt(m1[0]), _fmt(m2[0]), m1[1],
+				print("LINESHOT bulb=%s tag=%s view=%-5s draw_gpu_ms=%s draw_gpu_ms_x2=%s frame_ms=%.3f sim_settle_ms=%s png=%s" % [
+					bname, tag, vname, _fmt(m1[0]), _fmt(m2[0]), m1[1],
 					_fmt(sim_ms), "ok" if err == OK else "FAIL %d" % err])
 
 			_dump(rd, main, cloud, tag, slices)
@@ -186,7 +213,12 @@ func _dump(rd: RenderingDevice, main, cloud: ParticleCloud, tag: String, slices:
 		"extent": float(bulb.room().get("extent", bulb.bound())), "bound": bulb.bound(),
 		"shell_eps": shell, "coverage": main.BULB_COVERAGE[main.coverage_idx],
 		"line_stretch": main.LINE_STRETCH if slices > 0 else 1.0,
-		"line_width": main.LINE_WIDTH * h, "line_cap": main.LINE_CAP,
+		"families": bulb.slice_families if slices > 0 else 1,
+		"pattern": main.LINE_PATTERNS[main.line_pattern_idx] if slices > 0 else "",
+		"line_width": main.LINE_WIDTHS[main.line_width_idx] * h,
+		"line_width_share": main.LINE_WIDTHS[main.line_width_idx],
+		# State units now (it was in line widths before T-55): the shader's cap is absolute.
+		"line_cap_abs": main.LINE_CAP * h,
 		"hidden": hidden, "de_median": med, "de_p90": p90, "de_samples": res.size(),
 		# What line_check.py needs to rebuild every splat's on-screen quad (its fill model):
 		# the camera, the cloud's transform relative to it, and the shader's sizing inputs.

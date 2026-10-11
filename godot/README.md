@@ -316,6 +316,57 @@ compile or a readback is a CPU stall, and shrinking splats (a fill-rate lever) d
 for those except make the cloud flinch. The wrist menu shows "guard N%" while it is
 intervening, because a silently shrunk 42mm splat would otherwise read as a broken setting.
 
+### The sky's resolution (2026-10-11)
+
+The baked SKY started as a 2560 x 1280 RGBA16F equirect: 7.1 texels a degree against an
+eye buffer of 17-21 pixels a degree, and Sam asked for it sharper. Two ways up, both on the
+menu.
+
+**SKY RES** (FLAME > SCENE, under MORE) sets the live bake: 2.5k, 4k (the default now) or 6k
+across. The samples scale with the texels (7.7 a texel, as before), and the bake runs a fixed
+131,072 splats a frame, so its length on the headset is a frame count, measured by
+`tools/sky_bake.sh measure`:
+
+| width | frames | headset at 72 Hz | sky + accumulator | Mac GPU, mean bake frame | Mac GPU, resolve frame |
+|---|---|---|---|---|---|
+| 2560 | 198 | 2.8 s | 25 + 38 MiB | 0.35-0.78 ms | 2.1-3.5 ms |
+| 4096 | 498 | 6.9 s | 64 + 96 MiB | 0.80-1.06 ms | 4.0-4.8 ms |
+| 6144 | 1112 | 15.4 s | 144 + 216 MiB | 1.14-1.46 ms | 8.0-8.2 ms |
+
+Frames and memory are exact; the Mac GPU times are ranges over three runs, one of them
+sharing the GPU with another agent's harness. The per-frame cost rises with the width at a
+fixed splat count because the atomics scatter over a bigger accumulator. The headset's is a
+guess: 3-5x the Mac is 1-4, 2.4-5.3 and 3.4-7.3 ms a frame, and the Adreno atomics
+measurement above scales to 5-7 ms at any width. Memory is not the limit (a 6k bake peaks 360 MB above where it started, the old sky
+still alive while the new one resolves); bake time is. 6144 is about a texel a pixel, the
+most a sky without mipmaps should have before it sparkles.
+
+**SKY PICK** chooses the live bake or a sky pre-rendered on the Mac: the same bake at 8192 x
+4096 with 64 samples a texel (2.1 billion, about 30 s a sky on the Mac), resampled by
+`tools/sky_cube.py` onto a 2048-a-face cubemap, ETC2 on the headset with mipmaps. 17.9 texels
+a degree at a face's centre, more towards its edges, eight times the samples of a live bake,
+no wait, no stutter, and there in BULB before any flame has been baked. The colours are baked
+in. A cube rather than an equirect because a mipmapped equirect blurs at the zenith and seams
+down its wrap column (both pick the smallest mip from screen derivatives); the hardware
+filters a cube across its faces. `tools/sky_compare.py` renders each preset against the
+equirect it came from from six directions, including down a face edge and into a corner:
+luminance correlation 0.987-1.000 (mismatched directions, the control, 0.17 at most), and no
+visible seam; down the edge column the gradient is 1.3-1.5x its neighbours, under one grey
+level. On the Mac the presets render 4-14% darker than the equirect, and that is the desktop
+BC1 encoder (13% darker on a Geode patch, 34 dB), not the data: the sphere means agree to
+0.3%, and ETC2, what the headset gets, is 1% off at 45 dB.
+
+The live equirect has two pole faults. `repeat_enable` wrapped v, so bilinear filtering in
+the top half-texel blended in the bottom row (the other pole); v is clamped to the texel
+centres now. And the resolve's row averaging, capped at 64 taps, leaves a faint pinwheel
+within 0.9 degrees of the zenith (seen at 2560 with the sky brightened 5x, barely at 4096).
+Raising the cap to 256 shrinks it to 0.22 degrees but took the resolve frame at 6144 from
+8.0 to 9.8 ms on the Mac, so it stays. The presets are cubes and have no pole.
+
+The resolve is one dispatch, the longest frame of a bake (the last column), so a guessed
+6-41 ms single-frame hitch on the headset at the end of a bake. If the headset shows it, the resolve splits into row bands over a few frames (the
+push constant has a free int for the row offset).
+
 ### Two bugs the self-test caught, and one it could not
 
 The neighbour search first came back finding **zero** neighbours for every particle. The
@@ -384,6 +435,9 @@ tools/avenue_shot.sh       # TREE's avenue, WALK, FLOOR and COUNT through the re
 tools/tree_look_shot.sh    # FLOOR and BARK shots, and their GPU time on this Mac (Vulkan), .spike-out/look_*.png
 tools/comfort_shot.sh      # the comfort tunnel's DIVE and WALK profiles measured on a grey world
 tools/thumb_bake.sh        # re-bake the menu's gallery pictures to art/thumbs/ (commit the result)
+tools/sky_bake.sh measure  # the live SKY bake at each SKY RES: frames, Mac GPU ms, memory
+tools/sky_bake.sh bake Ember 8192 64; python3 tools/sky_cube.py ember   # a SKY PICK preset
+tools/sky_bake.sh preview; python3 tools/sky_compare.py ember           # preset against its bake
 tools/build.sh             # export build/fractalxr-debug.apk (debug-signed, the dev loop)
 tools/build.sh release     # export build/fractalxr.apk, signed for the store
 tools/keystore.sh          # make the release keystore, once, ever

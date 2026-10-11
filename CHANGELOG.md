@@ -61,6 +61,33 @@ All notable changes to FractalXR are documented here. Format based on
   Sakura, Patina, Peacock, Jungle and Abyss, heavier on greens, earths and metals than the
   first nineteen, for the trees as much as the flames. Shared with the web build through
   `src/flame/palettes.ts`, so its Recolor and the breeder pick them up too.
+- **Sharper SKY, and three pre-rendered ones.** SKY PICK (SCENE, every mode) chooses the live
+  bake or Ember, Nautilus or Geode, skies baked on the Mac through the same bake at 8192 wide
+  with 2.1 billion samples and shipped as 2048-a-face cubemaps (ETC2 with mipmaps on the
+  headset, 16.8 MB of VRAM for the one on show, 24.9 MB of the APK for all three). They need
+  no bake, so they also hang behind BULB before any flame has been baked; picking one switches
+  SKY on. Their colours are baked in. SKY RES (FLAME > SCENE, under MORE) sets the live bake
+  to 2.5k, 4k (the new default, was 2.5k) or 6k across, re-baking the flame on show. The live
+  bake is a frame count, so on the headset it takes 2.8 s, 6.9 s or 15.4 s at 72 Hz; its
+  memory is 25 + 38 MB, 64 + 96 MB or 144 + 216 MB (sky plus the accumulator while baking).
+  The live sky's zenith no longer blends in the nadir row (bilinear filtering wrapped v).
+  `tools/sky_bake.sh` measures the live bake and makes the offline ones, `tools/sky_cube.py`
+  turns them into presets and `tools/sky_compare.py` checks a preset against the equirect it
+  came from, down a face edge and into a corner included. Headset not tried.
+- **LINES patterns and widths.** BULB > LOOK gains PATTERN (rings, grid, cross) and, under
+  MORE, WIDTH (normal, thin, hair), both showing only while LINES is on. A grid adds a second
+  set of slice planes across x, a cross a third across z; the particles split evenly between
+  the sets and every set is coloured by height, so the bulb reads as one net. On Citadel's
+  flat faces the grid and cross draw what rings could not (its top and bottom read blank as
+  rings). Splitting the points leaves fewer per plane, so grid and cross stop at 24 planes a
+  set: on Classic a grid at 48 kept only 20-25% of its points in closed loops (24: 100%) and
+  a cross at 48 3-15% (24: 88-98%). WIDTH is 0.05, 0.03 or 0.02 of the plane gap; the
+  stroke's reach along its ring no longer shrinks with the width, so thin lines close as
+  well as normal ones. Desktop fill: thin is 0.7x and hair 0.58x of normal. Grid and cross at
+  normal width are 0.97-1.0x of rings on Classic and up to 1.26x on Citadel (they draw the
+  faces rings leave empty), all under the rings-24 rung that was already shipped. Headset not
+  tried. `tools/line_shot.sh` takes patterns and widths, `tools/line_check.py` checks
+  closure per set, and `menu_shot.sh` shoots the LOOK card with LINES on.
 - **SOLID (spike): the bulb as a lit sculpture.** BULB > LOOK > SURFACE now runs on past the
   march steps to `solid 128`, `solid 192` and `solid 256`. The headset meshes the bulb from
   its own distance estimate (surface nets on a grid of that many cells, four compute passes

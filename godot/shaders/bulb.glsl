@@ -61,10 +61,13 @@ layout(push_constant, std430) uniform PC {
 	float jitter;
 	float k_angle_a;
 	float k_angle_b;
-	float _pad0;
+	// LINES pattern: how many slice families share the cloud. 1 = rings (planes across
+	// slice.z only), 2 = grid (and planes across the next axis), 3 = cross (all three).
+	// Particle i belongs to family i % families, so the point budget splits evenly.
+	float slice_fams;
 	float _pad1;
 	// LINES: x = spacing between slice planes in state units (0 = off, plain splats),
-	// y = how many planes span the shape, z = the axis they are stacked along (0, 1, 2),
+	// y = how many planes span the shape, z = the axis family 0 is stacked along (0, 1, 2),
 	// w = the level the rings are cut at, DE = w (state units; see shellEps below).
 	vec4 slice;
 } p;
@@ -332,7 +335,12 @@ void main() {
 	// with its axis component removed, so the particle never leaves the plane and settles
 	// where the isosurface crosses it. Same number of DE evaluations as the shell.
 	bool slicing = p.slice.x > 0.0;
-	int ax = int(p.slice.z + 0.5);
+	// The family's axis: family 0 on slice.z (world up), 1 on the axis before it, 2 on the
+	// one after, so with y up a grid adds x and a cross adds z. splat.gdshader derives the
+	// same axis from the same index (swizzles .yzx and .zxy of line_axis); keep them in step.
+	int up = int(p.slice.z + 0.5);
+	int fams = clamp(int(p.slice_fams + 0.5), 1, 3);
+	int ax = (up + 2 * int(idx % uint(fams))) % 3;
 	// Cut the rings from a slightly inflated bulb, DE = w rather than DE = 0. Contours of
 	// the true surface trace every crinkle smaller than the ring spacing, which no stack of
 	// rings can show and which reads as worms from any angle but side-on; the offset
@@ -404,7 +412,9 @@ void main() {
 		// a little of the trap so neighbouring rings are not flat bands. The trap alone
 		// changes colour point to point along a ring, which reads as dotted. Mapped into
 		// [0.125, 0.875] because the splat shader stretches the coordinate by 4/3.
-		float ht = clamp(0.5 + plane / (p.slice.x * p.slice.y), 0.0, 1.0);
+		// Height is world up for every family, so a grid or a cross reads as one net coloured
+		// bottom to top, not as two or three differently graded sets crossing.
+		float ht = clamp(0.5 + pos[up] / (p.slice.x * p.slice.y), 0.0, 1.0);
 		col = 0.125 + 0.75 * mix(ht, col, 0.2);
 		// Not on a ring yet: the plane misses the shape, the point is still travelling,
 		// or it is stuck where the plane grazes the surface. Hide it, and while the host

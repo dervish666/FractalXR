@@ -8,7 +8,9 @@ For each dump of a LINES run (.spike-out/lines/<tag>.*), per slice plane:
     tangent (cross(normal, axis)): where a ring stops instead of continuing;
   - a component with no endpoints is a CLOSED loop; one with endpoints is an open arc.
 Prints the share of ring particles in closed loops, gaps per plane, and the dust (tiny
-components). Splat dumps get the shape stats only.
+components). Splat dumps get the shape stats only. A grid or cross dump (meta 'families'
+2 or 3) is checked per family: particle i is in family i % families, sliced across the
+axis bulb.glsl gives it, (axis + 2 f) % 3.
 
   python3 tools/line_check.py [.spike-out/lines] [tag ...]
 """
@@ -26,6 +28,19 @@ MAX_STDDEV2, BLUR_PX2, MAX_PIXEL_RADIUS, SPLAT_THIN = 5.0, 0.3, 192.0, 0.18
 def smoothstep(a, b, x):
     t = np.clip((x - a) / (b - a), 0.0, 1.0)
     return t * t * (3 - 2 * t)
+
+
+def family_axes(meta):
+    """Per particle: its slice axis index, as bulb.glsl and splat.gdshader assign it."""
+    n, fams = meta['count'], max(1, int(meta.get('families', 1)))
+    return (meta['axis'] + 2 * (np.arange(n) % fams)) % 3
+
+
+def cap_abs(meta):
+    """The longest stroke sigma, in state units. Dumps before T-55 stored it in line widths."""
+    if 'line_cap_abs' in meta:
+        return meta['line_cap_abs']
+    return meta.get('line_cap', 3.0) * meta['line_width']
 
 
 def fill(meta, st, nm, bk):
@@ -49,14 +64,14 @@ def fill(meta, st, nm, bk):
     ring_l = np.zeros(n)
     lines = meta.get('slices', 0) > 0
     if lines:
-        axv = np.zeros(3); axv[meta['axis']] = 1.0
+        axv = np.eye(3)[family_axes(meta)]
         ring = np.cross(nl, axv)
         ring_l = np.linalg.norm(ring, axis=1)
         on = ring_l > 1e-4
         T = ring / np.maximum(ring_l, 1e-9)[:, None]
         B = np.cross(nl, T)
         w = meta['line_width'] * fit
-        L1 = np.minimum(bk[:, 2] * bs * meta['line_stretch'], meta.get('line_cap', 3.0) * w)
+        L1 = np.minimum(bk[:, 2] * bs * meta['line_stretch'], cap_abs(meta) * fit)
         L2 = np.minimum(L1, w)
         a1 = np.where(on[:, None], T * L1[:, None], a1)
         a2 = np.where(on[:, None], B * L2[:, None], a2)
@@ -110,13 +125,14 @@ def load(d, tag):
 def check(d, tag):
     meta, st, nm, bk = load(d, tag)
     vis = nm[:, 3] < 0.5
+    axes = family_axes(meta) if meta.get('slices', 0) > 0 else np.full(meta['count'], meta['axis'])
     cov = meta['coverage']
     # What splat.gdshader draws: in LINES the major axis is the baked one times the stretch,
     # capped at line_cap line widths, and the minor is the fixed line width.
     s0 = bk[vis, 2] * cov * meta.get('line_stretch', 1.0)
     s1 = bk[vis, 3] * cov
     if meta.get('slices', 0) > 0:
-        s0 = np.minimum(s0, meta.get('line_cap', 3.0) * meta['line_width'])   # the shader's cap
+        s0 = np.minimum(s0, cap_abs(meta))   # the shader's cap
         s1 = np.minimum(s0, meta['line_width'])
     h = meta['spacing']
     line = '%-18s visible %6d/%d  sigma major %.4f minor %.4f (median, state units)' % (
@@ -134,10 +150,22 @@ def check(d, tag):
         100 * meta['de_median'] / h if h > 0 else 0, 100 * meta['de_p90'] / h if h > 0 else 0))
     if h <= 0:
         return None
-    ax = meta['axis']
+    fams = max(1, int(meta.get('families', 1)))
+    out = {}
+    for f in range(fams):
+        sel = axes[vis] == (meta['axis'] + 2 * f) % 3
+        r = closure(meta, st[vis][sel], nm[vis][sel], bk[vis][sel], s0[sel],
+                    (meta['axis'] + 2 * f) % 3, 'xyz'[(meta['axis'] + 2 * f) % 3] if fams > 1 else None)
+        out['xyz'[(meta['axis'] + 2 * f) % 3]] = r
+    return out
+
+
+def closure(meta, st, nm, bk, s0, ax, label):
+    """Closure for one family of planes, all sliced across axis ax."""
+    h = meta['spacing']
     other = [i for i in range(3) if i != ax]
-    P = st[vis, :3].astype(np.float64)
-    N = nm[vis, :3].astype(np.float64)
+    P = st[:, :3].astype(np.float64)
+    N = nm[:, :3].astype(np.float64)
     axv = np.zeros(3); axv[ax] = 1.0
     T = np.cross(N, axv)
     tl = np.linalg.norm(T, axis=1)
@@ -148,10 +176,12 @@ def check(d, tag):
     ref = np.where(np.abs(nn[:, 2:3]) < 0.9, np.array([[0, 0, 1.0]]), np.array([[1.0, 0, 0]]))
     t1 = np.cross(nn, ref); t1 /= np.maximum(np.linalg.norm(t1, axis=1), 1e-9)[:, None]
     t2 = np.cross(nn, t1)
-    e1 = t1 * bk[vis, 0:1] + t2 * bk[vis, 1:2]
+    e1 = t1 * bk[:, 0:1] + t2 * bk[:, 1:2]
     align = np.abs(np.sum(e1 * T, axis=1))
-    print('   bake major axis vs ring tangent: median |cos| %.3f, %.0f%% within 25 deg' % (
+    pre = '   ' if label is None else '   [%s planes, %d visible points] ' % (label, len(P))
+    print(pre + 'bake major axis vs ring tangent: median |cos| %.3f, %.0f%% within 25 deg' % (
         np.median(align), 100 * np.mean(align > np.cos(np.radians(25)))))
+    pre = '   ' if label is None else '   [%s] ' % label
 
     k = np.floor(P[:, ax] / h + 1e-6).astype(np.int64)
     reach = np.maximum(s0, 1e-6)
@@ -201,10 +231,10 @@ def check(d, tag):
         endpoints += int(endp[big[lab]].sum())
         total += m
     ring = closed + arcs_pts
-    print('   planes %d  closed loops %d  open arcs %d  endpoints %d (%.2f per plane, %.2f%% of ring points)' % (
+    print(pre + 'planes %d  closed loops %d  open arcs %d  endpoints %d (%.2f per plane, %.2f%% of ring points)' % (
         planes, comps_closed, comps_open, endpoints, endpoints / max(1, planes),
         100 * endpoints / max(1, ring)))
-    print('   ring points in closed loops %.1f%%  in open arcs %.1f%%  dust (<=3 linked) %.1f%% of visible' % (
+    print(pre + 'ring points in closed loops %.1f%%  in open arcs %.1f%%  dust (<=3 linked) %.1f%% of visible' % (
         100 * closed / max(1, ring), 100 * arcs_pts / max(1, ring), 100 * dust / max(1, total)))
     return {'closed_share': closed / max(1, ring), 'endpoints_per_plane': endpoints / max(1, planes)}
 
