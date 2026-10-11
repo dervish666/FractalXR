@@ -5,6 +5,19 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Added
+- **SOLID (spike): the bulb as a lit sculpture.** BULB > LOOK > SURFACE now runs on past the
+  march steps to `solid 128`, `solid 192` and `solid 256`. The headset meshes the bulb from
+  its own distance estimate (surface nets on a grid of that many cells, four compute passes
+  in `bulb.glsl`, so the DE still exists once for compute), bakes six-ray ambient occlusion,
+  a soft shadow from one key light and the orbit-trap colour into every vertex, and draws it
+  as an ordinary opaque mesh with MSAA 4x. The splats stay up while it grows (about 1.3 s at
+  192, 2.9 s at 256, the tile counts it up), then it takes their place. Picking it re-homes
+  the bulb to the Mandelbulber test render's framing, 35 cm across at 0.7 m, and turns DRIFT
+  and SPIN off, since the light is baked in and turns with the shape. On THEME "preset" it
+  wears a bronze, gold and magenta palette taken from that render. Desktop numbers, shots
+  and the kill-criteria call are from `godot/tools/solid_shot.sh`; the headset has not seen it.
+
 ### Changed
 - **DIVE dims the edges of the view at room size.** The avenue walk's tunnel vignette now
   also follows a dive step at room size, where the beams fly past your face: it eases in and

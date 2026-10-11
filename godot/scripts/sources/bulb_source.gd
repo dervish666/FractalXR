@@ -35,6 +35,11 @@ func shader_path() -> String:
 	return "res://shaders/bulb.glsl"
 
 
+## bulb.glsl also carries SOLID's mesh passes (BulbSolid), so the cloud names its variant.
+func shader_version() -> StringName:
+	return &"particles"
+
+
 func is_frozen() -> bool:
 	return update_mod <= 0
 

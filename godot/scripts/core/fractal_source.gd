@@ -41,6 +41,12 @@ func shader_path() -> String:
 	return ""
 
 
+## The #[versions] entry to compile, for a shader file that declares several. Empty for a
+## file with none.
+func shader_version() -> StringName:
+	return &""
+
+
 ## Bytes for the compute push constant. Must be a multiple of 16 and at most 128,
 ## which is the limit every Vulkan implementation is guaranteed to offer.
 func params_bytes(_count: int, _frame: int, _seeding: bool) -> PackedByteArray:
@@ -105,7 +111,7 @@ func setup(rd: RenderingDevice, state_tex: RID, tex_size: int, normal_tex: RID =
 		if file == null:
 			_error = "failed to load %s" % path
 			return false
-		var spirv := file.get_spirv()
+		var spirv := file.get_spirv(shader_version())
 		if spirv.compile_error_compute != "":
 			_error = "%s: %s" % [path, spirv.compile_error_compute]
 			return false
