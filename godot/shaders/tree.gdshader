@@ -49,6 +49,12 @@ uniform float bark_mix = 0.0;
 // with the leaves). The twig end of the ramp moves from pal2 toward pal3 and back; the trunk
 // end never moves. 0 is the ramp exactly as before.
 uniform float palette_phase = 0.0;
+// The far batch (far_forest.gd): many trees of one species in one MultiMesh, each instance
+// composed into the avenue's frame. What is per tree there rides in the instance instead of a
+// uniform: COLOR.r the level, COLOR.g the tree's bark hue, CUSTOM.x the birth on the shared
+// clock (grow_s is 1), CUSTOM.z the tree's height and CUSTOM.w its palette phase. Off, every
+// line below reads exactly as before.
+uniform bool batch = false;
 
 // Rotate a colour about the grey axis (Rodrigues). Angle 0 returns it unchanged.
 vec3 hue_turn(vec3 c, float a) {
@@ -60,6 +66,8 @@ vec3 hue_turn(vec3 c, float a) {
 varying float v_u;
 varying vec3 v_normal_w;
 varying vec3 v_world;
+varying flat float v_phase;
+varying flat float v_bark_hue;
 
 // One displacement field for branches and leaves: lateral bend growing with the square
 // of height (a cantilever), a slow body sway, a faster ripple up the trunk, and a small
@@ -84,7 +92,10 @@ vec3 sway(vec3 w, float phase) {
 void vertex() {
 	float birth = INSTANCE_CUSTOM.x;
 	float taper = INSTANCE_CUSTOM.y;
-	float level = INSTANCE_CUSTOM.z;
+	float level = batch ? COLOR.r : INSTANCE_CUSTOM.z;
+	float th = batch ? INSTANCE_CUSTOM.z : tree_height;
+	v_phase = INSTANCE_CUSTOM.w;
+	v_bark_hue = COLOR.g;
 	// Growth: extends from the base over 0.9 s after birth, thickening with it.
 	float g = clamp((grow_t - birth * grow_s) / 0.9, 0.0, 1.0);
 	g = g * g * (3.0 - 2.0 * g);
@@ -95,7 +106,7 @@ void vertex() {
 	// Colour from the undeformed, fully-grown position: wind bends the geometry and
 	// growth extends it, and neither should slide the palette along the trunk.
 	vec3 w0 = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	float h01 = clamp(dot(w0 - tree_origin, tree_up) / max(tree_height * tree_scale, 1e-3), 0.0, 1.0);
+	float h01 = clamp(dot(w0 - tree_origin, tree_up) / max(th * tree_scale, 1e-3), 0.0, 1.0);
 	v_u = mix(level, h01, colour_height);
 	vec3 w = (MODEL_MATRIX * vec4(v, 1.0)).xyz;
 	w = sway(w, flutter_phase(w0));
@@ -108,10 +119,12 @@ void vertex() {
 void fragment() {
 	float u = clamp(v_u, 0.0, 1.0);
 	vec3 root = mix(pal0, pal1, trunk_lift);
-	vec3 tip = mix(pal2, pal3, 1.0 - abs(fract(palette_phase) * 2.0 - 1.0));
+	float phase = batch ? v_phase : palette_phase;
+	float bh = batch ? v_bark_hue : bark_hue;
+	vec3 tip = mix(pal2, pal3, 1.0 - abs(fract(phase) * 2.0 - 1.0));
 	vec3 base = (u < 0.5) ? mix(root, pal1, u * 2.0) : mix(pal1, tip, (u - 0.5) * 2.0);
-	if (bark_mix > 0.0 || bark_hue != 0.0) {
-		base = max(hue_turn(base, bark_hue), vec3(0.0));
+	if (bark_mix > 0.0 || bh != 0.0) {
+		base = max(hue_turn(base, bh), vec3(0.0));
 		float luma = dot(base, vec3(0.299, 0.587, 0.114));
 		base = mix(base, bark_tint * max(luma * 1.6, 0.05), bark_mix);
 	}

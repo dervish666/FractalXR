@@ -10,6 +10,14 @@ All notable changes to FractalXR are documented here. Format based on
   also follows a dive step at room size, where the beams fly past your face: it eases in and
   out with the step's own half-second ease and clears when the step stops. Table size leaves
   the view alone, since the sculpture moves in front of you there.
+- **SKY works in FLAME and BULB.** The baked flame sky now hangs behind the live flame too, so
+  baking flame A and moving on to flame B puts B in front of A's sky. The points are additive
+  with no depth test and draw after the sky, so the flame lands on top: on the desktop the
+  flame's pixels came out at 0.375 mean luminance (0.236 with the sky off) against 0.096 for
+  the sky around it. BULB gets its own SKY switch, off until pressed there, whatever the other
+  modes have on: the splats were measured at 13.9 ms, at the line already, and the baked sky
+  adds one texture fetch per background pixel (under 1 ms, a guess). Passthrough still wins
+  in every mode. `flame_scale_shot.sh` adds sky and no-sky pairs over the flame and the bulb.
 - **The help card knows WALK and DIVE.** TREE's trigger callouts add "WALK: hold to glide"
   and IFS's add "DIVE: hold, eye a copy", the small second-job line the sticks already use.
   A three-line trigger block rises half a line per extra line so it clears the stick's label.
@@ -98,6 +106,52 @@ All notable changes to FractalXR are documented here. Format based on
   than stepping the gallery behind the panel.
 
 ### Added
+- **ROOTS: a path down the avenue (prototype, off by default).** A switch on TREE's MAKE card.
+  The avenue's two inner rows grow surface roots from the trunk base, fanning along the row and
+  bending toward the middle at every segment, so neighbouring trees' roots interleave into one
+  kerb each side and leave a dark walk 1.1 m wide down the centre (the tips stop 0.55 m from
+  the centre line). Built like the branches (`scripts/tree/tree_roots.gd`): tapered cylinders
+  drawn with the tree's own branch material, so they grow out with the trunk, take its colour
+  and do not sway. Eight shared root shapes; each tree turns and scales one to its distance
+  from the path, so a WALK recycle is a transform and never a build. Desktop cost on the
+  default avenue: +28 draws, about 90 segments a tree, +30k triangles in view, no change in
+  script time; switching on costs 1.7 ms once. Trees in the far batch (COUNT 120 and up)
+  carry none.
+- **COUNT: up to 500 trees.** A slider on TREE's MAKE card with five steps, 30, 60, 120, 250
+  and 500 (`STEPS` in `forest.gd`). It starts at 30, which sows exactly the avenue and grove
+  it always did; moving it sows the layout on show again at the new size.
+  - The avenue gains rows behind the first, 2.6 m further out each and looser (5.35 m, 7.95 m
+    and on), then length: 60 is two rows a side to 50 m, 120 three to 70 m, 250 four to 108 m,
+    500 six to 144 m. Along a row trunks stay 3-4 m apart, so crowns keep clear and the closest
+    two trunks anywhere measured 1.76 m at 500. WALK's pool and its sprouting distance grow
+    with the length (516 trees sprouting at 72 m at 500). The grove grows outward at the same
+    density, 16 to 90 trees: the default copse exactly as before, with the extra trees rim-high
+    saplings around it, kept 0.6 m in front of you.
+  - Builds left the main thread. `FractalTree.compute()` is pure and runs on the worker pool
+    (16 handed over a frame); the main thread only uploads a finished buffer, one a frame.
+    From 250 up, a species' trees share six library shapes, so the 500 avenue computes 78
+    shapes once (167 ms wall on the pool) and the walk computes none. A sowing makes the two
+    rows by the path on the press (0.8 ms at 500, 1.2 ms for the walk's pool; all 500 at once
+    was 5 ms) and one row a frame after; removed trees are freed 48 a frame.
+  - From 120 up, the 40 trees largest on screen are drawn whole and every other avenue tree goes
+    to a far batch (`far_forest.gd`): per species one branch MultiMesh and one leaf
+    MultiMesh, each tree's trunk and first whole levels and a sample of its leaves (drawn
+    larger to keep LOD 3's glow) composed into the avenue's frame once. Growth, colour by
+    height, palette phase and per-tree hue ride in the instance, so the wave still rolls out
+    through the far trees. At most 26 draws for 448 far trees. A tree crossing the line moves
+    in a frame, and a frame spends at most 1 ms placing trees.
+  - The instance budget starts higher at the bigger steps (28k, 32k, 40k, 48k; ceilings up to
+    64k) and the governor still pulls it down on a hot GPU. A forest tick now writes a tree's
+    uniforms only when it moved or is still growing.
+  - Measured on an Apple M1 Pro, mono 1280x800, standing avenue grown, `avenue_shot.sh`
+    (main script per frame avg/max; the forest's own tick max; instances drawn of the budget;
+    draws counted from the scene; triangles in view): 30: 0.35/1.37 ms, 0.46 ms, 16.9k of 24k,
+    58 draws, 128k tris. 60: 0.39/1.97, 0.58, 27.9k of 28k, 110, 215k. 120: 0.45/2.44, 1.86,
+    32.0k of 32k, 106, 189k. 250: 0.51/3.60, 2.70, 39.9k of 40k, 106, 246k. 500: 0.62/4.81,
+    1.91, 47.9k of 48k, 106, 292k; walking at 500: 1.08/2.57 ms, forest 2.16 ms. One frame in
+    2,862 at 500 passed 4 ms of script, none at any other step. The Mac was shared with other
+    work throughout (load average 6-15). None of this is a headset number; the guess is the
+    Quest at 2-3x the Mac's script time, 60 and 120 probably safe, 250 and 500 try it and see.
 - **TREE avenues.** Two new entries in TREE's MAKE card, beside SOW. AVENUE sows two rows
   of trees from your feet to 50 m down the way you face, 2.5-3 m either side of the path
   and 3-4 m apart. They sprout as a wave rolling away from you, and each crown's colour

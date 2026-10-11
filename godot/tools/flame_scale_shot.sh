@@ -29,7 +29,8 @@ kill "$WATCHDOG" 2>/dev/null; wait "$WATCHDOG" 2>/dev/null || true
 grep -a "FLAMESCALE\|SCRIPT ERROR\|SHADER ERROR\|Parse Error" "$LOG" || { tail -20 "$LOG"; exit 1; }
 grep -aq "SCRIPT ERROR\|SHADER ERROR\|Parse Error" "$LOG" && RC=1
 for png in flame-home.png galaxy-fwd.png galaxy-up.png galaxy-out.png echoes-off-wide.png \
-		echoes-eight-wide.png sky-equirect.png sky-tree.png nosky-tree.png sky-ifs.png sky-ground.png; do
+		echoes-eight-wide.png sky-equirect.png sky-tree.png nosky-tree.png sky-ifs.png sky-ground.png \
+		sky-flame.png nosky-flame.png sky-bulb.png nosky-bulb.png; do
 	[ -s "$OUT/$png" ] || { echo "FLAMESCALE FAIL missing $OUT/$png"; exit 1; }
 done
 exit $RC

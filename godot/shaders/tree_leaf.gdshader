@@ -42,6 +42,9 @@ uniform float leaf_shape = 0.0;
 // over it instead of wrapping: 0 is the ramp exactly as before, 0.25 the bright half, 0.75
 // the deep half, and a tree never jumps from white to dark at a seam.
 uniform float palette_phase = 0.0;
+// The far batch (far_forest.gd), as in tree.gdshader: CUSTOM.x is the birth on the shared
+// clock, CUSTOM.y the tree's palette phase and CUSTOM.z its leaf hue. Off, nothing changes.
+uniform bool batch = false;
 
 vec3 hue_turn(vec3 c, float a) {
 	const vec3 k = vec3(0.57735027);
@@ -51,6 +54,7 @@ vec3 hue_turn(vec3 c, float a) {
 
 varying vec2 v_uv;
 varying float v_hue;
+varying flat float v_leaf_hue;
 
 // The flutter phase comes from the point's place in the tree, not from its branch: with a
 // phase per branch, a parent's tip ring and its child's base ring fluttered apart by up to
@@ -72,7 +76,9 @@ vec3 sway(vec3 w, float phase) {
 void vertex() {
 	float birth = INSTANCE_CUSTOM.x;
 	float phase = INSTANCE_CUSTOM.w;
-	v_hue = 1.0 - abs(fract(COLOR.r * 0.5 + palette_phase) * 2.0 - 1.0);
+	float phase_t = batch ? INSTANCE_CUSTOM.y : palette_phase;
+	v_hue = 1.0 - abs(fract(COLOR.r * 0.5 + phase_t) * 2.0 - 1.0);
+	v_leaf_hue = INSTANCE_CUSTOM.z;
 	// Leaves open after their branch has finished extending.
 	float g = clamp((grow_t - (birth * grow_s + 0.8)) / 1.2, 0.0, 1.0);
 	g = g * g * (3.0 - 2.0 * g);
@@ -107,8 +113,9 @@ void fragment() {
 	// every leaf came out nearly the same colour, so a cluster had no internal contrast
 	// to survive the additive stacking. pal2 gives the canopy somewhere darker to sit.
 	vec3 c = (v_hue < 0.5) ? mix(pal2, pal3, v_hue * 2.0) : mix(pal3, pal4, (v_hue - 0.5) * 2.0);
-	if (leaf_mix > 0.0 || leaf_hue != 0.0) {
-		c = max(hue_turn(c, leaf_hue), vec3(0.0));
+	float lh = batch ? v_leaf_hue : leaf_hue;
+	if (leaf_mix > 0.0 || lh != 0.0) {
+		c = max(hue_turn(c, lh), vec3(0.0));
 		float luma = dot(c, vec3(0.299, 0.587, 0.114));
 		c = mix(c, leaf_tint * max(luma * 1.4, 0.08), leaf_mix);
 	}

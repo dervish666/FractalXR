@@ -104,12 +104,14 @@ var help := HelpCard.new()
 var xr: OpenXRInterface = null
 var cloud := ParticleCloud.new()
 # The flame at scale: GALAXY (stand inside it), ECHOES (copies round the room) and the SKY it
-# can be baked into for the other modes. scripts/core/flame_galaxy.gd, flame_echoes.gd,
+# can be baked into for every mode. scripts/core/flame_galaxy.gd, flame_echoes.gd,
 # flame_sky.gd; the glue is _tick_flame_scale() and the functions after it.
 var galaxy := FlameGalaxy.new()
 var flame_echoes := FlameEchoes.new()
 var flame_sky := FlameSky.new()
 var sky_on := false
+## BULB's own SKY switch, off until pressed there: the splats sit at the budget line already.
+var sky_bulb_on := false
 var _galaxy_saved := {}
 var _near_fade := 0.0
 ## Raymarched bulb surface, the alternative to splatting the shell. Child of the cloud
@@ -689,6 +691,19 @@ func _build_menu() -> void:
 			func(): return "%d trees" % forest.tree_count(),
 			func(): _clear_forest(),
 			false, _vis_tree),
+		# How many trees AVENUE, WALK and SOW grow (scripts/tree/forest.gd STEPS). A step sows
+		# the current layout again at the new size.
+		WristMenu.Item.new("make", "COUNT",
+			func(): return "%d trees" % int(forest.step()["n"]),
+			func(): _step_tree_count(1),
+			false, _vis_tree).stepping(func(d: int): _step_tree_count(d)).slider(
+			func(): return forest.count_idx, Forest.STEPS.size()),
+		# Surface roots on the avenue's two inner rows, bent toward the middle so they edge a
+		# path (scripts/tree/tree_roots.gd). Off by default.
+		WristMenu.Item.new("make", "ROOTS",
+			func(): return "edge the path" if forest.roots_on else "off",
+			func(): forest.set_roots(not forest.roots_on),
+			false, _vis_tree).toggle(func(): return forest.roots_on),
 
 		WristMenu.Item.new("make", "RANDOM",
 			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
@@ -720,8 +735,8 @@ func _build_menu() -> void:
 			func(): return "reset", func(): _recenter(); cloud.request_measure(),
 			false, _vis_grab),
 		# The flame at scale. GALAXY grows it round you, ECHOES hangs copies of it round the
-		# room, TO SKY bakes it into the sky that GROUND, TREE and IFS wear, and SKY, on this
-		# card in every mode, hangs or hides it. Not in the bottom bar: a fourth item there cut
+		# room, TO SKY bakes it into the sky every mode can wear, and SKY, on this card in every
+		# mode, hangs or hides it (BULB keeps its own switch). Not in the bottom bar: a fourth item there cut
 		# PASSTHRU to PASS and EXIT's "hold to quit" to "hold to q".
 		WristMenu.Item.new("scene", "GALAXY",
 			func(): return "inside" if galaxy.active else "off",
@@ -741,7 +756,7 @@ func _build_menu() -> void:
 			false, _vis_flame),
 		WristMenu.Item.new("scene", "SKY",
 			func(): return _sky_label(),
-			func(): _toggle_sky()).toggle(func(): return sky_on),
+			func(): _toggle_sky()).toggle(func(): return _sky_switch()),
 		WristMenu.Item.new("look", "POINTS",
 			func(): return _fmt_count(cloud.get_count()),
 			func():
@@ -1257,8 +1272,9 @@ func _set_tree_mode(on: bool) -> void:
 		if tree.branch_count == 0:
 			tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
 		_set_forest_wind(TREE_WIND[tree_wind_idx])
-		_regrow_forest()
+		# Recentre first: a grove sown on entry keeps clear of you from where you will stand.
 		_recenter()
+		_regrow_forest()
 		_apply_palette()
 	else:
 		_recenter()
@@ -1585,6 +1601,21 @@ func _sow_grove() -> void:
 ## Two rows from your feet down the way you face; the hero steps out of the path.
 func _sow_avenue(walk: bool) -> void:
 	forest.sow_avenue(xr_camera.global_transform, walk, FractalTree.SHAPE_NAMES[tree_shape_idx])
+
+
+## COUNT: the next size up or down, sown again in the layout on show.
+func _step_tree_count(d: int) -> void:
+	var i := clampi(forest.count_idx + d, 0, Forest.STEPS.size() - 1)
+	if i == forest.count_idx:
+		return
+	forest.set_count(i)
+	match forest.layout:
+		Forest.Layout.GROVE:
+			_sow_grove()
+		Forest.Layout.AVENUE:
+			_sow_avenue(false)
+		Forest.Layout.WALK:
+			_sow_avenue(true)
 
 
 ## WALK on sows the endless avenue; off stops where you are and lets the far end grow in.
@@ -2134,9 +2165,11 @@ func _tick_flame_scale(delta: float) -> void:
 		_near_fade = fade
 		cloud.set_near_fade(fade)
 	flame_echoes.suppressed = galaxy.active or galaxy.is_moving()
-	# The sky hangs behind the modes that are not the flame itself. Bulb is left out on budget
-	# (13.9 ms measured, at the line already), and passthrough always wins: the room is the sky.
-	flame_sky.sync(sky_on and (ground_mode or tree_mode or ifs_mode) and not passthrough, delta)
+	# The sky hangs behind every mode, the live flame included: bake flame A, then flame B
+	# stands in front of it. BULB has its own switch, off until pressed there: its splats were
+	# measured at 13.9 ms, at the line already, and a baked sky is one fetch per background
+	# pixel on top (under 1 ms, a guess). Passthrough always wins: the room is the sky.
+	flame_sky.sync(_sky_switch() and not passthrough, delta)
 
 
 func _toggle_galaxy() -> void:
@@ -2211,17 +2244,26 @@ func _bake_sky() -> void:
 		sky_on = true
 
 
-## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds.
+## The SKY switch. Switched on with nothing baked, it bakes whatever flame the cloud holds
+## (in BULB that is nothing, so it reads "no flame" until a flame has been baked).
 func _toggle_sky() -> void:
-	sky_on = not sky_on
-	if sky_on and not flame_sky.ready and not flame_sky.baking:
+	if bulb_mode:
+		sky_bulb_on = not sky_bulb_on
+	else:
+		sky_on = not sky_on
+	if _sky_switch() and not flame_sky.ready and not flame_sky.baking:
 		_bake_sky()
+
+
+## The switch the SKY tile shows and flips in the current mode.
+func _sky_switch() -> bool:
+	return sky_bulb_on if bulb_mode else sky_on
 
 
 func _sky_label() -> String:
 	if flame_sky.baking:
 		return "baking %d%%" % int(flame_sky.progress * 100.0)
-	if not sky_on:
+	if not _sky_switch():
 		return "off"
 	return "on" if flame_sky.ready else "no flame"
 

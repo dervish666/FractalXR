@@ -2,7 +2,8 @@ extends RefCounted
 class_name FlameSky
 
 ## FLAME SKY: the current flame baked once into an HDR equirect and hung as the sky behind
-## GROUND, TREE and IFS. Baked once and then static, so nothing in it moves or shimmers; a sky
+## every mode: GROUND, TREE, IFS, the live flame itself (bake flame A, show flame B in front of
+## it), and BULB on a switch of its own. Baked once and then static, so nothing in it moves or shimmers; a sky
 ## at infinity is a fixed reference, which is a comfort aid rather than a cost.
 ##
 ## THE BAKE. From the flame's centre, so the sky is the flame seen from inside it. 65,536
