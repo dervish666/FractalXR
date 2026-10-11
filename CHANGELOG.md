@@ -6,6 +6,9 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Changed
+- **The help card knows WALK and DIVE.** TREE's trigger callouts add "WALK: hold to glide"
+  and IFS's add "DIVE: hold, eye a copy", the small second-job line the sticks already use.
+  A three-line trigger block rises half a line per extra line so it clears the stick's label.
 - **Choose a fractal by its picture.** Every mode's chooser (flame presets, bulbs, ground
   families, the 13 tree species, IFS shapes) is now a full-width card showing the current
   fractal's picture, and inside it a page of picture buttons, one per entry, the current one

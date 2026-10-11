@@ -11,9 +11,11 @@ WATCHDOG=$!
 # orphaned watchdog pkills whatever run of this project is in flight. The trap fires
 # on every exit path.
 trap 'set +e; kill $WATCHDOG 2>/dev/null; true' EXIT
+# || RC=$?, not a bare RC=$? after: under set -e a failing run exited here and the grep below
+# never printed which line clipped.
+RC=0
 "$GODOT" $GODOT_FLAGS --rendering-method mobile --resolution 320x240 --position 0,0 \
-	--script tools/card_shot.gd > "$PROJ/.spike-out/card_shot.log" 2>&1
-RC=$?
+	--script tools/card_shot.gd > "$PROJ/.spike-out/card_shot.log" 2>&1 || RC=$?
 kill $WATCHDOG 2>/dev/null; wait $WATCHDOG 2>/dev/null || true
 grep -a "CARDSHOT\|SCRIPT ERROR\|Parse Error" "$PROJ/.spike-out/card_shot.log" || { tail -20 "$PROJ/.spike-out/card_shot.log"; exit 1; }
 exit $RC
