@@ -6,6 +6,14 @@ All notable changes to FractalXR are documented here. Format based on
 ## [Unreleased]
 
 ### Changed
+- **SKY works in FLAME and BULB.** The baked flame sky now hangs behind the live flame too, so
+  baking flame A and moving on to flame B puts B in front of A's sky. The points are additive
+  with no depth test and draw after the sky, so the flame lands on top: on the desktop the
+  flame's pixels came out at 0.375 mean luminance (0.236 with the sky off) against 0.096 for
+  the sky around it. BULB gets its own SKY switch, off until pressed there, whatever the other
+  modes have on: the splats were measured at 13.9 ms, at the line already, and the baked sky
+  adds one texture fetch per background pixel (under 1 ms, a guess). Passthrough still wins
+  in every mode. `flame_scale_shot.sh` adds sky and no-sky pairs over the flame and the bulb.
 - **The help card knows WALK and DIVE.** TREE's trigger callouts add "WALK: hold to glide"
   and IFS's add "DIVE: hold, eye a copy", the small second-job line the sticks already use.
   A three-line trigger block rises half a line per extra line so it clears the stick's label.
