@@ -1,6 +1,6 @@
 # FractalXR
 
-Fractals you can hold, walk through and stand inside, on a **Meta Quest 3 or 3S**.
+Fractals you can hold, walk through and stand inside, on a **Meta Quest 3** (the 3S should work but is untested).
 
 FractalXR is a native Quest app built in Godot 4. Every form is computed live on the
 headset's GPU, not played back from a video or a pre-made model, so detail keeps arriving as
@@ -81,7 +81,7 @@ A sculpture of mirrored frames built by recursion, which you can edit by hand.
 
 ## Try it on a Quest
 
-You need a Quest 3 or 3S, a computer, and a USB-C cable.
+You need a Quest 3 (the 3S should work but is untested), a computer, and a USB-C cable.
 
 1. Put the headset in developer mode (Meta Horizon phone app: Menu, Devices, your headset,
    Headset settings, Developer mode).
@@ -179,3 +179,7 @@ and the shared palettes. Cloudflare still builds and deploys `main` to the live 
 
 Native: Godot 4.7 (Mobile renderer, compute shaders), OpenXR, GDScript.
 Web: TypeScript, Vite, Three.js r0.184, WebGL2 and WebXR.
+
+## Licence
+
+MIT, see LICENSE.
