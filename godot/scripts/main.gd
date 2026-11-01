@@ -2963,6 +2963,13 @@ func _handle_input(delta: float) -> void:
 		ls = left_hand.get_vector2("primary")
 	if xr == null:
 		rs = Vector2(Input.get_axis("ui_left", "ui_right"), Input.get_axis("ui_down", "ui_up"))
+	# A ray on a scrubbable tile owns the sticks, both of them and both axes: a scrub wants
+	# |x| >= 0.6, so a diagonal push used to clear the deadzone on Y and move the world too,
+	# and a floated panel can make the left hand the pointer. Zeroed here, every mode below
+	# is gated at once.
+	if menu.wants_stick():
+		rs = Vector2.ZERO
+		ls = Vector2.ZERO
 
 	_walk_stick = false
 	if ground_mode:
@@ -2981,7 +2988,7 @@ func _handle_input(delta: float) -> void:
 				ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
 			if absf(rs.y) > 0.15:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
-			if absf(rs.x) > 0.15 and not menu.wants_stick():
+			if absf(rs.x) > 0.15:
 				ground.rotate_about_head(-rs.x * GROUND_TURN_RAD_S * delta)
 	# WALK owns the sticks. The right stick pushed forward glides like a held trigger, under
 	# the same pace, ease and tunnel; it used to shove the whole avenue at 1.5 m/s with no
@@ -2994,7 +3001,7 @@ func _handle_input(delta: float) -> void:
 	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
 	# the sculpture moves out from under the plane you are dragging.
 	elif (grab == null or not grab.is_grabbing()) and not ifs_edit.is_editing():
-		if absf(rs.x) > 0.15 and not menu.wants_stick():
+		if absf(rs.x) > 0.15:
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
 			var fwd := -xr_camera.global_transform.basis.z
@@ -3282,6 +3289,8 @@ func _apply_surface() -> void:
 ## SOLID on, off, or at a new grid. Entering it re-homes the bulb to the render's framing;
 ## a build already running or finished for this bulb and grid is kept.
 var _solid_key := ""
+## DRIFT, spin and THEME as they were before SOLID turned them off, put back on the way out.
+var _solid_saved := {}
 
 
 func _apply_solid() -> void:
@@ -3291,6 +3300,7 @@ func _apply_solid() -> void:
 			solid.clear()
 			_solid_key = ""
 			_set_solid_msaa(false)
+			_restore_solid_saved()
 		return
 	var entering := _solid_key == ""
 	var key := "%s/%d" % [_bulb.display_name, n]
@@ -3301,6 +3311,7 @@ func _apply_solid() -> void:
 		_solid_home()
 		# A sculpture to look at, not a slideshow: DRIFT would rebuild it every 20 s. And it
 		# opens on the Mandelbulber palette; THEME still recolours it, DRIFT turns back on.
+		_solid_saved = {"drift": _drift, "spin": spin, "theme": theme_idx}
 		_drift = false
 		# The light is baked in and turns with the shape, so the ambient spin would carry the
 		# lit side away from you in forty seconds. A grab still turns it, light and all.
@@ -3314,6 +3325,24 @@ func _apply_solid() -> void:
 	var key_state := (cloud.global_transform.basis.orthonormalized().inverse()
 		* SOLID_KEY_WORLD.normalized())
 	solid.request(_bulb, n, key_state)
+
+
+## Leaving SOLID puts back what entering it switched off. Each one only if it still holds
+## the value SOLID gave it: a DRIFT, spin or THEME chosen while SOLID was up is kept.
+func _restore_solid_saved() -> void:
+	if _solid_saved.is_empty():
+		return
+	if not _drift:
+		_drift = bool(_solid_saved["drift"])
+		_drift_hold = 0.0
+	if not spin:
+		spin = bool(_solid_saved["spin"])
+	var t := int(_solid_saved["theme"])
+	if theme_idx < 0 and t >= 0 and t < library.themes.size():
+		_begin_theme_blend()
+		theme_idx = t
+		_apply_palette()
+	_solid_saved = {}
 
 
 ## Main thread, every frame in bulb mode: drive the build on the render thread and swap

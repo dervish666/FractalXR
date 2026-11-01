@@ -26,7 +26,7 @@ const AHEAD := 3.0
 const DROP := 0.4
 ## The grow, and the shrink back out. First instinct said 2 s.
 const TWEEN_S := 8.0
-## Points closer than this to the eye fade out (points.gdshader near_fade).
+## Points and splats closer than this to the eye fade out (near_fade in points and splat.gdshader).
 const NEAR_FADE_M := 0.6
 ## Per-point brightness inside, at least (a higher BRIGHT the user chose stays). A value rather
 ## than "one step up", so it does not move if the ladder or the default does. It was written

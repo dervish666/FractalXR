@@ -9,6 +9,26 @@ function normalizeVariations(g: FlameGenome): FlameGenome {
   return g
 }
 
+const isVec3 = (v: unknown): boolean =>
+  Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === 'number')
+
+/** The fields morph.ts and encode.ts index directly. `variations` may be missing: the
+ *  loader backfills it, which is how older saves keep working. */
+function isFlameTransform(t: unknown): boolean {
+  const x = t as Record<string, unknown> | null
+  return (
+    typeof x === 'object' &&
+    x !== null &&
+    isVec3(x.rowX) &&
+    isVec3(x.rowY) &&
+    isVec3(x.rowZ) &&
+    isVec3(x.translate) &&
+    typeof x.weight === 'number' &&
+    typeof x.colorIndex === 'number' &&
+    (x.variations === undefined || (typeof x.variations === 'object' && x.variations !== null))
+  )
+}
+
 /** Shape guard so a corrupted or older-schema entry can't detonate the morph/encode pipeline
  *  on the first "Faves" press (a TypeError thrown inside the XR render loop kills the session). */
 function isFlameGenome(g: unknown): g is FlameGenome {
@@ -17,6 +37,7 @@ function isFlameGenome(g: unknown): g is FlameGenome {
     !!f &&
     Array.isArray(f.transforms) &&
     f.transforms.length > 0 &&
+    f.transforms.every(isFlameTransform) &&
     Array.isArray(f.palette) &&
     f.palette.length > 0 &&
     typeof f.brightness === 'number' &&

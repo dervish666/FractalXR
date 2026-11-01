@@ -871,9 +871,10 @@ func flame_drawn() -> bool:
 	return not _hidden and not _splat and source != null and source.id == &"flame"
 
 
-## Fade points within `m` metres of the eye (0 = off). Point path only; GALAXY uses it.
+## Fade points and splats within `m` metres of the eye (0 = off). GALAXY uses it.
 func set_near_fade(m: float) -> void:
-	_material.set_shader_parameter("near_fade", maxf(0.0, m))
+	for mat in _mats:
+		mat.set_shader_parameter("near_fade", maxf(0.0, m))
 
 
 func request_seed() -> void:

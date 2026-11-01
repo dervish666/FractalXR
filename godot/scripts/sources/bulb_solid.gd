@@ -223,10 +223,10 @@ func request(src: BulbSource, n: int, light_state: Vector3) -> void:
 ## Drop the mesh and abandon any build in flight. Its readbacks are tagged with the old
 ## generation and are dropped when they land.
 func clear() -> void:
-	if is_building():
-		# 30-160 MB of scratch that nothing will read now. The RD defers the free past any
-		# frame still using it, so a readback in flight is safe.
-		RenderingServer.call_on_render_thread(_free_buffers)
+	# 30-160 MB of scratch that nothing will read now, whatever state it was left in: a build
+	# that failed went IDLE holding it. The RD defers the free past any frame still using it,
+	# so a readback in flight is safe, and freeing what is already freed is a no-op.
+	RenderingServer.call_on_render_thread(_free_buffers)
 	_gen += 1
 	state = State.IDLE
 	mesh = null
@@ -375,7 +375,7 @@ func _on_vert_count(raw: PackedByteArray, gen: int) -> void:
 	if vert_count == 0:
 		_err = "no surface crossed the grid"
 		push_warning("[solid] %s" % _err)
-		state = State.IDLE
+		_fail()
 
 
 func _on_counters(raw: PackedByteArray, gen: int) -> void:
@@ -387,7 +387,7 @@ func _on_counters(raw: PackedByteArray, gen: int) -> void:
 	if tri_count == 0:
 		_err = "the surface made no triangles"
 		push_warning("[solid] %s" % _err)
-		state = State.IDLE
+		_fail()
 		return
 	_hist.resize(64)
 	for i in 64:
@@ -421,7 +421,7 @@ func _finish(gen: int) -> void:
 		adata.resize(vc * 12)
 	var surf := _surface_template()
 	if surf.is_empty():
-		state = State.IDLE
+		_fail()
 		return
 	surf["vertex_data"] = vdata
 	surf["attribute_data"] = adata
@@ -434,7 +434,7 @@ func _finish(gen: int) -> void:
 	if m.get_surface_count() != 1:
 		_err = "mesh rejected the surface"
 		push_error("[solid] %s" % _err)
-		state = State.IDLE
+		_fail()
 		return
 	mesh = m
 	_set_cdf()
@@ -623,6 +623,13 @@ func _ensure_buffers() -> bool:
 	print("[solid] grid %d buffers: %.1f MB (caps %d verts, %d tris)" % [n,
 		float(row * c * c * 4 + n * n * n * 4 + _cap_v * 24 + _cap_t * 12) / 1048576.0, _cap_v, _cap_t])
 	return true
+
+
+## A build that gave up keeps nothing: back to IDLE and the scratch goes, as on success.
+## Called from readback callbacks and from _finish; either way the free is queued.
+func _fail() -> void:
+	state = State.IDLE
+	RenderingServer.call_on_render_thread(_free_scratch.bind(_gen))
 
 
 ## The scratch is 30-160 MB depending on the grid. Once the mesh is up nothing reads it.
