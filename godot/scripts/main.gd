@@ -2963,6 +2963,13 @@ func _handle_input(delta: float) -> void:
 		ls = left_hand.get_vector2("primary")
 	if xr == null:
 		rs = Vector2(Input.get_axis("ui_left", "ui_right"), Input.get_axis("ui_down", "ui_up"))
+	# A ray on a scrubbable tile owns the sticks, both of them and both axes: a scrub wants
+	# |x| >= 0.6, so a diagonal push used to clear the deadzone on Y and move the world too,
+	# and a floated panel can make the left hand the pointer. Zeroed here, every mode below
+	# is gated at once.
+	if menu.wants_stick():
+		rs = Vector2.ZERO
+		ls = Vector2.ZERO
 
 	_walk_stick = false
 	if ground_mode:
@@ -2981,7 +2988,7 @@ func _handle_input(delta: float) -> void:
 				ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
 			if absf(rs.y) > 0.15:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
-			if absf(rs.x) > 0.15 and not menu.wants_stick():
+			if absf(rs.x) > 0.15:
 				ground.rotate_about_head(-rs.x * GROUND_TURN_RAD_S * delta)
 	# WALK owns the sticks. The right stick pushed forward glides like a held trigger, under
 	# the same pace, ease and tunnel; it used to shove the whole avenue at 1.5 m/s with no
@@ -2994,7 +3001,7 @@ func _handle_input(delta: float) -> void:
 	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
 	# the sculpture moves out from under the plane you are dragging.
 	elif (grab == null or not grab.is_grabbing()) and not ifs_edit.is_editing():
-		if absf(rs.x) > 0.15 and not menu.wants_stick():
+		if absf(rs.x) > 0.15:
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
 			var fwd := -xr_camera.global_transform.basis.z
