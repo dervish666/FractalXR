@@ -181,6 +181,21 @@ All notable changes to FractalXR are documented here. Format based on
   shows the new scheme, with the menu button drawn and each stick's click named.
 
 ### Fixed
+- **Scrubbing a menu tile with the stick no longer moves the world.** Only the right stick's
+  sideways push was handed to the menu; a diagonal push still shoved the flame or zoomed and
+  panned the ground, and with the panel floated the left hand could point and its stick
+  walked or scaled the world. While a ray is on a tile that scrubs, both sticks belong to the
+  menu, in every mode. Native build.
+- **Leaving SOLID gives back DRIFT, spin and THEME.** Entering SOLID switches all three off;
+  they used to stay off afterwards. Anything you changed while SOLID was up is kept. Native
+  build.
+- **GALAXY with flame SPLAT: splats fade near your face.** The point path already faded inside
+  0.6 m; splats did not, and the nearest ones swelled to fill the view. They now fade over the
+  same distance and a fully faded splat is not drawn. Native build.
+- A SOLID build that fails now frees its 30-160 MB of GPU scratch, as does turning SOLID off.
+  Native build.
+- A saved favourite whose transforms are malformed is skipped on load instead of crashing the
+  session on the first FAVES morph. WebXR build.
 - **The flame flickers far less while you look at it.** Each point's brightness used to
   depend on where its centre fell inside a pixel: full at the middle, fading out, and nothing
   at all in the corners (a fifth of all positions). A Quest head is never still, so every
