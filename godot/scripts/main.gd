@@ -3289,6 +3289,8 @@ func _apply_surface() -> void:
 ## SOLID on, off, or at a new grid. Entering it re-homes the bulb to the render's framing;
 ## a build already running or finished for this bulb and grid is kept.
 var _solid_key := ""
+## DRIFT, spin and THEME as they were before SOLID turned them off, put back on the way out.
+var _solid_saved := {}
 
 
 func _apply_solid() -> void:
@@ -3298,6 +3300,7 @@ func _apply_solid() -> void:
 			solid.clear()
 			_solid_key = ""
 			_set_solid_msaa(false)
+			_restore_solid_saved()
 		return
 	var entering := _solid_key == ""
 	var key := "%s/%d" % [_bulb.display_name, n]
@@ -3308,6 +3311,7 @@ func _apply_solid() -> void:
 		_solid_home()
 		# A sculpture to look at, not a slideshow: DRIFT would rebuild it every 20 s. And it
 		# opens on the Mandelbulber palette; THEME still recolours it, DRIFT turns back on.
+		_solid_saved = {"drift": _drift, "spin": spin, "theme": theme_idx}
 		_drift = false
 		# The light is baked in and turns with the shape, so the ambient spin would carry the
 		# lit side away from you in forty seconds. A grab still turns it, light and all.
@@ -3321,6 +3325,24 @@ func _apply_solid() -> void:
 	var key_state := (cloud.global_transform.basis.orthonormalized().inverse()
 		* SOLID_KEY_WORLD.normalized())
 	solid.request(_bulb, n, key_state)
+
+
+## Leaving SOLID puts back what entering it switched off. Each one only if it still holds
+## the value SOLID gave it: a DRIFT, spin or THEME chosen while SOLID was up is kept.
+func _restore_solid_saved() -> void:
+	if _solid_saved.is_empty():
+		return
+	if not _drift:
+		_drift = bool(_solid_saved["drift"])
+		_drift_hold = 0.0
+	if not spin:
+		spin = bool(_solid_saved["spin"])
+	var t := int(_solid_saved["theme"])
+	if theme_idx < 0 and t >= 0 and t < library.themes.size():
+		_begin_theme_blend()
+		theme_idx = t
+		_apply_palette()
+	_solid_saved = {}
 
 
 ## Main thread, every frame in bulb mode: drive the build on the render thread and swap
