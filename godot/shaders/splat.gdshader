@@ -129,6 +129,10 @@ uniform float splat_light = 0.35;
 uniform float sharpness = 3.0;
 uniform vec3 cloud_center = vec3(0.0);
 uniform float cloud_fit = 1.0;
+// Splats closer than this to the eye fade out, 0 = off. GALAXY sets it (flame_galaxy.gd), as
+// points.gdshader does: a quad sized in screen space grows without bound as it nears the
+// eye, so inside the galaxy the nearest splats were filling the view around the face.
+uniform float near_fade = 0.0;
 // The palette coordinate is stretched by a fixed 4/3 about the centre before the ramp
 // lookup. A live version (measured mean and spread, which measure.glsl still sums)
 // was planned and never wired up; this constant stretch is the look that shipped.
@@ -346,6 +350,11 @@ void vertex() {
 		if (alpha < 0.002) cull = true;
 	}
 
+	if (near_fade > 0.0) {
+		alpha *= smoothstep(near_fade * 0.4, near_fade, length(vc));
+		// Fully faded costs nothing: cull it before it spends fill on a transparent quad.
+		if (alpha < 0.002) cull = true;
+	}
 	v_alpha = alpha;
 	v_col = palette(s.w) * brightness * shade;
 
