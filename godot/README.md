@@ -26,7 +26,8 @@ below. The player-facing description is in `../README.md`.
 
 ```
 main.tscn                          the one scene
-scripts/main.gd                    XR setup, input, modes, menu item table, perf guard
+scripts/main.gd                    XR setup, input, modes, perf guard
+scripts/menu/*_items.gd           the wrist menu, one item list per mode (+ shared_items.gd)
 scripts/core/                      the particle cloud, flame morphing and breeding, flam3 tone map,
                                    GALAXY, ECHOES and SKY, preset library
 scripts/sources/                   fractal sources: flame (chaos game), bulb (compute), the
@@ -118,7 +119,7 @@ runtime.
 
 Each entry is a label plus two closures, `read` and `advance`, and a chain for its kind.
 The menu knows nothing about particle counts or exposures, so **adding a setting is one
-entry** in the item list in `main.gd`. The trigger is taken over only while the pointer is
+entry** in that mode's file under `scripts/menu/` (`menu_items.gd` installs them; `menu_shot.sh` fails on a label that means two things). The trigger is taken over only while the pointer is
 actually on the panel, so changing flames still works everywhere else.
 
 ## Transitions
