@@ -69,6 +69,12 @@ func is_moving() -> bool:
 	return _t < 1.0
 
 
+## 0..1, the ease's speed against its peak: smoothstep's slope 6t(1-t) over its 1.5 at the
+## middle. Scale moves in log space on the same curve, so this is how fast the flame grows.
+func motion() -> float:
+	return 4.0 * _t * (1.0 - _t) if _t < 1.0 else 0.0
+
+
 func stop() -> void:
 	_t = 1.0
 

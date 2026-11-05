@@ -233,8 +233,10 @@ class ControlsCard extends Control:
 		var right_grip := PackedStringArray(["Both grips: scale", "and fly through"])
 		var face := PackedStringArray(["A · B: previous,", "next flame"])
 		var left_face := PackedStringArray(["X: home", "Y: next theme"])
-		var menu_btn := PackedStringArray(["Float the menu", "· again: back on the arm"])
-		var mode_note := "Wrist up for the menu. Point and pull; the other trigger goes back a level."
+		# The menu is the whole app past these buttons, so where it lives is on the card in every
+		# mode, on the button that floats it, not in one mode's footnote.
+		var menu_btn := PackedStringArray(["Wrist up: menu", "· button: float it"])
+		var mode_note := "In the menu, point and pull; the other trigger goes back a level."
 		if _mode == "tree":
 			# WALK takes both triggers over: held, they glide down the avenue instead.
 			left_trigger = PackedStringArray(["Regrow", "every tree", "· WALK: hold to glide"])
@@ -250,7 +252,7 @@ class ControlsCard extends Control:
 			left_trigger = PackedStringArray(["Glide to", "the point"])
 			right_trigger = PackedStringArray(["Glide to", "the point"])
 			left_stick = PackedStringArray(["Walk the ground", "· click: passthrough"])
-			right_stick = PackedStringArray(["Turn + zoom", "· click: orbit on, off"])
+			right_stick = PackedStringArray(["Snap turn, zoom", "· click: orbit on, off"])
 			face = PackedStringArray(["A · B: previous,", "next terrain style"])
 			# Ground has no object to hold. The grips drag and scale the field under you.
 			left_grip = PackedStringArray(["Hold to drag", "the ground"])
@@ -268,7 +270,6 @@ class ControlsCard extends Control:
 			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt", "· DIVE: hold, eye a copy"])
 			right_stick = PackedStringArray(["Turn, push away", "· click: breathing on, off"])
 			face = PackedStringArray(["A · B: previous,", "next sculpture"])
-			left_face = PackedStringArray(["X: reset the shape", "Y: next theme"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
 			mode_note = "SHAPE morphs it; EDIT shows the mirrors; MOTION breathes; ECHOES fills the room"
