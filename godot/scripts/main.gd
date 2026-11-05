@@ -1502,13 +1502,24 @@ func _step_ifs_depth(d: int) -> void:
 	ifs_edit.refresh()   # the depth plates sit on the published z extent, which just moved
 
 
-## Back to the shape and the pose the mode opens with. Geometry and placement only: the
-## palette, the eye buffer and passthrough are the user's choices, not this mode's.
+## RESET: back to the shape and the pose the mode opens with. Geometry and placement only: the
+## palette, the eye buffer and passthrough are the user's choices, not this mode's. The mirrors
+## it clears become the one step UNDO restores, so a sculpt is never one tile away from gone.
 func _reset_ifs() -> void:
 	# A morph in flight lands first, on the preset the SHAPE tile is already naming. Resetting
 	# to a shape that is still travelling somewhere else would undo itself a frame later.
 	ifs.settle()
+	ifs_edit.cancel()
+	var planes := {
+		"plane1_normal": ifs.plane1_normal, "plane1_offset": ifs.plane1_offset,
+		"plane2_normal": ifs.plane2_normal, "plane2_offset": ifs.plane2_offset,
+	}
+	var sculpted: bool = ifs.plane1_normal != FractalIFS.DEFAULT_N1 \
+		or ifs.plane2_normal != FractalIFS.DEFAULT_N2 \
+		or ifs.plane1_offset != 0.0 or ifs.plane2_offset != 0.0
 	_reset_ifs_shape()
+	if sculpted:
+		ifs_edit.remember(planes)
 	_recenter()
 
 
@@ -3091,13 +3102,15 @@ func _handle_input(delta: float) -> void:
 		_step_detail(1)
 
 
-## X: home. The mode's own idea of "put it back": the ground's start view, the
-## sculpture's shape and pose, otherwise the cloud's framing in front of you.
+## X: home. The mode's own idea of "put it back": the ground's start view, otherwise the
+## thing's framing in front of you. Pose only, in every mode: X is pressed by feel, and in IFS
+## it used to reset the sculpture and drop its undo, so one stray thumb lost the work. The
+## shape reset lives on the RESET tile, which keeps an UNDO.
 func _go_home() -> void:
 	if ground_mode:
 		ground.home()
 	elif ifs_mode:
-		_reset_ifs()
+		_recenter()
 	else:
 		_recenter()
 		if not tree_mode:

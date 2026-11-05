@@ -124,11 +124,18 @@ func has_undo() -> bool:
 	return _has_undo
 
 
-## RESET is the other direction from UNDO, so it clears this: one step back must never land
-## on a shape from before the reset.
+## A new sculpture (a preset change) clears this: one step back must never land on a shape
+## from before it.
 func clear_undo() -> void:
 	_has_undo = false
 	_undo_snap = {}
+
+
+## RESET's way back: the parameters it is about to clear become the one step UNDO restores.
+## Any keys of _params() will do; RESET passes the mirrors only, since DEPTH has its own tile.
+func remember(p: Dictionary) -> void:
+	_undo_snap = p
+	_has_undo = not p.is_empty()
 
 
 ## The rung a drag returns to on release. Stepping DETAIL mid-drag would otherwise be undone

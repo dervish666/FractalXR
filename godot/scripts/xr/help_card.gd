@@ -268,7 +268,6 @@ class ControlsCard extends Control:
 			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt", "· DIVE: hold, eye a copy"])
 			right_stick = PackedStringArray(["Turn, push away", "· click: breathing on, off"])
 			face = PackedStringArray(["A · B: previous,", "next sculpture"])
-			left_face = PackedStringArray(["X: reset the shape", "Y: next theme"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
 			mode_note = "SHAPE morphs it; EDIT shows the mirrors; MOTION breathes; ECHOES fills the room"
