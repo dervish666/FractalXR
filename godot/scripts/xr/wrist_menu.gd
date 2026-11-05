@@ -159,6 +159,7 @@ class Item:
 	var name_of: Callable  # pictures: i -> the entry's name (also its atlas key)
 	var choose: Callable   # pictures: i -> select entry i
 	var bar := false       # lives in the fixed bottom bar
+	var hint := ""         # one line for the status line once the ray rests on the tile
 	func _init(sec: String, l: String, r: Callable, a: Callable, w := false,
 			vis := Callable()) -> void:
 		section = sec
@@ -211,6 +212,11 @@ class Item:
 		return self
 	func minor() -> Item:
 		primary = false
+		return self
+	## What the tile changes on screen, in a few plain words. Shown on the status line after
+	## the ray has rested on the tile for HINT_S, so sweeping across the panel stays quiet.
+	func hinted(text: String) -> Item:
+		hint = text
 		return self
 	func as_card(companion := "") -> Item:
 		card_of = companion if companion != "" else label.to_lower()
@@ -749,6 +755,11 @@ var _dot_mat: StandardMaterial3D
 var _step_dir := 0
 var _step_timer := 0.0
 const REFRESH_S := 0.12
+## How long the ray rests on a tile before its hint replaces the status line.
+const HINT_S := 0.6
+var _hint_tile := -1
+var _hint_t := 0.0
+var _hint := ""
 var _refresh_accum := REFRESH_S
 var _wants_stick := false
 var _focused := true
@@ -1204,9 +1215,12 @@ func _build_viewports() -> void:
 	_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_broot.add_child(_title_label)
 	_side_label = _label("", 18, _accent, 500)
+	# Two lines tall, for a hint; a status reading is one short line on the first.
 	_side_label.position = Vector2(VIEW_SIZE.x - MARGIN_R - 260, MARGIN_T + 20)
-	_side_label.size = Vector2(260, 26)
+	_side_label.size = Vector2(260, 52)
 	_side_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_side_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_side_label.add_theme_constant_override("line_spacing", -4)
 	_broot.add_child(_side_label)
 	_crumb_label = _label("", 14, _mute, 700)
 	_crumb_label.add_theme_font_override("font", _font(700, 2))
@@ -1665,6 +1679,7 @@ func update(delta: float) -> bool:
 		_step_timer = 0.0
 		if _hovered >= 0:
 			_haptic(0.18, 0.010)
+	_tick_hint(delta)
 	_tick_drag(hit, delta)
 	_tick_hold(delta)
 	_scrub(delta)
@@ -1675,6 +1690,26 @@ func update(delta: float) -> bool:
 		_refresh_accum = 0.0
 		_refresh()
 	return on_panel
+
+
+## The hovered tile's hint, once the ray has rested there for HINT_S. Not mid-drag: a slider
+## being dragged is already saying what it does, and the status line may be the guard.
+func _tick_hint(delta: float) -> void:
+	var tile := _hovered if _drag < 0 else -1
+	if tile != _hint_tile:
+		_hint_tile = tile
+		_hint_t = 0.0
+		if _hint != "":
+			_hint = ""
+			_refresh_accum = REFRESH_S
+		return
+	if tile < 0 or _hint != "":
+		return
+	_hint_t += delta
+	var it := _tile_item[tile]
+	if _hint_t >= HINT_S and it >= 0 and items[it].hint != "":
+		_hint = items[it].hint
+		_refresh_accum = REFRESH_S
 
 
 ## One line per open in debug builds, so a device log proves what the compositor was given.
@@ -2015,7 +2050,9 @@ func _refresh() -> void:
 		w.queue_redraw()
 	if title.is_valid():
 		_title_label.text = str(title.call())
-	if status_side.is_valid():
+	if _hint != "":
+		_side_label.text = _hint
+	elif status_side.is_valid():
 		_side_label.text = str(status_side.call())
 	if status_main.is_valid():
 		var foot := str(status_main.call())
@@ -2305,6 +2342,17 @@ func debug_level(key: String, settled := true, t := 1.0) -> void:
 	_top.visible = true
 	_zoom_t = 1.0 if settled else t
 	_open_page(key)
+	_refresh()
+	_sync_back()
+	_animate(0.0)
+
+
+## For the shot tool: hover a tile with its hint already showing.
+func debug_hint(tile: int) -> void:
+	debug_force(1.0, tile)
+	var it := _tile_item[tile] if tile >= 0 else -1
+	_hint_tile = tile
+	_hint = items[it].hint if it >= 0 else ""
 	_refresh()
 	_sync_back()
 	_animate(0.0)
