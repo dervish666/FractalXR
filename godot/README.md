@@ -27,7 +27,7 @@ below. The player-facing description is in `../README.md`.
 ```
 main.tscn                          the one scene
 scripts/main.gd                    XR setup, input, modes, perf guard
-scripts/menu/*_items.gd           the wrist menu, one item list per mode (+ shared_items.gd)
+scripts/menu/*_items.gd            the wrist menu, one item list per mode (+ shared_items.gd)
 scripts/core/                      the particle cloud, flame morphing and breeding, flam3 tone map,
                                    GALAXY, ECHOES and SKY, preset library
 scripts/sources/                   fractal sources: flame (chaos game), bulb (compute), the
