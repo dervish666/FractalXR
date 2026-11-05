@@ -40,12 +40,13 @@ static func install(m: FractalMain, menu: WristMenu) -> void:
 	items.append_array([
 		WristMenu.Item.new("app", "EXIT",
 			func(): return "hold to quit",
-			func(): m.get_tree().quit()).hold().in_bar(),
+			func(): m.get_tree().quit()).hold().in_bar().hinted("Hold to quit the app"),
 		WristMenu.Item.new("app", "PASSTHRU",
 			func(): return m.passthru_label,
-			func(): m._set_passthrough(not m.passthrough)).toggle(func(): return m.passthrough).in_bar(),
+			func(): m._set_passthrough(not m.passthrough)).toggle(func(): return m.passthrough).in_bar(
+			).hinted("Shows your real room"),
 		WristMenu.Item.new("app", "HELP",
-			func(): return "controls", func(): m.help.open()).in_bar(),
+			func(): return "controls", func(): m.help.open()).in_bar().hinted("Shows the controls card"),
 	])
 	menu.items = items
 	menu.title = func(): return title(m)
@@ -55,7 +56,7 @@ static func install(m: FractalMain, menu: WristMenu) -> void:
 
 static func title(m: FractalMain) -> String:
 	if m.ifs_mode:
-		return "%s  ·  detail %d" % [FractalIFS.preset_name(m.ifs_preset_idx).capitalize(),
+		return "%s  ·  %d levels" % [FractalIFS.preset_name(m.ifs_preset_idx).capitalize(),
 			FractalMain.IFS_DETAIL[m.ifs_detail_idx]]
 	if m.tree_mode:
 		return "%s forest  ·  %d trees" % [FractalTree.SHAPE_NAMES[m.tree_shape_idx].capitalize(),
@@ -83,7 +84,7 @@ static func status_side(m: FractalMain) -> String:
 			return "capped at level %d" % m.ifs.levels_built
 		# Breathing and a morph rebuild on every frame, so they run at the rung a drag runs
 		# at. Naming it keeps the frame count below from reading as the wrong number for
-		# the rung on the DETAIL tile.
+		# the rung on the LEVELS tile.
 		# Instance and triangle counts are instruments: debug builds only, so they stay
 		# out of a release build's menu shots.
 		var dbg := OS.is_debug_build()
@@ -129,7 +130,7 @@ static func status_main(m: FractalMain) -> String:
 	if m.ifs_mode:
 		# Build time, not draw time: the sculpture is static, so what a rung costs to
 		# generate is the number that decides whether a drag can rebuild every frame.
-		return "%.0f fps  ·  detail %d  ·  build %.2f ms" % [
+		return "%.0f fps  ·  levels %d  ·  build %.2f ms" % [
 			Engine.get_frames_per_second(), FractalMain.IFS_DETAIL[m.ifs_detail_idx], m.ifs.build_ms]
 	return "%.0f fps  ·  %d flames  ·  %.1f ms" % [
 		Engine.get_frames_per_second(), m.library.count(),

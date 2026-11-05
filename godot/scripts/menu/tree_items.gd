@@ -78,7 +78,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 				m._set_tree_bark(wrapi(m.forest.bark_style + d, 0, Forest.BARK_STEPS.size()))),
 
 		MenuShared.spin(m, vis),
-		MenuShared.centre(m, vis),
+		MenuShared.home(m, vis),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
 

@@ -22,7 +22,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 
 		MenuShared.drift(m, vis),
 		MenuShared.spin(m, vis),
-		MenuShared.centre(m, vis),
+		MenuShared.home(m, vis),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
 
@@ -53,33 +53,37 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		MenuShared.splat(m, vis),
 		MenuShared.adapt(m, vis),
 		MenuShared.opacity(m, vis),
-		MenuShared.motion(m, vis),
-		WristMenu.Item.new("look", "BAKE",
+		MenuShared.steady(m, vis),
+		# The per-splat fit: each splat turned to lie along the surface round it. Named for what
+		# ON does; it waits for the cloud to settle before it can fit.
+		WristMenu.Item.new("look", "FIT SPLATS",
 			func():
 				if m.cloud.is_baking():
-					return "%d%%" % int(m.cloud.bake_progress * 100.0)
+					return "fitting %d%%" % int(m.cloud.bake_progress * 100.0)
 				if not m.auto_bake:
 					return "off"
-				return "on" if m.cloud.bake_ready else "wait",
+				return "on" if m.cloud.bake_ready else "after settle",
 			func():
 				m.auto_bake = not m.auto_bake
 				if m.auto_bake:
 					RenderingServer.call_on_render_thread(m.cloud.bake)
 				else:
 					m.cloud.clear_bake(),
-			false, vis).toggle(func(): return m.auto_bake).minor(),
+			false, vis).toggle(func(): return m.auto_bake).minor().hinted(
+			"Turns each splat to lie along the surface"),
 		# Only while LINES is on: with it off there are no lines to pattern or thin.
 		WristMenu.Item.new("look", "PATTERN",
 			func(): return FractalMain.LINE_PATTERNS[m.line_pattern_idx],
 			func(): m._step_line_pattern(1),
 			false, func(): return m.bulb_mode and m._line_slices() > 0).stepping(
-			func(d: int): m._step_line_pattern(d)),
+			func(d: int): m._step_line_pattern(d)).hinted("Rings, a grid or lines on all three axes"),
 		WristMenu.Item.new("look", "WIDTH",
 			func(): return FractalMain.LINE_WIDTH_NAMES[m.line_width_idx],
 			func(): m._step_line_width(1),
 			false, func(): return m.bulb_mode and m._line_slices() > 0).stepping(
 			func(d: int): m._step_line_width(d)).slider(
-			func(): return m.line_width_idx, FractalMain.LINE_WIDTHS.size()).minor(),
+			func(): return m.line_width_idx, FractalMain.LINE_WIDTHS.size()).minor().hinted(
+			"How thick the lines are"),
 		WristMenu.Item.new("look", "BREATHE",
 			func():
 				# A frozen cloud cannot show a moving surface, so say so rather than
@@ -90,7 +94,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 					else "%.0fx" % FractalMain.BREATH_STEPS[m.breath_idx],
 			func(): m.breath_idx = (m.breath_idx + 1) % FractalMain.BREATH_STEPS.size(),
 			false, vis).stepping(func(d: int):
-				m.breath_idx = wrapi(m.breath_idx + d, 0, FractalMain.BREATH_STEPS.size())),
+				m.breath_idx = wrapi(m.breath_idx + d, 0, FractalMain.BREATH_STEPS.size())).hinted(
+			"How fast the surface slowly reshapes"),
 		# ENTER (stand inside the shape at its roomiest hollow) is not on the headset menu.
 		# Measured 2026-09-12: 85-103 ms GPU at 48 steps on a 0.6x eye buffer, every pixel
 		# of both eyes marching, and the bail-out left the renderer in a broken pipeline
