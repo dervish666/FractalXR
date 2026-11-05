@@ -34,14 +34,14 @@ func _init() -> void:
 	# Hold the breath, so a capture is the banked shape and a dive's maps hold still.
 	main.ifs.ambient = false
 	main.ifs.build(false)
-	var layout = _tile(main, "LAYOUT", "look")
-	var size = _tile(main, "SIZE", "look")
+	var layout = _tile(main, "FAMILY", "look")
+	var size = _tile(main, "ROOM", "look")
 	var dive = _tile(main, "DIVE", "make")
 	if layout == null or size == null or dive == null:
-		_ok("tiles", false, "LAYOUT=%s SIZE=%s DIVE=%s" % [layout != null, size != null, dive != null])
+		_ok("tiles", false, "FAMILY=%s ROOM=%s DIVE=%s" % [layout != null, size != null, dive != null])
 		quit(1)
 		return
-	_ok("tiles", true, "LAYOUT '%s' SIZE '%s' DIVE '%s'" % [layout.read.call(), size.read.call(),
+	_ok("tiles", true, "FAMILY '%s' ROOM '%s' DIVE '%s'" % [layout.read.call(), size.read.call(),
 		dive.read.call()])
 
 	# Tabletop, scatter then family. The family fades in over the swap's span, so run its clock.
@@ -65,7 +65,7 @@ func _init() -> void:
 	var eye_local: Vector3 = hero.affine_inverse() * main.xr_camera.global_transform.origin
 	var clear: float = main.ifs.clear_radius_at(eye_local) * u
 	var bottom: float = (hero * main.ifs.bounds.position).y
-	_ok("room size", size.read.call() == "room" and width > 2.3 and clear >= FractalIFS.HEAD_CLIP,
+	_ok("room size", size.read.call() == "on" and width > 2.3 and clear >= FractalIFS.HEAD_CLIP,
 		"tile '%s', %.2f m wide, eyes %.2f m from the nearest beam, lowest beam at y=%.2f, %d echoes" % [
 		size.read.call(), width, clear, bottom, main.ifs_echoes.count()])
 	await _shot(main, "room-family.png", LEVEL)
