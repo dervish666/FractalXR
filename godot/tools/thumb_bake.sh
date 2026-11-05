@@ -8,15 +8,18 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 mkdir -p "$PROJ/.spike-out" "$PROJ/art/thumbs"
 "$GODOT" $GODOT_FLAGS --headless --import >/dev/null 2>&1 || true
-( sleep 900; pkill -9 -f "Godot --xr-mode off --path $PROJ" 2>/dev/null ) &
-WATCHDOG=$!
-trap 'set +e; kill $WATCHDOG 2>/dev/null; true' EXIT
 set +e
 "$GODOT" $GODOT_FLAGS --rendering-method mobile --resolution 640x640 --position 0,0 \
-	--script tools/thumb_bake.gd > "$PROJ/.spike-out/thumb_bake.log" 2>&1
-RC=$?
+	--script tools/thumb_bake.gd > "$PROJ/.spike-out/thumb_bake.log" 2>&1 &
+PID=$!
+# Own only this child. pkill -f on the project path would take out any other run in flight.
+( sleep 900; kill -9 "$PID" 2>/dev/null ) >/dev/null 2>&1 &
+WATCHDOG=$!
+trap 'set +e; kill "$WATCHDOG" 2>/dev/null; kill -9 "$PID" 2>/dev/null; true' EXIT
+RC=0
+wait "$PID" || RC=$?
 set -e
-kill $WATCHDOG 2>/dev/null; wait $WATCHDOG 2>/dev/null || true
+kill "$WATCHDOG" 2>/dev/null; wait "$WATCHDOG" 2>/dev/null || true
 # Import the new atlas so the next run (and the export) sees it, not the previous one.
 "$GODOT" $GODOT_FLAGS --headless --import >/dev/null 2>&1 || true
 grep -a "THUMBBAKE\|SCRIPT ERROR\|Parse Error" "$PROJ/.spike-out/thumb_bake.log" || { tail -20 "$PROJ/.spike-out/thumb_bake.log"; exit 1; }
