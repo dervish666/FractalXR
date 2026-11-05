@@ -83,10 +83,9 @@ static func adapt(m: FractalMain, vis: Callable) -> WristMenu.Item:
 			m._apply_point_look()).minor()
 
 
-## Splat opacity. Hidden while SURFACE is a solid mesh: it does nothing there, and two
-## things called solid on one card would be one too many.
-static func solid(m: FractalMain, vis: Callable) -> WristMenu.Item:
-	return WristMenu.Item.new("look", "SOLID",
+## Splat opacity. Hidden while SURFACE is a solid mesh, where it does nothing.
+static func opacity(m: FractalMain, vis: Callable) -> WristMenu.Item:
+	return WristMenu.Item.new("look", "OPACITY",
 		func(): return "%d%%" % int(FractalMain.OPACITY_STEPS[m.opacity_idx] * 100.0),
 		func():
 			m.opacity_idx = (m.opacity_idx + 1) % FractalMain.OPACITY_STEPS.size()
@@ -94,7 +93,8 @@ static func solid(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		false, func(): return vis.call() and FractalMain.SURFACE_SOLID[m.surface_idx] == 0).stepping(
 		func(d: int):
 			m.opacity_idx = wrapi(m.opacity_idx + d, 0, FractalMain.OPACITY_STEPS.size())
-			m._apply_point_look()).slider(func(): return m.opacity_idx, FractalMain.OPACITY_STEPS.size())
+			m._apply_point_look()).slider(func(): return m.opacity_idx, FractalMain.OPACITY_STEPS.size()).hinted(
+		"How see-through each point is")
 
 
 static func motion(m: FractalMain, vis: Callable) -> WristMenu.Item:

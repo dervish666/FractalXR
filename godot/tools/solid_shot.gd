@@ -94,8 +94,8 @@ func _init() -> void:
 	quit(0 if ok else 1)
 
 
-## The bulb-mode LOOK tile with this label (there are two MOTIONs and two SIZEs; this
-## takes the first, which is the bulb's for SURFACE and SOLID).
+## The first LOOK tile with this label (flame and bulb each have their own OPACITY; this
+## takes the first, which is enough for a printout).
 func _tile(label: String) -> WristMenu.Item:
 	for it: WristMenu.Item in main.menu.items:
 		if it.label == label:
@@ -133,8 +133,8 @@ func _build(bname: String, n: int) -> bool:
 			await process_frame
 			frames += 1
 			if frames == 20:
-				print("SOLIDSHOT tile while building: SURFACE %s, SOLID shown=%s" % [
-					_tile("SURFACE").read.call(), str(_tile_visible("SOLID"))])
+				print("SOLIDSHOT tile while building: SURFACE %s, OPACITY shown=%s" % [
+					_tile("SURFACE").read.call(), str(_tile_visible("OPACITY"))])
 			if s.state == BulbSolid.State.IDLE:
 				break
 		if not s.is_ready():

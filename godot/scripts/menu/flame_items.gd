@@ -81,7 +81,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 				m.cloud.request_measure()),
 		MenuShared.splat(m, vis),
 		MenuShared.adapt(m, vis),
-		MenuShared.solid(m, vis),
+		MenuShared.opacity(m, vis),
 		WristMenu.Item.new("look", "SIZE",
 			func(): return "%.2f" % FractalMain.POINT_STEPS[m.point_idx],
 			func():
