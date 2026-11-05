@@ -227,7 +227,12 @@ var orbit_on := true
 ## so grab, scale and spin apply; the cloud's own draw is hidden underneath it.
 var tree := FractalTree.new()
 var tree_mode := false
-const TREE_DISTANCE := 2.2        # metres in front of the head, on the floor; it towers
+## Metres in front of the head, on the floor. The oak is 4.8 m tall with a crown 7.7 m across
+## (measured from its meshes), so at 2.2 the crown hung over your head and opened cropped. Rendered
+## at a Quest-like 96 degree field, level gaze: at 4 the crown's near edge still left the top of the
+## view, at 5.5 its top sits about 40 degrees up and the whole tree reads with room to spare. WALK's
+## avenue is laid from the feet (Forest.place_avenue), so this does not move it.
+const TREE_DISTANCE := 5.5
 ## The hero tree stays full-detail. Everything else (the sown grove, planted trees, the
 ## succession, their caps and LOD) is the Forest's: scripts/tree/forest.gd.
 var forest := Forest.new()
