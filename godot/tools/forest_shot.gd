@@ -219,7 +219,7 @@ func _top_grove(main, forest: Forest) -> bool:
 	img.save_png("res://.spike-out/forest_%d.png" % int(forest.step()["n"]))
 	var max_ms: float = meter["max"] / 1000.0
 	var fmax_ms: float = meter["fmax"] / 1000.0
-	var ok: bool = read0 == "30 trees" and str(tile.read.call()) == "%d trees" % int(forest.step()["n"]) \
+	var ok: bool = read0 == "sow 30" and str(tile.read.call()) == "sow %d" % int(forest.step()["n"]) \
 		and sown >= int(want * 0.9) and in_ring and in_front and clear and gap >= Forest.GROVE_SPACING - 1e-3 \
 		and forest.planted_count() == planted0 and forest.visible_cost <= forest.budget \
 		and fmax_ms <= FOREST_CAP_MS and int(meter["over"]) <= maxi(1, int(meter["n"] * 0.01)) \
