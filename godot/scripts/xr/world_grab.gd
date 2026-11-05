@@ -25,6 +25,11 @@ var _active := false
 ## now-empty set, so update() recaptures from the current pose and the target never jumps.
 var suspended := false
 
+## Yaw only, height held: for things that stand on the real floor (the tree grove). A wrist
+## roll or a lifted hand would otherwise tilt the grove or sink it and its floor through the
+## room's. Scale still follows two hands, about the floor.
+var level := false
+
 ## Below this the two-hand scale is ignored; hands touching would divide by ~0.
 const MIN_SPAN := 1e-4
 const MIN_SCALE := 0.02
@@ -42,6 +47,10 @@ func is_grabbing() -> bool:
 
 func grip_count() -> int:
 	return _grabbing.size()
+
+## True while this controller's grip is one of the grabbing set.
+func holds(c: XRController3D) -> bool:
+	return c in _grabbing
 
 
 ## Poll the grip buttons and recapture whenever the grabbing set changes. Polled
@@ -73,7 +82,13 @@ func update(_delta: float) -> void:
 	var s := out.basis.get_scale()
 	var uniform := clampf((s.x + s.y + s.z) / 3.0, MIN_SCALE, MAX_SCALE)
 	var rot := out.basis.orthonormalized()
-	_target.global_transform = Transform3D(rot.scaled(Vector3.ONE * uniform), out.origin)
+	var at := out.origin
+	if level:
+		# The grip frame is already yaw-only here, so this only cleans up float drift.
+		var f := -rot.z
+		rot = Basis(Vector3.UP, atan2(-f.x, -f.z)) if Vector2(f.x, f.z).length() > 1e-4 else Basis()
+		at.y = _m0.origin.y
+	_target.global_transform = Transform3D(rot.scaled(Vector3.ONE * uniform), at)
 
 
 ## Build the grip frame from the currently grabbing controllers. Returns a
@@ -86,6 +101,8 @@ func _grip_frame() -> Variant:
 	if n == 1:
 		# rigid: hand position and orientation, unit scale
 		var t := _grabbing[0].global_transform
+		if level:
+			return Transform3D(_yaw_of(t.basis), t.origin)
 		return Transform3D(t.basis.orthonormalized(), t.origin)
 
 	# two hands (more than two: use the first two)
@@ -95,6 +112,11 @@ func _grip_frame() -> Variant:
 	var span := maxf(MIN_SPAN, p0.distance_to(p1))
 
 	var x_axis := (p1 - p0).normalized()
+	if level:
+		# The hand-to-hand line flattened: its heading turns the grove, its tilt does nothing.
+		var flat := Vector3(p1.x - p0.x, 0.0, p1.z - p0.z)
+		var b := Basis(Vector3.UP, atan2(-flat.z, flat.x)) if flat.length() > 1e-4 else Basis()
+		return Transform3D(b.scaled(Vector3.ONE * span), mid)
 	# pick an up hint that is not parallel to the hand-to-hand axis
 	var up := Vector3.UP
 	if absf(x_axis.dot(up)) > 0.95:
@@ -102,6 +124,15 @@ func _grip_frame() -> Variant:
 	var z_axis := x_axis.cross(up).normalized()
 	var y_axis := z_axis.cross(x_axis).normalized()
 	return Transform3D(Basis(x_axis, y_axis, z_axis).scaled(Vector3.ONE * span), mid)
+
+
+## A basis turned only about world up, by the heading of b's forward (or its right, when
+## forward points straight up or down).
+static func _yaw_of(b: Basis) -> Basis:
+	var f := -b.z
+	if Vector2(f.x, f.z).length() < 1e-3:
+		f = Vector3.UP.cross(b.x)
+	return Basis(Vector3.UP, atan2(-f.x, -f.z))
 
 
 func _recapture() -> void:

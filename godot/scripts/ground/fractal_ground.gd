@@ -161,6 +161,13 @@ var _timed := false         # a GPU timestamp pair has been read at least once
 ## fractal = centre + M * world_xz / wpu.
 var _m := Transform2D.IDENTITY
 var _glide := Vector2.ZERO        # world metres still to travel toward a trigger target
+## The glide's own speed last frame, m/s, for the comfort vignette.
+var glide_mps := 0.0
+## A pick near the horizon lands tens of metres out (23.5 m was measured), and the ease's first
+## frame then ran at ~80 m/s. The pick is clamped to GLIDE_MAX_M along its own direction and the
+## travel to GLIDE_MAX_MPS, so a far pick is a steady glide that way, not a lurch.
+const GLIDE_MAX_M := 6.0
+const GLIDE_MAX_MPS := 1.5
 var _lfx := 0.0                   # fractal point the floor is levelled to; lags the viewer
 var _lfy := 0.0
 ## Level-0 texel index of the anchor, in 64-bit ints. Every texel index this node stores or
@@ -428,7 +435,7 @@ func home() -> void:
 ## Glide so that the world point `target_xz` ends up under the viewer. Eased over about
 ## a second; a new target replaces the old.
 func glide_to(target_xz: Vector2) -> void:
-	_glide = target_xz - _head_xz
+	_glide = (target_xz - _head_xz).limit_length(GLIDE_MAX_M)
 
 
 ## 0..1 fill progress of the work queued since the queue was last empty.
@@ -621,10 +628,13 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_mesh_instance.position = Vector3(head_xz.x, 0.0, head_xz.y)
 	_sky.position.x = head_xz.x
 	_sky.position.z = head_xz.y
+	glide_mps = 0.0
 	if _glide.length() > 0.02 and delta > 0.0:
 		var f := 1.0 - exp(-delta * 3.5)
-		pan(_glide * f)
-		_glide *= 1.0 - f
+		var step := (_glide * f).limit_length(GLIDE_MAX_MPS * delta)
+		pan(step)
+		_glide -= step
+		glide_mps = step.length() / delta
 	else:
 		_glide = Vector2.ZERO
 	if effective_iter() != _iter_used:
