@@ -1612,14 +1612,6 @@ func _ifs_scale() -> float:
 	return IFS_WIDTH_M / span
 
 
-## The selected species controls the hero tree and the next sapling planted with the
-## trigger. Existing trees keep their species, so a forest can genuinely be mixed.
-## Previous (-1) or next (+1) specimen for whatever mode is showing. One place, so A and
-## B mean the same thing everywhere and a new mode has one obvious thing to implement.
-## GDScript's format strings have no %e, so "%.1ex" printed nothing and logged
-## "String formatting error: unsupported format character" once per menu refresh for as
-## long as you stayed zoomed in. The title went blank at exactly the zoom where knowing
-## the zoom starts to matter. Build the mantissa and exponent by hand.
 ## The second half of the [perf] line. Appended, never inserted: see the note above the
 ## print. Each field here exists because a question could not be answered from a log.
 ##
@@ -1693,6 +1685,10 @@ func _perf_tail() -> String:
 	return head + " mode=flame morph=%.2f drift=%s" % [_morph_t, str(_drift)]
 
 
+## GDScript's format strings have no %e, so "%.1ex" printed nothing and logged
+## "String formatting error: unsupported format character" once per menu refresh for as
+## long as you stayed zoomed in. The title went blank at exactly the zoom where knowing
+## the zoom starts to matter. Build the mantissa and exponent by hand.
 func _zoom_text(z: float) -> String:
 	if z < 1000.0:
 		return "%.0fx" % z
@@ -1712,6 +1708,8 @@ func _theme_swatch(i: int) -> Array:
 	return out
 
 
+## Previous (-1) or next (+1) specimen for whatever mode is showing. One place, so A and
+## B mean the same thing everywhere and a new mode has one obvious thing to implement.
 func _step_specimen(d: int) -> void:
 	# IFS has a gallery of its own now, so A and B step it like every other mode's. DETAIL is
 	# a rung and not a specimen; it stays on the tile and the stick.
@@ -1728,6 +1726,8 @@ func _step_specimen(d: int) -> void:
 		_morph_to_preset(preset_idx + d)
 
 
+## The selected species controls the hero tree and the next sapling planted with the
+## trigger. Existing trees keep their species, so a forest can genuinely be mixed.
 func _cycle_tree_shape(d: int) -> void:
 	tree_shape_idx = wrapi(tree_shape_idx + d, 0, FractalTree.SHAPE_NAMES.size())
 	tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
