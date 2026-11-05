@@ -17,6 +17,9 @@ extends SceneTree
 ## page, every page turned with NEXT, every picture checked for a baked thumbnail, and one
 ## picture pressed, which must select that fractal. The bar is pressed from inside a card:
 ## HELP opens the card, PASSTHRU runs its toggle, and one pull on EXIT does not quit.
+## Every tile label means one thing across the modes (the vocabulary check), every closure
+## reference in scripts/menu/ exists on main (the refs check), and a rested ray puts the
+## tile's hint on the status line (menu_flame_look_hint.png).
 ## The float is checked last: the menu key sends the panel to the lower-right spot off a test
 ## head pose, it holds still through 300 frames of the head turning and walking, and the key
 ## brings it home to the wrist.
@@ -30,6 +33,14 @@ const MODES := ["flame", "bulb", "ground", "tree", "ifs"]
 const THEMES := [-1, 6]
 const LONG_TITLE := "Ouroboros Cascade Nine"
 const ANIM_FRAMES := 14
+## Labels that show in more than one mode with different hints but one meaning. Any other
+## label shared across modes must carry the same hint everywhere it shows, which is how the
+## vocabulary check tells one meaning from two (a tile built by shared_items.gd always does).
+const SAME_MEANING := {
+	"HOME": "puts the view or the object back where it started",
+	"ECHOES": "copies of the thing round the room",
+	"LEVELS": "recursion depth",
+}
 
 
 func _init() -> void:
@@ -61,6 +72,11 @@ func _init() -> void:
 	print("MENUSHOT refs %s (%d problems)" % ["PASS" if refs.is_empty() else "FAIL", refs.size()])
 	for w in refs:
 		print("MENUSHOT refs_detail %s" % w)
+	var vocab := await _check_vocabulary(main)
+	failures.append_array(vocab)
+	print("MENUSHOT vocabulary %s (%d problems)" % ["PASS" if vocab.is_empty() else "FAIL", vocab.size()])
+	for w in vocab:
+		print("MENUSHOT vocabulary_detail %s" % w)
 	var walk := await _walk(main, false)
 	walk.append_array(await _walk(main, true))
 	failures.append_array(walk)
@@ -207,6 +223,10 @@ func _init() -> void:
 	await process_frame
 	pin_ok = pin_ok and not main.menu.is_pinned() and main.menu.get_parent() == main.left_hand
 	print("MENUSHOT pin %s" % ["PASS" if pin_ok else "FAIL"])
+	var hr := await _hint_shot(main)
+	shots += 1
+	if hr != "":
+		failures.append(hr)
 	if not pin_ok:
 		failures.append("pin: the panel did not change parent as expected")
 
@@ -259,6 +279,86 @@ func _check_refs(main) -> Array[String]:
 		bad.append("only %d references found in %s; the scan is not reading the menu" % [seen, dir])
 	print("MENUSHOT refs checked %d" % seen)
 	return bad
+
+
+## One word, one meaning: in every mode, collect the visible tiles' labels and hints. A label
+## shown twice in one mode fails; so does a label whose hint differs between modes, unless
+## SAME_MEANING lists it; so does a label in two modes with no hint to compare.
+func _check_vocabulary(main) -> Array[String]:
+	var shown := {}
+	for mode in MODES:
+		main._set_mode(mode)
+		for i in 5:
+			await process_frame
+		var tiles: Array = []
+		for it in main.menu.items:
+			if it.section == "mode" or (it.visible_when.is_valid() and not bool(it.visible_when.call())):
+				continue
+			tiles.append([it.label, it.hint])
+		shown[mode] = tiles
+	main._set_mode("flame")
+	for i in 5:
+		await process_frame
+	var bad := _vocabulary_problems(shown)
+	# The control: one label meaning two things in two modes must be caught.
+	var control := _vocabulary_problems({"a": [["ZZ", "one thing"]], "b": [["ZZ", "another"]]})
+	if control.is_empty():
+		bad.append("control: a label with two meanings passed")
+	return bad
+
+
+func _vocabulary_problems(shown: Dictionary) -> Array[String]:
+	var bad: Array[String] = []
+	var hints := {}   # label -> {hint: [modes]}
+	for mode in shown:
+		var here := {}
+		for t in shown[mode]:
+			var label: String = t[0]
+			if here.has(label):
+				bad.append("%s shows %s twice" % [mode, label])
+			here[label] = true
+			if not hints.has(label):
+				hints[label] = {}
+			if not hints[label].has(t[1]):
+				hints[label][t[1]] = []
+			hints[label][t[1]].append(mode)
+	for label in hints:
+		var by_hint: Dictionary = hints[label]
+		var modes := 0
+		for h in by_hint:
+			modes += by_hint[h].size()
+		if modes < 2 or SAME_MEANING.has(label):
+			continue
+		if by_hint.size() > 1:
+			bad.append("%s means different things: %s" % [label, str(by_hint)])
+		elif by_hint.has(""):
+			bad.append("%s shows in %d modes with no hint to tell its meanings apart" % [label, modes])
+	return bad
+
+
+## A hint showing: the first control of FLAME's LOOK card, rested on. The status line must
+## carry exactly that tile's hint.
+func _hint_shot(main) -> String:
+	var menu = main.menu
+	main._set_mode("flame")
+	for i in 5:
+		await process_frame
+	menu.debug_level("look")
+	await _settle(menu)
+	var tile := _first_control(menu)
+	menu.debug_hint(tile)
+	await _settle(menu)
+	var it: int = menu.debug_tile_item(tile)
+	var want: String = menu.items[it].hint if it >= 0 else ""
+	var r := await _shoot(menu, "flame_look_hint", "look")
+	var got: String = menu._side_label.text
+	print("MENUSHOT hint %s ('%s' on the status line, tile %s)" % [
+		"PASS" if want != "" and got == want else "FAIL", got, menu.items[it].label if it >= 0 else "?"])
+	menu.debug_level("")
+	await _settle(menu)
+	if want == "" or got != want:
+		return "hint: status line '%s', tile hint '%s'" % [got, want]
+	return r
 
 
 func _settle(menu) -> void:
