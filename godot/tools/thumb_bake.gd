@@ -38,6 +38,17 @@ const GROUND_CENTRE := {
 	"quartic": Vector2(0.0, 0.0),
 }
 
+## Bulb camera per distance-estimate family: [yaw, pitch] in degrees off the line the user
+## stands on, and a multiplier on the stand-back distance. Down a Mandelbulb's axis every power
+## draws the same ringed disc, so the Mandelbulbs go side-on, where power 3 and power 16 differ
+## most. The boxes and folds read best from a corner, and a Mandelbox is shot from further out
+## because its corner would otherwise cross the camera.
+const BULB_POSE := {
+	"mandelbulb": [85.0, 12.0, 1.0],
+	"mandelbox": [40.0, 25.0, 1.7],
+}
+const BULB_POSE_DEFAULT := [50.0, 28.0, 1.0]
+
 var _tiles: Array = []   # [group, name, Image]
 var _fails: Array[String] = []
 var _main
@@ -105,7 +116,7 @@ func _bulbs(m) -> void:
 	m._apply_surface()
 	for i in m.library.bulbs.size():
 		m._load_bulb(i)
-		_stand_back(m, 0.5)
+		_stand_back_3q(m, 0.5, BULB_POSE.get(str(m.library.bulbs[i].get("formula", "")), BULB_POSE_DEFAULT))
 		await _frames(m.BULB_SETTLE_FRAMES + 30)
 		var name := str(m.library.bulbs[i].get("name", "?"))
 		if _lit_fraction(_frame()) < 0.005:
@@ -197,6 +208,19 @@ func _stand_back(m, back: float) -> void:
 	var at: Vector3 = (m.ifs if m.ifs_mode else m.cloud).global_position
 	m.xr_camera.position = Vector3(0.0, 1.6, back)
 	m.xr_camera.look_at(at)
+
+
+## _stand_back, but orbited about the subject: yaw about the world up axis, then pitch above
+## the horizon, at the distance _stand_back would have used, looking at the cloud.
+func _stand_back_3q(m, back: float, pose: Array) -> void:
+	_stand_back(m, back)
+	var at: Vector3 = m.cloud.global_position
+	var radius: float = (m.xr_camera.position - at).length() * float(pose[2])
+	var dir := Vector3(0.0, 0.0, 1.0)
+	dir = dir.rotated(Vector3.RIGHT, -deg_to_rad(float(pose[1])))
+	dir = dir.rotated(Vector3.UP, deg_to_rad(float(pose[0])))
+	m.xr_camera.position = at + dir * radius
+	m.xr_camera.look_at(at, Vector3.UP)
 
 
 func _frames(n: int) -> void:
