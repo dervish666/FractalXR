@@ -626,6 +626,8 @@ func _ready() -> void:
 		$WorldEnvironment.compositor = comp
 
 	_init_xr()
+	if xr != null:
+		resume_on = true
 	_eye_res = _current_eye_res()
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 
@@ -652,10 +654,12 @@ func _on_gpu_ready(ok: bool) -> void:
 		return
 	cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
 	_apply_point_look()
-	if not _load_preset(0):
+	var r := _read_resume()
+	if not _load_preset(int(r["flame"])):
 		return
 	_setup_done = true
 	print("[fractal] ready: %d presets, %d particles" % [library.count(), cloud.get_count()])
+	_apply_resume(r)
 
 
 func _load_preset(i: int) -> bool:
@@ -2897,10 +2901,16 @@ func _process_frame(delta: float) -> void:
 	if not _placed and _setup_done and xr_camera.global_transform.origin.length_squared() > 1e-6:
 		_placed = true
 		_recenter()
+		# Pinned floats the panel in front of the head, so it waits for a tracked head as the
+		# recentre does: restored at startup it would float in front of wherever the origin is.
+		if _resume_pin:
+			_resume_pin = false
+			menu.set_pinned(true, true)
 		if _help_pending:
 			_help_pending = false
 			help.open()
 	help.update(delta)
+	_tick_resume(delta)
 	# Input has one owner a frame, highest first: an unfocused session (the system dash is
 	# up), then the help card, then the wrist menu when a ray is on it, then the world. The
 	# menu is put to sleep under the card the way it sleeps under the dash, or its scrub and
@@ -3732,26 +3742,166 @@ func _fmt_time(s: float) -> String:
 	return "%d:%02d" % [int(s) / 60, int(s) % 60]
 
 
-## First-run state lives in user://, which survives an update but not an uninstall. One key,
-## one file: anything more would be a settings system nobody asked for. The menu's pin used to
-## live here too and is gone on purpose: a launch that opened the panel floating wherever the
-## last session left it put it somewhere arbitrary. The menu always starts on the wrist; an old
-## file's stale menu_pinned key is never read.
+## State lives in user://, which survives an update but not an uninstall: [ui] seen_help, and
+## [resume], the session to come back to. The menu pin is in [resume] on purpose: the old
+## [ui] menu_pinned floated the panel wherever the last session had left it, while this one only
+## says pinned, and the panel floats in front of you once the head is tracked. An old file's
+## [ui] menu_pinned is never read.
 const STATE_PATH := "user://state.cfg"
+## A var so a check can point it at a scratch file instead of the real one.
+var state_path := STATE_PATH
+## Resume runs in a headset session, or when a check sets this before _ready. Every desktop
+## harness shares one user:// folder, so a desktop resume would open the next harness in
+## whatever mode the last one quit in.
+var resume_on := false
+const RESUME_MODES := ["flame", "bulb", "ground", "tree", "ifs"]
+## Seconds between checks for a changed setting. Comparing a dozen ints once a second costs
+## nothing, and it catches every tile without a save call in each one.
+const RESUME_CHECK_S := 1.0
+var _resume_saved := {}
+var _resume_t := 0.0
+var _resume_pin := false
 
 
 func _help_seen() -> bool:
 	var cfg := ConfigFile.new()
-	if cfg.load(STATE_PATH) != OK:
+	if cfg.load(state_path) != OK:
 		return false
 	return bool(cfg.get_value("ui", "seen_help", false))
 
 
 func _mark_help_seen() -> void:
+	if _help_seen():
+		return
 	var cfg := ConfigFile.new()
-	cfg.load(STATE_PATH)  # keep whatever else is in there
+	cfg.load(state_path)  # keep whatever else is in there; a missing file is a first launch
 	cfg.set_value("ui", "seen_help", true)
-	cfg.save(STATE_PATH)
+	var err := cfg.save(state_path)
+	if err != OK:
+		push_warning("[state] could not save seen_help (error %d)" % err)
+
+
+func _mode_name() -> String:
+	if ifs_mode:
+		return "ifs"
+	if tree_mode:
+		return "tree"
+	if ground_mode:
+		return "ground"
+	return "bulb" if bulb_mode else "flame"
+
+
+## What [resume] holds: the mode, the specimen on show in each mode, the theme, CYCLE,
+## passthrough, the walk's PACE (the only comfort setting there is), and the menu pin.
+func _resume_state() -> Dictionary:
+	return {
+		"mode": _mode_name(), "flame": preset_idx, "bulb": bulb_idx, "tree": tree_shape_idx,
+		"ifs": ifs_preset_idx, "ground_set": ground.formula, "ground_relief": ground_relief_idx,
+		"theme": theme_idx, "cycle": cycle_idx, "passthrough": passthrough,
+		"pace": forest.pace_idx, "pinned": menu.is_pinned(),
+	}
+
+
+## Defaults for every key, then whatever the file holds that is the right type and in range.
+## Anything else is logged and left at its default. A missing file or section is a first launch,
+## which behaves exactly as it always did.
+func _read_resume() -> Dictionary:
+	var r := _resume_state()
+	r["mode"] = "flame"
+	r["flame"] = 0
+	r["pinned"] = false
+	r["passthrough"] = false
+	if not resume_on:
+		return r
+	var cfg := ConfigFile.new()
+	var err := cfg.load(state_path)
+	if err != OK:
+		if err != ERR_FILE_NOT_FOUND:
+			print("[state] %s unreadable (error %d); starting fresh" % [state_path, err])
+		return r
+	if not cfg.has_section("resume"):
+		return r
+	var limits := {
+		"flame": library.count(), "bulb": library.bulbs.size(),
+		"tree": FractalTree.SHAPE_NAMES.size(), "ifs": FractalIFS.PRESETS.size(),
+		"ground_set": FractalGround.FORMULA_NAMES.size(), "ground_relief": GROUND_RELIEF.size(),
+		"cycle": CYCLE_STEPS.size(), "pace": Forest.WALK_PACES.size(),
+	}
+	for k in cfg.get_section_keys("resume"):
+		if not r.has(k):
+			continue
+		var v: Variant = cfg.get_value("resume", k)
+		var ok := false
+		if k == "mode":
+			ok = v is String and v in RESUME_MODES
+		elif k == "passthrough" or k == "pinned":
+			ok = v is bool
+		elif k == "theme":
+			ok = v is int and v >= -1 and v < library.themes.size()
+		else:
+			ok = v is int and v >= 0 and v < int(limits[k])
+		if ok:
+			r[k] = v
+		else:
+			print("[state] resume %s=%s is not valid here; using %s" % [k, str(v), str(r[k])])
+	return r
+
+
+## Put a read state back, after the GPU is up and the first flame is loading. Specimens first,
+## so the mode switch opens on them.
+func _apply_resume(r: Dictionary) -> void:
+	if resume_on:
+		bulb_idx = int(r["bulb"])
+		tree_shape_idx = int(r["tree"])
+		ifs_preset_idx = int(r["ifs"])
+		ground_relief_idx = int(r["ground_relief"])
+		ground.set_formula(int(r["ground_set"]))
+		theme_idx = int(r["theme"])
+		_step_cycle(int(r["cycle"]) - cycle_idx)
+		forest.set_pace(int(r["pace"]))
+		if bool(r["passthrough"]):
+			_set_passthrough(true)
+		_resume_pin = bool(r["pinned"])
+		if r["mode"] != "flame":
+			_set_mode(r["mode"])
+		_palette_dirty = true
+		print("[state] resumed %s" % str(r))
+	_resume_saved = _resume_state()
+
+
+## Save [resume] whenever it differs from what was last written, checked once a second.
+func _tick_resume(delta: float) -> void:
+	if not resume_on or not _setup_done:
+		return
+	_resume_t += delta
+	if _resume_t < RESUME_CHECK_S:
+		return
+	_resume_t = 0.0
+	_save_resume()
+
+
+func _save_resume() -> void:
+	if not resume_on or not _setup_done:
+		return
+	var st := _resume_state()
+	if st == _resume_saved:
+		return
+	var cfg := ConfigFile.new()
+	cfg.load(state_path)  # keep [ui]; a missing file is a first launch
+	for k in st:
+		cfg.set_value("resume", k, st[k])
+	var err := cfg.save(state_path)
+	if err != OK:
+		push_warning("[state] could not save resume state (error %d)" % err)
+		return
+	_resume_saved = st
+
+
+## The Quest pauses an app it sends to the background and may never resume it, so the state is
+## written then rather than at the next once-a-second check.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_resume()
 
 
 func _exit_tree() -> void:
