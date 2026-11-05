@@ -16,6 +16,12 @@ const THEME_NAMES := ["Ember", "Ice", "Inferno", "Neon", "Spectrum", "Nebula", "
 const BRIGHT_NAMES := ["faint", "dim", "normal", "bright", "vivid", "blazing", "max"]
 
 
+## ADAPT, AA, FOVEA and GLOW are measurement instruments, not settings: debug builds only,
+## like the fps footer, so a release menu never offers them.
+static func dev_only(vis: Callable) -> Callable:
+	return func(): return OS.is_debug_build() and vis.call()
+
+
 static func drift(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("scene", "DRIFT",
 		func(): return "on" if m._drift else "off",
@@ -89,7 +95,7 @@ static func adapt(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		func():
 			m.density_idx = (m.density_idx + 1) % FractalMain.DENSITY_STEPS.size()
 			m._apply_point_look(),
-		false, vis).stepping(func(d: int):
+		false, dev_only(vis)).stepping(func(d: int):
 			m.density_idx = wrapi(m.density_idx + d, 0, FractalMain.DENSITY_STEPS.size())
 			m._apply_point_look()).minor().hinted("Thins points where they pile up")
 
@@ -138,7 +144,10 @@ static func steady(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		FractalMain.BULB_STABILITY.size()).hinted("Fewer points moving, less shimmer")
 
 
-## The eye buffer's scale. Not in IFS, where a recursion rung has the name.
+## The eye buffer's scale. Not on IFS's menu, which left it off while its recursion tile was
+## also called DETAIL; that tile is LEVELS now, so putting it back is one line in
+## ifs_items.gd. Nothing on the controller steps it in any mode (the right menu button is the Quest system button and
+## never reaches the app); on the desktop KEY_6 does.
 static func detail(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("look", "DETAIL",
 		func(): return "%.2fx" % (FractalMain.MARCH_RENDER_SCALE if m.march.is_on()
@@ -160,7 +169,7 @@ static func fovea(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		func():
 			m.fovea_idx = (m.fovea_idx + 1) % FractalMain.FOVEA_STEPS.size()
 			m.call_deferred("_apply_foveation"),
-		false, vis).stepping(func(d: int):
+		false, dev_only(vis)).stepping(func(d: int):
 			m.fovea_idx = wrapi(m.fovea_idx + d, 0, FractalMain.FOVEA_STEPS.size())
 			m.call_deferred("_apply_foveation")).slider(
 		func(): return m.fovea_idx, FractalMain.FOVEA_STEPS.size()).minor().hinted(
@@ -173,7 +182,7 @@ static func glow(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("look", "GLOW",
 		func(): return "on" if m._env().glow_enabled else "off",
 		func(): m._env().glow_enabled = not m._env().glow_enabled,
-		false, vis).toggle(func(): return m._env().glow_enabled).minor().hinted(
+		false, dev_only(vis)).toggle(func(): return m._env().glow_enabled).minor().hinted(
 		"Soft glow round bright parts")
 
 

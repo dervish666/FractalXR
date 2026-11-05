@@ -99,7 +99,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func():
 				m.aa_idx = (m.aa_idx + 1) % FractalMain.AA_STEPS.size()
 				m._apply_point_look(),
-			false, vis).stepping(func(d: int):
+			false, MenuShared.dev_only(vis)).stepping(func(d: int):
 				m.aa_idx = wrapi(m.aa_idx + d, 0, FractalMain.AA_STEPS.size())
 				m._apply_point_look()).minor().hinted("Smooths each point's edge"),
 		MenuShared.steady(m, vis),
