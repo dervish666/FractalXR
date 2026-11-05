@@ -1286,16 +1286,20 @@ func _build_viewports() -> void:
 	for i in items.size():
 		if items[i].card_of != "" and not absorbed.has(items[i].card_of):
 			absorbed.append(items[i].card_of)
+	# Promoted cards first, then sections in the order they first appear. Each mode's list
+	# starts with its own gallery, so without the split the galleries would interleave with
+	# the section cards in tile order.
 	var order: Array[String] = []
-	for i in items.size():
-		var it := items[i]
-		if it.section == MODE_SECTION or it.bar:
-			continue
-		var key := "item:%d" % i if it.card_of != "" else it.section
-		if it.card_of == "" and absorbed.has(it.section):
-			continue
-		if not order.has(key):
-			order.append(key)
+	for promoted in [true, false]:
+		for i in items.size():
+			var it := items[i]
+			if it.section == MODE_SECTION or it.bar or (it.card_of != "") != promoted:
+				continue
+			var key := "item:%d" % i if it.card_of != "" else it.section
+			if it.card_of == "" and absorbed.has(it.section):
+				continue
+			if not order.has(key):
+				order.append(key)
 	for key in order:
 		var card := _widget(-1, Kind.CARD)
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL

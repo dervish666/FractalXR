@@ -56,6 +56,11 @@ func _init() -> void:
 	# card. This walk uses only what a hand can do: open the float, aim the right ray at
 	# a tile, pull a trigger. Rail to every mode, into every card and back, and the exact
 	# sequence Sam hit: into a non-gallery card, then the rail to another mode.
+	var refs := _check_refs(main)
+	failures.append_array(refs)
+	print("MENUSHOT refs %s (%d problems)" % ["PASS" if refs.is_empty() else "FAIL", refs.size()])
+	for w in refs:
+		print("MENUSHOT refs_detail %s" % w)
 	var walk := await _walk(main, false)
 	walk.append_array(await _walk(main, true))
 	failures.append_array(walk)
@@ -222,6 +227,38 @@ func _init() -> void:
 	print("MENUSHOT %s shots=%d failures=%d" % [
 		"PASS" if verdict else "FAIL", shots, failures.size()])
 	quit(0 if verdict else 1)
+
+
+## Every m.<name> and FractalMain.<NAME> in scripts/menu/ must exist on main. GDScript looks
+## a member up on a typed object at run time, and --check-only passes a misspelt one, so a
+## renamed main.gd member would otherwise surface only when someone pressed that tile.
+func _check_refs(main) -> Array[String]:
+	var bad: Array[String] = []
+	var consts: Dictionary = main.get_script().get_script_constant_map()
+	var props := {}
+	for p in main.get_property_list():
+		props[p["name"]] = true
+	var has := func(n: String) -> bool: return props.has(n) or main.has_method(n) or consts.has(n)
+	# The control: a name main does not have must be refused, or the check proves nothing.
+	if has.call("zzz_not_on_main"):
+		bad.append("control: an invented name passed the reference check")
+	var re_m := RegEx.create_from_string("\\bm\\.([A-Za-z_][A-Za-z0-9_]*)")
+	var re_c := RegEx.create_from_string("\\bFractalMain\\.([A-Za-z_][A-Za-z0-9_]*)")
+	var dir := "res://scripts/menu/"
+	var seen := 0
+	for f in DirAccess.get_files_at(dir):
+		if not f.ends_with(".gd"):
+			continue
+		var src := FileAccess.get_file_as_string(dir + f)
+		for re: RegEx in [re_m, re_c]:
+			for r in re.search_all(src):
+				seen += 1
+				if not has.call(r.get_string(1)):
+					bad.append("%s: %s is not on main" % [f, r.get_string(0)])
+	if seen < 100:
+		bad.append("only %d references found in %s; the scan is not reading the menu" % [seen, dir])
+	print("MENUSHOT refs checked %d" % seen)
+	return bad
 
 
 func _settle(menu) -> void:
