@@ -50,7 +50,8 @@ class_name WristMenu
 ## kind: .toggle(is_on), .slider(index, count), .gallery(index, count, swatch_of),
 ## .pictures(group, index, count, name_of, choose) (a picture page; give it .as_card()),
 ## .hold(), .minor() (behind MORE), .as_card(companion_section) (its own top card),
-## .in_bar() (the fixed bottom bar instead of a card).
+## .in_bar() (the fixed bottom bar instead of a card), .hinted(text) (a line for the status
+## line once the ray rests on the tile). The spec itself lives in scripts/menu/, a file a mode.
 ## An item with .stepping() and no kind is a carousel; one with neither is a button.
 ##
 ## Budget: two layers, ~45 canvas items, a redraw only on the widget whose state moved,
