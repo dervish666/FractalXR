@@ -34,7 +34,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			"Stretches the shape front to back"),
 		# EDIT puts the handles up; the trigger only picks one while they are showing. UNDO is a
 		# single step back to the parameters the last completed edit started from, and RESET is
-		# the other direction, which is why it clears the undo.
+		# the other direction: it saves the sculpt it replaces as that one step, so UNDO brings it back.
 		WristMenu.Item.new("make", "EDIT",
 			func(): return "handles on" if m.ifs_edit.guides_on else "handles off",
 			func():
