@@ -255,7 +255,7 @@ class ControlsCard extends Control:
 			# Ground has no object to hold. The grips drag and scale the field under you.
 			left_grip = PackedStringArray(["Hold to drag", "the ground"])
 			right_grip = PackedStringArray(["Both grips:", "zoom the ground"])
-			mode_note = "PASSTHRU shows your room; SEE-THROUGH opens the filled set to it"
+			mode_note = "PASSTHRU shows your room; HOLLOW opens the filled set to it"
 		elif _mode == "bulb":
 			left_trigger = PackedStringArray(["Previous bulb"])
 			right_trigger = PackedStringArray(["Next bulb"])

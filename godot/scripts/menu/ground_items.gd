@@ -103,8 +103,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 				m._apply_ground_look()).slider(
 			func(): return m.ground_sky_idx, FractalMain.GROUND_SKY.size()).minor().hinted(
 			"The ground mirrored overhead as a ceiling"),
-		# The set's filled inside: drawn solid, or open onto the room through passthrough.
-		WristMenu.Item.new("look", "SEE-THROUGH",
+		# The set's filled inside: drawn solid, or hollow, open onto the room through passthrough.
+		WristMenu.Item.new("look", "HOLLOW",
 			func(): return "needs PASSTHRU" if m.ground_inside_room and not m.passthrough \
 				else ("on" if m.ground_inside_room else "off"),
 			func():

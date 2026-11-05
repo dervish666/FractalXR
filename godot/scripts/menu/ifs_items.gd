@@ -20,8 +20,9 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		# STRETCH and LEVELS are deliberately separate: one stretches the shape front to back,
 		# the other adds a generation. Both rebuild; the palette does not.
 		WristMenu.Item.new("make", "LEVELS",
-			func(): return "%d levels · %s copies" % [FractalMain.IFS_DETAIL[m.ifs_detail_idx],
-				m._fmt_count(m.ifs.instance_count)],
+			# Short: a slider's value shares its row with the label. The title names the levels.
+			func(): return "%d · %d copies" % [FractalMain.IFS_DETAIL[m.ifs_detail_idx],
+				m.ifs.instance_count],
 			func(): m._step_ifs_detail(1),
 			false, vis).stepping(func(d: int): m._step_ifs_detail(d)).slider(
 			func(): return m.ifs_detail_idx, FractalMain.IFS_DETAIL.size()).hinted(

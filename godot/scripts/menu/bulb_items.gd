@@ -4,7 +4,7 @@ extends RefCounted
 
 enum {SPLATS, LINES, SOLID, MARCHED}
 const STYLE_NAMES := ["splats", "lines", "solid", "marched"]
-const QUALITY_WORDS := ["fast", "balanced", "best"]
+const QUALITY_WORDS := ["low", "mid", "high"]
 
 
 static func build(m: FractalMain) -> Array[WristMenu.Item]:
