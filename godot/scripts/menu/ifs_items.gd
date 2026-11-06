@@ -60,15 +60,10 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
-
-		# The sculpture's own MOTION: breathing. The cloud's MOTION never shows here.
-		WristMenu.Item.new("look", "MOTION",
-			func(): return "breathing" if m.ifs.ambient else "off",
-			func(): m._toggle_ifs_motion(),
-			false, vis).toggle(func(): return m.ifs.ambient).hinted("Slow breathing movement"),
-		# Copies of the sculpture through the room. The count is what the tile prints, because
-		# the count is what the GPU pays for; the headset's frame time decides whether MANY stays.
-		WristMenu.Item.new("look", "ECHOES",
+		# Copies of the sculpture through the room, on SCENE as FLAME's are. The count is what the
+		# tile prints, because the count is what the GPU pays for; the headset's frame time
+		# decides whether MANY stays.
+		WristMenu.Item.new("scene", "ECHOES",
 			func():
 				return "off" if m.ifs_echoes.count() == 0 else "%s · %d" % [
 					m.ifs_echoes.step_name(), m.ifs_echoes.count()],
@@ -77,11 +72,17 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			"Copies of the shape round the room"),
 		# Where the echoes stand: the seeded scatter, or where the sculpture's own maps put its
 		# relatives, so the room is the next generations out.
-		WristMenu.Item.new("look", "FAMILY",
+		WristMenu.Item.new("scene", "FAMILY",
 			func(): return "on" if m.ifs_echoes.family else "off",
 			func(): m.ifs_echoes.set_family(not m.ifs_echoes.family),
 			false, vis).toggle(func(): return m.ifs_echoes.family).hinted(
 			"Copies stand where the shape's own rules put them"),
+
+		# The sculpture's own MOTION: breathing. The cloud's MOTION never shows here.
+		WristMenu.Item.new("look", "MOTION",
+			func(): return "breathing" if m.ifs.ambient else "off",
+			func(): m._toggle_ifs_motion(),
+			false, vis).toggle(func(): return m.ifs.ambient).hinted("Slow breathing movement"),
 		WristMenu.Item.new("look", "ROOM",
 			func(): return "on" if m.ifs_room else "off",
 			func(): m._set_ifs_room(not m.ifs_room),
