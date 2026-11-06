@@ -243,7 +243,7 @@ class ControlsCard extends Control:
 			right_trigger = PackedStringArray(["Plant a tree", "at the point", "· WALK: hold to glide"])
 			face = PackedStringArray(["A · B: previous,", "next species"])
 			# WALK takes the right stick too: forward glides, the turn and push are off.
-			right_stick = PackedStringArray(["Turn the grove", "· click: spin on, off", "· WALK: push to glide"])
+			right_stick = PackedStringArray(["Snap turn", "· click: spin on, off", "· WALK: push to glide"])
 			# The grips move the whole grove, hero and planted alike: they are one cloud.
 			left_grip = PackedStringArray(["Hold to grab", "the whole grove"])
 			right_grip = PackedStringArray(["Both grips:", "scale the grove"])
@@ -253,7 +253,7 @@ class ControlsCard extends Control:
 			right_trigger = PackedStringArray(["Glide to", "the point"])
 			left_stick = PackedStringArray(["Walk the ground", "· click: passthrough"])
 			right_stick = PackedStringArray(["Snap turn, zoom", "· click: orbit on, off"])
-			face = PackedStringArray(["A · B: previous,", "next terrain style"])
+			face = PackedStringArray(["A · B: previous,", "next family"])
 			# Ground has no object to hold. The grips drag and scale the field under you.
 			left_grip = PackedStringArray(["Hold to drag", "the ground"])
 			right_grip = PackedStringArray(["Both grips:", "zoom the ground"])
@@ -269,10 +269,10 @@ class ControlsCard extends Control:
 			left_trigger = PackedStringArray(["Hold on a handle", "to sculpt", "· DIVE: hold, eye a copy"])
 			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt", "· DIVE: hold, eye a copy"])
 			right_stick = PackedStringArray(["Turn, push away", "· click: breathing on, off"])
-			face = PackedStringArray(["A · B: previous,", "next sculpture"])
+			face = PackedStringArray(["A · B: previous,", "next shape"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
-			mode_note = "SHAPE morphs it; EDIT shows the mirrors; MOTION breathes; ECHOES fills the room"
+			mode_note = "SHAPES morphs it; EDIT puts the handles on; MOTION breathes; ECHOES fills the room"
 		# A third trigger line (WALK, DIVE) would sit on the stick's first line, so the block
 		# rises by half a line for each line past two; there is room under the subtitle.
 		var trig_y := 292.0 - 0.5 * (LABEL_SIZE + 8) * maxf(0.0, left_trigger.size() - 2)
