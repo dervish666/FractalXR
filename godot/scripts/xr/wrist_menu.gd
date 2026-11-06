@@ -1198,6 +1198,13 @@ func _tracked(c: XRController3D) -> bool:
 	return c != null and c.is_inside_tree() and (XRServer.primary_interface == null or c.get_has_tracking_data())
 
 
+## Asleep under something above the panel in the input order (the help card): hidden, no ray, no
+## scrub or hold. The host calls it every frame, so a repeat is a no-op.
+func set_suspended(on: bool) -> void:
+	if on == _focused:
+		_set_focus(not on)
+
+
 func _set_focus(f: bool) -> void:
 	_focused = f
 	if not f:

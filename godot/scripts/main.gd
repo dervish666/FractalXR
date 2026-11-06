@@ -444,11 +444,16 @@ const GUARD_CUT_SHARE := 0.8      # 57.6 fps at 72 Hz
 const GUARD_RECOVER_SHARE := 0.95 # 68.4 fps at 72 Hz
 const GUARD_HOLD_S := 3.0        # after a cut, no recovery for this long
 const GUARD_FLOOR := 0.1
-## Seconds under the cut line in a row before the guard acts: about 30 frames at 72 Hz, and at
-## 5 fps two frames rather than six seconds. One slow frame is a hitch (a mesh rebuild, a
-## pipeline compile, a readback), and shrinking splats, a fill-rate lever, does nothing for a
-## CPU stall. A shortfall that holds is a GPU that cannot keep up.
+## Seconds the smoothed rate sits under the cut line before the guard acts: about 30 frames at
+## 72 Hz, and at 5 fps a handful rather than six seconds. One slow frame is a hitch (a mesh
+## rebuild, a pipeline compile, a readback), and shrinking splats, a fill-rate lever, does
+## nothing for a CPU stall. A shortfall that holds is a GPU that cannot keep up.
 const GUARD_SLOW_S := 0.42
+## The second way in: more than GUARD_SLOW_SHARE of the last GUARD_WINDOW frames under the line.
+## A GPU missing every other vsync (13.9 / 27.8 ms, about 48 fps) has a fast frame between each
+## slow one, so a run-length counter never reached GUARD_SLOW_S and the judder went uncut.
+const GUARD_WINDOW := 30
+const GUARD_SLOW_SHARE := 0.25
 ## A frame longer than this is a stall when it stands alone, and is dropped from the EMA. Two
 ## or more in a row are a frame rate, however low: the guard used to drop every one of them, so
 ## a sustained 5 fps never moved the slow counter and never cut.
@@ -458,8 +463,18 @@ var _fps_ema := 72.0
 var _guard_hold := 0.0
 var _guard_slow_s := 0.0
 var _guard_long := 0
+## Ring of the last GUARD_WINDOW measured frames, 1 for under the cut line, its sum, and how
+## many frames it holds since the last reset. A share is only read off a full window: eight
+## slow frames in a row after a mode switch are a compile burst, not a share of thirty.
+var _guard_win := PackedByteArray()
+var _guard_win_i := 0
+var _guard_win_slow := 0
+var _guard_win_n := 0
 ## False while the system dash covers the app (OpenXR session visible, not focused).
 var _xr_focused := true
+## True once the session has reported focus. _xr_focused starts true for the desktop, so it
+## cannot say whether a headset session has got there yet.
+var _xr_focus_seen := false
 ## EXIT is armed for this long after its first press.
 const EXIT_ARM_S := 4.0
 var _exit_armed_until := -1.0
@@ -602,6 +617,7 @@ func _ready() -> void:
 	cloud.add_child(ifs)
 	ifs.add_child(ifs_edit)
 	ifs_edit.setup(ifs)
+	ifs_edit.undone.connect(_on_ifs_undone)
 	ifs.add_child(ifs_echoes)
 	ifs_echoes.setup(ifs)
 	ifs_dive.setup(ifs, cloud)
@@ -614,7 +630,11 @@ func _ready() -> void:
 	flame_sky.setup(_env())
 
 	if not library.load_all():
+		# XR first: without it the headset stays on the loading screen and the message on the
+		# camera never shows. Then stop, because nothing past this point was built.
+		_init_xr()
 		_fail("presets: %s" % library.load_error)
+		set_process(false)
 		return
 
 	# flam3 can only run on an HDR colour buffer with the STORAGE bit, which Forward
@@ -869,17 +889,37 @@ func _reset_ifs() -> void:
 	# to a shape that is still travelling somewhere else would undo itself a frame later.
 	ifs.settle()
 	ifs_edit.cancel()
-	var planes := {
+	# Everything _reset_ifs_shape puts back. The mirrors alone used to be saved, so UNDO after
+	# RESET came back with the planes and without the stretch or the levels.
+	var shape := {
 		"plane1_normal": ifs.plane1_normal, "plane1_offset": ifs.plane1_offset,
 		"plane2_normal": ifs.plane2_normal, "plane2_offset": ifs.plane2_offset,
+		"depth": ifs.depth, "detail": ifs.detail,
 	}
 	var sculpted: bool = ifs.plane1_normal != FractalIFS.DEFAULT_N1 \
 		or ifs.plane2_normal != FractalIFS.DEFAULT_N2 \
-		or ifs.plane1_offset != 0.0 or ifs.plane2_offset != 0.0
+		or ifs.plane1_offset != 0.0 or ifs.plane2_offset != 0.0 \
+		or ifs.depth != IFS_DEPTH[0] or ifs.detail != IFS_DETAIL[_ifs_detail_idx(ifs.preset_detail())]
 	_reset_ifs_shape()
 	if sculpted:
-		ifs_edit.remember(planes)
+		ifs_edit.remember(shape)
 	_recenter()
+
+
+## UNDO moved the sculpture's numbers under the tiles that name them; put the tiles back on them.
+func _on_ifs_undone() -> void:
+	ifs_detail_idx = _ifs_detail_idx(ifs.detail)
+	ifs.detail = IFS_DETAIL[ifs_detail_idx]
+	ifs_edit.set_detail(ifs.detail)
+	# A dragged depth can sit between rungs; the tile shows the nearest one.
+	var best := 0
+	for i in IFS_DEPTH.size():
+		if absf(IFS_DEPTH[i] - ifs.depth) < absf(IFS_DEPTH[best] - ifs.depth):
+			best = i
+	ifs_depth_idx = best
+	# A stretched sculpture cannot be dived, as STRETCH already enforces.
+	if ifs_dive.on and ifs.depth != 1.0:
+		_set_ifs_dive(false)
 
 
 ## The shape half of RESET, shared with a preset change. Everything the rule owns goes back to
@@ -2002,13 +2042,18 @@ func _init_xr() -> void:
 	# session_visible is "visible but not focused": the Quest dash is up. Drift, spin
 	# and the guard all measure or animate against frames the runtime is throttling.
 	xr.session_visible.connect(func(): _xr_focused = false)
-	xr.session_focussed.connect(func(): _xr_focused = true)
+	xr.session_focussed.connect(_on_session_focussed)
 	# Phase 2 measured the point rendering as vertex-bound, not fill-bound: cutting the
 	# eye buffer 2.8x saved only 1ms. 0.75 lands near the Quest 3's native ~2064x2208
 	# and costs nothing visually, so take the free ~1ms and move on.
 	xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
 	print("[fractal] OpenXR up. refresh=%.1f target=%s views=%d" % [
 		xr.get_display_refresh_rate(), str(xr.get_render_target_size()), xr.get_view_count()])
+
+
+func _on_session_focussed() -> void:
+	_xr_focused = true
+	_xr_focus_seen = true
 
 
 func _env() -> Environment:
@@ -2060,19 +2105,44 @@ func _run_guard(delta: float) -> void:
 		if _perf_scale < 1.0:
 			_perf_scale = 1.0
 			cloud.set_perf_scale(1.0)
-		_guard_slow_s = 0.0
+		_guard_reset()
+		return
+	# A bulb drawn MARCHED or SOLID keeps splat_on with the cloud hidden. The frame time is the
+	# surface's then, and cutting splats nobody sees only brought the bulb back thin. The scale
+	# is kept: those are the splats that will be drawn again.
+	if cloud.is_hidden():
+		_guard_reset()
 		return
 	var hz := _refresh_hz()
 	var cut_fps := GUARD_CUT_SHARE * hz
-	_guard_slow_s = _guard_slow_s + delta if fps < cut_fps else 0.0
-	if _guard_slow_s >= GUARD_SLOW_S:
-		_guard_slow_s = 0.0
+	_guard_slow_s = _guard_slow_s + delta if _fps_ema < cut_fps else 0.0
+	if _guard_win.size() != GUARD_WINDOW:
+		_guard_win.resize(GUARD_WINDOW)
+		_guard_win.fill(0)
+		_guard_win_slow = 0
+	var slow := 1 if fps < cut_fps else 0
+	_guard_win_slow += slow - _guard_win[_guard_win_i]
+	_guard_win[_guard_win_i] = slow
+	_guard_win_i = (_guard_win_i + 1) % GUARD_WINDOW
+	_guard_win_n = mini(_guard_win_n + 1, GUARD_WINDOW)
+	if _guard_slow_s >= GUARD_SLOW_S or (_guard_win_n == GUARD_WINDOW \
+			and _guard_win_slow > GUARD_SLOW_SHARE * GUARD_WINDOW):
+		_guard_reset()
 		_perf_scale = maxf(GUARD_FLOOR, _perf_scale * clampf(sqrt(_fps_ema / cut_fps), 0.5, 0.95))
 		cloud.set_perf_scale(_perf_scale)
 		_guard_hold = GUARD_HOLD_S
 	elif _perf_scale < 1.0 and _guard_hold <= 0.0 and _fps_ema > GUARD_RECOVER_SHARE * hz:
 		_perf_scale = minf(1.0, _perf_scale * 1.01)
 		cloud.set_perf_scale(_perf_scale)
+
+
+## Forget the evidence for a cut: after one, so the next has to be earned afresh, and whenever
+## the guard is not looking at splats.
+func _guard_reset() -> void:
+	_guard_slow_s = 0.0
+	_guard_win.fill(0)
+	_guard_win_slow = 0
+	_guard_win_n = 0
 
 
 ## The display's refresh rate, or TARGET_HZ where there is none to ask (the desktop, or a
@@ -2234,6 +2304,9 @@ func _process_frame(delta: float) -> void:
 		if _help_pending:
 			_help_pending = false
 			help.open()
+	if _resume_passthrough and _xr_focused and (xr == null or _xr_focus_seen):
+		_resume_passthrough = false
+		_set_passthrough(true)
 	help.update(delta)
 	_tick_resume(delta)
 	# Input has one owner a frame, highest first: an unfocused session (the system dash is
@@ -2241,10 +2314,9 @@ func _process_frame(delta: float) -> void:
 	# menu is put to sleep under the card the way it sleeps under the dash, or its scrub and
 	# hold ran on the same sticks and trigger the card was waiting on.
 	if help.is_open():
-		if menu._focused:
-			menu._set_focus(false)
-	elif not menu._focused and _xr_focused:
-		menu._set_focus(true)
+		menu.set_suspended(true)
+	elif _xr_focused:
+		menu.set_suspended(false)
 	_menu_active = menu.update(delta)
 	if _xr_focused:
 		_run_guard(delta)
@@ -2320,6 +2392,10 @@ func _process_frame(delta: float) -> void:
 		_fail(cloud.get_error())
 	if ground_mode:
 		var hp := xr_camera.global_transform.origin
+		# Cancelled rather than paused: a glide that picked up again as the dash closed would be
+		# motion nobody asked for in that moment. The tiles keep filling either way.
+		if not _xr_focused or help.is_open() or _menu_active:
+			ground.stop_glide()
 		ground.update(Vector2(hp.x, hp.z), delta)
 		# A trigger glide carries you with no hand in it, so it gets the walk's tunnel.
 		_want_vignette(ComfortVignette.WALK, ground.glide_mps / GROUND_PAN_MPS)
@@ -2380,9 +2456,10 @@ func _process_frame(delta: float) -> void:
 # Left menu (≡)          pin the wrist menu open, press again to let go
 # Left stick click       passthrough on / off
 # Right stick click      the mode's ambient motion on / off
-# Right stick            turn, push away and pull back (ground: 30 degree snap turn and zoom;
-#                        tree: level push; tree WALK: forward glides like the trigger, and
-#                        nothing else)
+# Right stick            turn, push away and pull back. Around you (ground, tree, galaxy,
+#                        room-size IFS) the turn is a 30 degree snap; ground zooms instead
+#                        of pushing; tree pushes level; tree WALK: forward glides like the
+#                        trigger, and nothing else
 # Left stick             grow and shrink (ground: walk; off during tree WALK)
 # Triggers               THE MODE'S OWN: prev/next flame or bulb, glide (ground),
 #                        regrow/plant (tree), sculpt a handle (ifs)
@@ -2401,6 +2478,10 @@ func _handle_input(delta: float) -> void:
 	var l_menu := _pressed(left_hand, "menu_button")
 	# No right menu read: on a Quest that is the system button and the app never sees it.
 	_walk_stick = false
+	# A ground grip held into the dash or the card is let go, and taken again on the way out.
+	# Kept, its last position made the first frame back apply every move the hand made meanwhile.
+	if not _xr_focused or help.is_open():
+		_gg_hands = []
 	# Unfocused, nothing acts: the edges above are spent so a press made under the dash does
 	# not land when it closes.
 	if not _xr_focused:
@@ -2443,8 +2524,7 @@ func _handle_input(delta: float) -> void:
 		if right.length_squared() > 1e-6:
 			right = right.normalized()
 		var grabbing := _ground_grab()
-		if absf(rs.x) < SNAP_REARM:
-			_snap_armed = true
+		var snap := _snap_step(rs.x, not grabbing)
 		if not grabbing:
 			# Walk and zoom move the floor past you with no hand in it, so both close the tunnel.
 			var moving := 0.0
@@ -2455,9 +2535,8 @@ func _handle_input(delta: float) -> void:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
 				moving = maxf(moving, minf(1.0, absf(rs.y)))
 			_want_vignette(ComfortVignette.WALK, moving)
-			if _snap_armed and absf(rs.x) > SNAP_FIRE:
-				_snap_armed = false
-				ground.rotate_about_head(-signf(rs.x) * SNAP_TURN_RAD)
+			if snap != 0:
+				ground.rotate_about_head(-snap * SNAP_TURN_RAD)
 	# WALK owns the sticks. The right stick pushed forward glides like a held trigger, under
 	# the same pace, ease and tunnel; it used to shove the whole avenue at 1.5 m/s with no
 	# vignette. Turning and scaling the avenue mid-walk are off: a smooth turn swung the rows
@@ -2469,7 +2548,26 @@ func _handle_input(delta: float) -> void:
 	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
 	# the sculpture moves out from under the plane you are dragging.
 	elif (grab == null or not grab.is_grabbing()) and not ifs_edit.is_editing():
-		if absf(rs.x) > 0.15:
+		# Around you (the grove, inside the galaxy, a room-size sculpture) the stick turns and
+		# moves the world, so it follows the ground's rules: snap turns, and the walk's tunnel
+		# while it pushes or scales. A hand-sized flame or bulb is a thing in front of you, and
+		# turning that smoothly is turning an object, not the room.
+		var surround: bool = tree_mode or galaxy.active or (ifs_mode and ifs_room)
+		if surround:
+			var snap := _snap_step(rs.x, true)
+			if snap != 0:
+				# About a vertical line through the head, so the view turns and nothing swings
+				# past you; same sense as the smooth turn it replaces.
+				var head := xr_camera.global_transform.origin
+				var turn := Basis(Vector3.UP, snap * SNAP_TURN_RAD)
+				cloud.global_transform = Transform3D(turn, head - turn * head) * cloud.global_transform
+			var moving := 0.0
+			if absf(rs.y) > 0.15:
+				moving = absf(rs.y)
+			if absf(ls.y) > 0.15:
+				moving = maxf(moving, absf(ls.y))
+			_want_vignette(ComfortVignette.WALK, minf(1.0, moving))
+		elif absf(rs.x) > 0.15:
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
 			var fwd := -xr_camera.global_transform.basis.z
@@ -2568,6 +2666,19 @@ func _handle_input(delta: float) -> void:
 		_settling = false
 	if _key(KEY_6):
 		_step_detail(1)
+
+
+## Right stick X as snap turns, shared by every mode that turns the world around you. Returns
+## -1, 0 or 1. The stick has to come back inside SNAP_REARM before it can fire again, and it
+## re-arms even while `can_fire` is false (a grip held), so letting go of a grip with the stick
+## centred is a clean start.
+func _snap_step(x: float, can_fire: bool) -> int:
+	if absf(x) < SNAP_REARM:
+		_snap_armed = true
+	elif can_fire and _snap_armed and absf(x) > SNAP_FIRE:
+		_snap_armed = false
+		return 1 if x > 0.0 else -1
+	return 0
 
 
 ## Ask for the tunnel this frame: 0 still, 1 full speed, in a ComfortVignette profile. The
@@ -3086,6 +3197,7 @@ const RESUME_CHECK_S := 1.0
 var _resume_saved := {}
 var _resume_t := 0.0
 var _resume_pin := false
+var _resume_passthrough := false
 
 
 func _help_seen() -> bool:
@@ -3184,8 +3296,9 @@ func _apply_resume(r: Dictionary) -> void:
 		theme_idx = int(r["theme"])
 		_step_cycle(int(r["cycle"]) - cycle_idx)
 		forest.set_pace(int(r["pace"]))
-		if bool(r["passthrough"]):
-			_set_passthrough(true)
+		# Applied on the first focused frame (_process_frame): a blend mode set before the session
+		# is focused is not one the runtime has to honour.
+		_resume_passthrough = bool(r["passthrough"])
 		_resume_pin = bool(r["pinned"])
 		if r["mode"] != "flame":
 			_set_mode(r["mode"])
