@@ -42,6 +42,7 @@ func _init() -> void:
 	_snap(main)
 	await _surround(main)
 	await _reset_undo(main)
+	await _owners(main)
 
 	print("LOGICCHECK control=%s (a steady 72 fps run must not pass as a cut)" % (
 		"PASS" if control_cut else "FAIL"))
@@ -288,3 +289,26 @@ func _reset_undo(main) -> void:
 	main._set_mode("flame")
 	for i in 4:
 		await process_frame
+
+
+# --- higher owners stop the ground ---------------------------------------------
+
+## A trigger glide and a ground grip both stop when the help card takes input. The glide used
+## to carry on at 1.5 m/s under the card, and a grip held through it jumped by every move the
+## hand made meanwhile. The first frame (card closed) proves the check can see a live glide.
+func _owners(main) -> void:
+	main._set_mode("ground")
+	for i in 8:
+		await process_frame
+	main.help.close()
+	main.ground.glide_to(main.ground._head_xz + Vector2(3.0, 0.0))
+	main._process_frame(1.0 / 72.0)
+	var live: bool = main.ground._glide.length() > 0.5
+	main._gg_hands.assign([1])
+	main.help.open()
+	main._process_frame(1.0 / 72.0)
+	_ok("glide under help", live and main.ground._glide == Vector2.ZERO,
+		"live before %s, left %.2f m" % [live, main.ground._glide.length()])
+	_ok("ground grip under help", main._gg_hands.is_empty(), "held hands %d" % main._gg_hands.size())
+	main.help.close()
+	main.ground.stop_glide()

@@ -483,7 +483,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `orbit_check.sh` | Headless maths: GROUND world and fractal mappings are inverses, the orbit trace iterates correctly, the deepest zoom stage keeps its texel bookkeeping. | `MAPCHECK`, `ORBITCHECK` and `DEEPCHECK` lines all say PASS. The script pipes through grep, so read the lines, the exit code is grep's. |
 | `tree_check.sh` | Headless geometry: every tree shape at default depth, a depth-0 control that must build nothing, forest branch cap and LOD ladder. | `TREECHECK PASS`. Same grep caveat as `orbit_check.sh`. |
 | `ifs_check.sh` | Numeric checks for `FractalIFS`. | `IFSCHECK PASS failures=0`. |
-| `logic_check.sh` | `main.gd` logic through the real scene: resume parsing, the splat guard, drift stride, snap-turn re-arm, RESET then UNDO in IFS. Windowed. | `LOGICCHECK PASS failures=0`; its broken control must fail. |
+| `logic_check.sh` | `main.gd` logic through the real scene: resume parsing, the splat guard, drift stride, snap-turn re-arm and the surround snap, RESET then UNDO in IFS, glide and ground grip stopping under the help card. Windowed. Headset only, no check: a preset-load failure showing its message, and resumed passthrough showing the room. | `LOGICCHECK PASS failures=0`; its broken control must fail. |
 | `ground_check.sh` | `ground.glsl` df32 and f32 fills against a 64-bit CPU port, read back from the GPU. Windowed. | `GROUNDCHECK PASS stage=N`. |
 | `card_shot.sh` | The controls card in every mode, to `.spike-out/help_card_<mode>.png`. | `CARDSHOT PASS modes=5`: no line clips, and the clip control fails. |
 | `menu_shot.sh` | The wrist menu in all five modes at every level, galleries, bar, float and pin, to `.spike-out/menu_*.png`. | `MENUSHOT PASS shots=49 failures=0`. A gallery tile missing from the atlas ("not baked") fails it. |
@@ -499,7 +499,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `tree_look_shot.sh` | FLOOR and BARK shots and their GPU time on this Mac. | Run finishes, exit 0. Ratios only, not Quest milliseconds. |
 | `ifs_shot.sh` | Standalone `FractalIFS` captures. | Exit 0, no missing PNG. |
 | `ifs_mode_shot.sh` | IFS mode through the real scene: capture plus mode-pair and input assertions (sculpt, undo, shapes). | `IFSMODE` lines, no failed assertion, every PNG present. |
-| `ifs_family_shot.sh` | FAMILY, room size and DIVE through the real scene. | Exit 0, no failed check. |
+| `ifs_family_shot.sh` | BY RULE (echo placement), room size and DIVE through the real scene. | Exit 0, no failed check. |
 | `ifs_echo_shot.sh` | IFS ECHOES captures. | Exit 0, no missing PNG. |
 | `ifs_echo_cost.sh` | GPU time, draw calls and primitives per ECHOES rung. | Run finishes. Ratios only. |
 | `flame_scale_shot.sh` | GALAXY, ECHOES and the flame SKY through the real scene, to `.spike-out/flame-scale-2026-10-10/`. | Exit 0, no failed check, every PNG present. |

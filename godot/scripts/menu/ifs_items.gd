@@ -72,7 +72,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			"Copies of the shape round the room"),
 		# Where the echoes stand: the seeded scatter, or where the sculpture's own maps put its
 		# relatives, so the room is the next generations out.
-		WristMenu.Item.new("scene", "FAMILY",
+		WristMenu.Item.new("scene", "BY RULE",
 			func(): return "on" if m.ifs_echoes.family else "off",
 			func(): m.ifs_echoes.set_family(not m.ifs_echoes.family),
 			false, vis).toggle(func(): return m.ifs_echoes.family).hinted(

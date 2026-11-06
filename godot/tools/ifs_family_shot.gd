@@ -1,6 +1,6 @@
 extends SceneTree
 
-## FAMILY, room size and DIVE through the real main scene. Enters IFS the way the wrist strip
+## BY RULE, room size and DIVE through the real main scene. Enters IFS the way the wrist strip
 ## does, works the LAYOUT, SIZE and DIVE tiles, and captures what draws. Prints the numbers a
 ## PNG cannot show: echo counts, the hero's width and where the eyes sit in it, and the dive's
 ## progress and landing, and whether the comfort vignette is up when a room-size step moves.
@@ -34,14 +34,14 @@ func _init() -> void:
 	# Hold the breath, so a capture is the banked shape and a dive's maps hold still.
 	main.ifs.ambient = false
 	main.ifs.build(false)
-	var layout = _tile(main, "FAMILY", "look")
+	var layout = _tile(main, "BY RULE", "scene")
 	var size = _tile(main, "ROOM", "look")
 	var dive = _tile(main, "DIVE", "make")
 	if layout == null or size == null or dive == null:
-		_ok("tiles", false, "FAMILY=%s ROOM=%s DIVE=%s" % [layout != null, size != null, dive != null])
+		_ok("tiles", false, "BY RULE=%s ROOM=%s DIVE=%s" % [layout != null, size != null, dive != null])
 		quit(1)
 		return
-	_ok("tiles", true, "FAMILY '%s' ROOM '%s' DIVE '%s'" % [layout.read.call(), size.read.call(),
+	_ok("tiles", true, "BY RULE '%s' ROOM '%s' DIVE '%s'" % [layout.read.call(), size.read.call(),
 		dive.read.call()])
 
 	# Tabletop, scatter then family. The family fades in over the swap's span, so run its clock.
