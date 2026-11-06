@@ -454,6 +454,12 @@ func home() -> void:
 	_sync_stage()
 
 
+## Drop what is left of a glide. The host calls it while something above the world owns input:
+## a trip that carried on under the dash or the card moved the viewer with no hand in it.
+func stop_glide() -> void:
+	_glide = Vector2.ZERO
+
+
 ## Glide so that the world point `target_xz` ends up under the viewer. Eased over about
 ## a second; a new target replaces the old.
 func glide_to(target_xz: Vector2) -> void:

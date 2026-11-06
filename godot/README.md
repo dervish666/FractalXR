@@ -313,13 +313,21 @@ and fill scales with the SQUARE of splat size, so the settings ladder has a clif
 On-device: 42mm splats with the bake's spread hit 2fps and needed a hard quit to escape.
 
 Two guards. A hard per-splat cap (`MAX_PIXEL_RADIUS`, 192px) bounds any one ellipse. And
-a governor in `main.gd` watches the real frame time and scales every splat (`perf_scale`)
-once fps has sat under 24 for six frames in a row. Cuts are proportional to the smoothed
-rate, recovery waits three seconds and then creeps, so it cannot oscillate against the
-cliff it fell off. Single long frames are ignored outright: a mesh rebuild, a pipeline
-compile or a readback is a CPU stall, and shrinking splats (a fill-rate lever) does nothing
-for those except make the cloud flinch. The wrist menu shows "guard N%" while it is
-intervening, because a silently shrunk 42mm splat would otherwise read as a broken setting.
+a governor in `main.gd` (`_run_guard`) watches the real frame time and scales every splat
+(`perf_scale`). Its lines are shares of the display's refresh: it cuts under 80% (57.6 fps at
+72 Hz) and recovers above 95%. A cut comes one of two ways: the smoothed rate sits under the
+line for 0.42 s, or a full window of the last 30 frames has more than a quarter of them
+under it, which is what catches a GPU missing every other vsync (alternating 13.9 / 27.8 ms,
+about 48 fps), where no single run of slow frames lasts. Cuts are proportional to the
+smoothed rate and clear the evidence, so the next cut has to be earned afresh; recovery waits
+three seconds and then creeps, so it cannot oscillate against the cliff it fell off. A lone
+frame over 100 ms is ignored outright: a mesh rebuild, a pipeline compile or a readback is a
+CPU stall, and shrinking splats (a fill-rate lever) does nothing for those except make the
+cloud flinch. Two long frames in a row count, so a sustained 5 fps still cuts. The guard only
+acts on splats it can see: a bulb drawn MARCHED or SOLID hides the cloud, and the guard then
+keeps the scale it had rather than cutting splats nobody is looking at. The wrist menu shows
+"guard N%" while it is intervening, because a silently shrunk 42mm splat would otherwise read
+as a broken setting. `tools/logic_check.sh` drives all of these cases.
 
 ### The sky's resolution (2026-10-11)
 
@@ -475,6 +483,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `orbit_check.sh` | Headless maths: GROUND world and fractal mappings are inverses, the orbit trace iterates correctly, the deepest zoom stage keeps its texel bookkeeping. | `MAPCHECK`, `ORBITCHECK` and `DEEPCHECK` lines all say PASS. The script pipes through grep, so read the lines, the exit code is grep's. |
 | `tree_check.sh` | Headless geometry: every tree shape at default depth, a depth-0 control that must build nothing, forest branch cap and LOD ladder. | `TREECHECK PASS`. Same grep caveat as `orbit_check.sh`. |
 | `ifs_check.sh` | Numeric checks for `FractalIFS`. | `IFSCHECK PASS failures=0`. |
+| `logic_check.sh` | `main.gd` logic through the real scene: resume parsing, the splat guard, drift stride, snap-turn re-arm, RESET then UNDO in IFS. Windowed. | `LOGICCHECK PASS failures=0`; its broken control must fail. |
 | `ground_check.sh` | `ground.glsl` df32 and f32 fills against a 64-bit CPU port, read back from the GPU. Windowed. | `GROUNDCHECK PASS stage=N`. |
 | `card_shot.sh` | The controls card in every mode, to `.spike-out/help_card_<mode>.png`. | `CARDSHOT PASS modes=5`: no line clips, and the clip control fails. |
 | `menu_shot.sh` | The wrist menu in all five modes at every level, galleries, bar, float and pin, to `.spike-out/menu_*.png`. | `MENUSHOT PASS shots=49 failures=0`. A gallery tile missing from the atlas ("not baked") fails it. |
