@@ -114,34 +114,38 @@ static func opacity(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		"How see-through each point is")
 
 
-## How much of the cloud re-settles each frame: none (frozen), all of it, or one point in n.
+## How much of the cloud re-settles each frame: all of it, one point in n, or none (frozen).
 ## A calmer cloud shimmers less. IFS has its own MOTION, which is breathing.
+## The dial runs from least to most steady, so up is steadier. STABILITY and
+## BULB_STABILITY keep frozen at index 0 (the default, and what resume files store), so the
+## dial's rung is the stored index moved one along: rung 0 is index 1 (all moving), the top
+## rung is index 0 (frozen).
 static func steady(m: FractalMain, vis: Callable) -> WristMenu.Item:
+	var n := FractalMain.BULB_STABILITY.size()
 	return WristMenu.Item.new("look", "STEADY",
 		func():
-			var n: int = FractalMain.BULB_STABILITY[m.bulb_stability_idx] if m.bulb_mode \
+			var k: int = FractalMain.BULB_STABILITY[m.bulb_stability_idx] if m.bulb_mode \
 				else FractalMain.STABILITY[m.stability_idx]
-			if n == 0:
+			if k == 0:
 				return "frozen"
-			return "all moving" if n == 1 else "1 in %d moving" % n,
-		func():
-			if m.bulb_mode:
-				m.bulb_stability_idx = (m.bulb_stability_idx + 1) % FractalMain.BULB_STABILITY.size()
-				# No settle: a running cloud is already projected. Just refresh the
-				# bake so a freeze stops with shapes that describe where things ARE.
-				if FractalMain.BULB_STABILITY[m.bulb_stability_idx] == 0:
-					m._bake_wait = FractalMain.BAKE_DELAY_FRAMES
-			else:
-				m.stability_idx = (m.stability_idx + 1) % FractalMain.STABILITY.size(),
-		false, vis).stepping(func(d: int):
-			if m.bulb_mode:
-				m.bulb_stability_idx = wrapi(m.bulb_stability_idx + d, 0, FractalMain.BULB_STABILITY.size())
-				if FractalMain.BULB_STABILITY[m.bulb_stability_idx] == 0:
-					m._bake_wait = FractalMain.BAKE_DELAY_FRAMES
-			else:
-				m.stability_idx = wrapi(m.stability_idx + d, 0, FractalMain.STABILITY.size())).slider(
-		func(): return m.bulb_stability_idx if m.bulb_mode else m.stability_idx,
-		FractalMain.BULB_STABILITY.size()).hinted("Fewer points moving, less shimmer")
+			return "all moving" if k == 1 else "1 in %d moving" % k,
+		func(): _step_steady(m, 1),
+		false, vis).stepping(func(d: int): _step_steady(m, d)).slider(
+		func(): return wrapi((m.bulb_stability_idx if m.bulb_mode else m.stability_idx) - 1, 0, n),
+		n).hinted("Fewer points moving, less shimmer")
+
+
+static func _step_steady(m: FractalMain, d: int) -> void:
+	if m.bulb_mode:
+		var n := FractalMain.BULB_STABILITY.size()
+		m.bulb_stability_idx = (wrapi(m.bulb_stability_idx - 1 + d, 0, n) + 1) % n
+		# No settle: a running cloud is already projected. Just refresh the
+		# bake so a freeze stops with shapes that describe where things ARE.
+		if FractalMain.BULB_STABILITY[m.bulb_stability_idx] == 0:
+			m._bake_wait = FractalMain.BAKE_DELAY_FRAMES
+	else:
+		var n := FractalMain.STABILITY.size()
+		m.stability_idx = (wrapi(m.stability_idx - 1 + d, 0, n) + 1) % n
 
 
 ## The eye buffer's scale. Not on IFS's menu, which left it off while its recursion tile was
@@ -191,7 +195,7 @@ static func theme(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		func():
 			var nm := theme_name(m)
 			if m.recolor_on_drift:
-				return "auto · %s" % nm if m.theme_idx >= 0 else "auto"
+				return "auto · %s" % nm
 			return nm,
 		func(): m._cycle_theme(), false, vis).stepping(func(d: int): m._cycle_theme(d)).gallery(
 		func(): return m.theme_idx + 1, func(): return m.library.themes.size() + 1, m._theme_swatch
