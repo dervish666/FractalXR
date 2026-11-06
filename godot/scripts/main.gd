@@ -2131,6 +2131,10 @@ func _run_guard(delta: float) -> void:
 		_perf_scale = maxf(GUARD_FLOOR, _perf_scale * clampf(sqrt(_fps_ema / cut_fps), 0.5, 0.95))
 		cloud.set_perf_scale(_perf_scale)
 		_guard_hold = GUARD_HOLD_S
+		# Start the average at the line, not down in the dip that earned the cut. From the dip
+		# it needed ~0.5 s to climb past a rate the cut had already fixed, long enough for the
+		# slow-time arm to cut a second time for nothing.
+		_fps_ema = maxf(_fps_ema, cut_fps)
 	elif _perf_scale < 1.0 and _guard_hold <= 0.0 and _fps_ema > GUARD_RECOVER_SHARE * hz:
 		_perf_scale = minf(1.0, _perf_scale * 1.01)
 		cloud.set_perf_scale(_perf_scale)
@@ -2581,6 +2585,10 @@ func _handle_input(delta: float) -> void:
 			var s := clampf(cloud.scale.x * (1.0 + ls.y * delta), 0.05, 40.0)
 			cloud.scale = Vector3.ONE * s
 
+	# Mid-grab the surround branch above is skipped; keep the snap's arm honest anyway.
+	if grab != null and grab.is_grabbing() and not ground_mode:
+		_snap_step(rs.x, false)
+
 	# Read every button every frame, even when this mode maps it differently. Otherwise a
 	# held button becomes a phantom new press after a hand regains tracking or a mode flips.
 	# The triggers were read in _process, before the grab, for the same reason.
@@ -2675,6 +2683,10 @@ func _handle_input(delta: float) -> void:
 func _snap_step(x: float, can_fire: bool) -> int:
 	if absf(x) < SNAP_REARM:
 		_snap_armed = true
+	elif not can_fire and absf(x) > SNAP_FIRE:
+		# A push made while the turn was not allowed (mid-grab) is spent, or letting go of the
+		# grip with the stick still over would snap the world on the first free frame.
+		_snap_armed = false
 	elif can_fire and _snap_armed and absf(x) > SNAP_FIRE:
 		_snap_armed = false
 		return 1 if x > 0.0 else -1

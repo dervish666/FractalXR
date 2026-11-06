@@ -143,6 +143,19 @@ func _guard(main) -> bool:
 	_ok("guard hysteresis", is_equal_approx(main._perf_scale, held),
 		"62 fps x300 after a cut: %.3f -> %.3f" % [held, main._perf_scale])
 
+	# A cut that lands the rate just over the line (45 -> 58.5 fps) is one cut. The average used
+	# to start from the dip and take ~0.56 s to climb past the line, long enough for a second.
+	_guard_clear(main)
+	for i in 200:
+		main._run_guard(1.0 / 45.0)
+		if main._perf_scale < 1.0:
+			break   # the cut has landed; from here the frame rate is the cut's
+	var once: float = main._perf_scale
+	for i in 60:
+		main._run_guard(1.0 / 58.5)
+	_ok("guard one cut per dip", once < 1.0 and is_equal_approx(main._perf_scale, once),
+		"45 fps then 58.5 fps x60: %.3f -> %.3f" % [once, main._perf_scale])
+
 	cut = _guard_cuts(main, _repeat([0.0139, 0.0278], 40))
 	_ok("guard alternating 1:1", cut, "13.9/27.8 ms -> scale %.2f" % main._perf_scale)
 	# Two fast and one slow: the smoothed rate stays above the line (mean 60 fps), so only the
@@ -192,9 +205,11 @@ func _snap(main) -> void:
 	main._snap_armed = true
 	var got := []
 	for step in [[0.8, true], [0.8, true], [0.5, true], [0.8, true], [0.2, true], [-0.8, true],
-			[0.1, false], [0.9, false], [0.9, true]]:
+			[0.1, false], [0.9, false], [0.9, true], [0.2, true], [0.9, true]]:
 		got.append(main._snap_step(step[0], step[1]))
-	var want := [1, 0, 0, 0, 0, -1, 0, 0, 1]
+	# The push held through a grab (can_fire false) is spent: releasing the grip with the stick
+	# still over must not snap. Centring the stick re-arms it as usual.
+	var want := [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1]
 	_ok("snap re-arm", got == want, "got %s want %s" % [str(got), str(want)])
 
 
