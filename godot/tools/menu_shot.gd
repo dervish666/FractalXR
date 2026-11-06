@@ -19,7 +19,7 @@ extends SceneTree
 ## HELP opens the card, PASSTHRU runs its toggle, and one pull on EXIT does not quit.
 ## Every tile label means one thing across the modes (the vocabulary check), every closure
 ## reference in scripts/menu/ exists on main (the refs check), and a rested ray puts the
-## tile's hint on the status line (menu_flame_look_hint.png).
+## tile's hint on its own line under the title, clear of a long title (menu_flame_look_hint.png).
 ## The float is checked last: the menu key sends the panel to the lower-right spot off a test
 ## head pose, it holds still through 300 frames of the head turning and walking, and the key
 ## brings it home to the wrist.
@@ -336,8 +336,8 @@ func _vocabulary_problems(shown: Dictionary) -> Array[String]:
 	return bad
 
 
-## A hint showing: the first control of FLAME's LOOK card, rested on. The status line must
-## carry exactly that tile's hint.
+## A hint showing: the first control of FLAME's LOOK card, rested on. The hint line must carry
+## exactly that tile's hint, on one line, clear of the title and the status reading.
 func _hint_shot(main) -> String:
 	var menu = main.menu
 	main._set_mode("flame")
@@ -351,13 +351,29 @@ func _hint_shot(main) -> String:
 	var it: int = menu.debug_tile_item(tile)
 	var want: String = menu.items[it].hint if it >= 0 else ""
 	var r := await _shoot(menu, "flame_look_hint", "look")
-	var got: String = menu._side_label.text
-	print("MENUSHOT hint %s ('%s' on the status line, tile %s)" % [
-		"PASS" if want != "" and got == want else "FAIL", got, menu.items[it].label if it >= 0 else "?"])
+	var hl: Label = menu._hint_label
+	var got: String = hl.text
+	var hr: Rect2 = hl.get_global_rect()
+	var clash := hr.intersects(menu._title_label.get_global_rect()) \
+		or hr.intersects(menu._side_label.get_global_rect())
+	# The line trims with an ellipsis rather than wrap, so measure every hint in every mode
+	# against its width: one that would be trimmed fails here instead of in the headset.
+	var font: Font = hl.get_theme_font("font")
+	var px: int = hl.get_theme_font_size("font_size")
+	var long := []
+	for item in menu.items:
+		if item.hint != "" and font.get_string_size(item.hint, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x > hr.size.x:
+			long.append(item.hint)
+	var ok := want != "" and got == want and not clash and long.is_empty()
+	print("MENUSHOT hint %s ('%s' on the hint line, tile %s%s%s)" % [
+		"PASS" if ok else "FAIL", got, menu.items[it].label if it >= 0 else "?",
+		(", overlaps the title %s or status %s at %s" % [menu._title_label.get_global_rect(),
+			menu._side_label.get_global_rect(), hr]) if clash else "",
+		"" if long.is_empty() else ", too long: %s" % str(long)])
 	menu.debug_level("")
 	await _settle(menu)
-	if want == "" or got != want:
-		return "hint: status line '%s', tile hint '%s'" % [got, want]
+	if not ok:
+		return "hint: line '%s' (clash %s, too long %s), tile hint '%s'" % [got, clash, str(long), want]
 	return r
 
 

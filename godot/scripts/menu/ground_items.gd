@@ -14,10 +14,13 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(i: int): return FractalGround.FORMULA_NAMES[i],
 			func(i: int): m.ground.set_formula(i)).as_card(),
 
+		WristMenu.Item.new("scene", "HOME",
+			func(): return "start view",
+			func(): m.ground.home(),
+			false, vis).hinted("Back to where this family opened"),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
 
-		MenuShared.detail(m, vis),
 		WristMenu.Item.new("look", "JULIA",
 			func(): return "from here" if m.ground.julia else "off",
 			func():
@@ -112,10 +115,6 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 				m._apply_ground_look(),
 			false, vis).toggle(func(): return m.ground_inside_room).minor().hinted(
 			"The black inside shows your room"),
-		WristMenu.Item.new("look", "HOME",
-			func(): return "start view",
-			func(): m.ground.home(),
-			false, vis).hinted("Back to where this family opened"),
 		# The orbit of the point under the pointing hand, hung in the air over the map.
 		WristMenu.Item.new("look", "ORBIT",
 			func(): return "on" if m.orbit_on else "off",
@@ -131,6 +130,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(): m._set_render_hq(not m._render_hq),
 			false, vis).toggle(func(): return m._render_hq).minor().hinted(
 			"Sharp far detail for stills, slow to fill"),
+		# The frame-time dial goes after what the ground looks like, not ahead of it.
+		MenuShared.detail(m, vis),
 		MenuShared.fovea(m, vis),
 		MenuShared.glow(m, vis),
 

@@ -50,8 +50,8 @@ class_name WristMenu
 ## kind: .toggle(is_on), .slider(index, count), .gallery(index, count, swatch_of),
 ## .pictures(group, index, count, name_of, choose) (a picture page; give it .as_card()),
 ## .hold(), .minor() (behind MORE), .as_card(companion_section) (its own top card),
-## .in_bar() (the fixed bottom bar instead of a card), .hinted(text) (a line for the status
-## line once the ray rests on the tile). The spec itself lives in scripts/menu/, a file a mode.
+## .in_bar() (the fixed bottom bar instead of a card), .hinted(text) (a line under the title
+## once the ray rests on the tile). The spec itself lives in scripts/menu/, a file a mode.
 ## An item with .stepping() and no kind is a carousel; one with neither is a button.
 ##
 ## Budget: two layers, ~45 canvas items, a redraw only on the widget whose state moved,
@@ -160,7 +160,7 @@ class Item:
 	var name_of: Callable  # pictures: i -> the entry's name (also its atlas key)
 	var choose: Callable   # pictures: i -> select entry i
 	var bar := false       # lives in the fixed bottom bar
-	var hint := ""         # one line for the status line once the ray rests on the tile
+	var hint := ""         # one line under the title once the ray rests on the tile
 	func _init(sec: String, l: String, r: Callable, a: Callable, w := false,
 			vis := Callable()) -> void:
 		section = sec
@@ -214,7 +214,7 @@ class Item:
 	func minor() -> Item:
 		primary = false
 		return self
-	## What the tile changes on screen, in a few plain words. Shown on the status line after
+	## What the tile changes on screen, in a few plain words. Shown under the title after
 	## the ray has rested on the tile for HINT_S, so sweeping across the panel stays quiet.
 	func hinted(text: String) -> Item:
 		hint = text
@@ -718,6 +718,7 @@ var _field: TextureRect
 var _ripple: Ripple
 var _title_label: Label
 var _side_label: Label
+var _hint_label: Label
 var _foot_label: Label
 var _crumb_label: Label
 var _rail: HBoxContainer
@@ -783,7 +784,7 @@ const MORE_PX := 17
 const CRUMB_PX := 17
 ## A carousel's swatch row: its top, measured up from the tile's bottom edge.
 const SWATCH_TOP := 31.0
-## How long the ray rests on a tile before its hint replaces the status line.
+## How long the ray rests on a tile before its hint shows under the title.
 const HINT_S := 0.6
 var _hint_tile := -1
 var _hint_t := 0.0
@@ -1251,13 +1252,23 @@ func _build_viewports() -> void:
 	_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_broot.add_child(_title_label)
 	_side_label = _label("", 18, _accent, 500)
-	# Two lines tall, for a hint; a status reading is one short line on the first.
-	_side_label.position = Vector2(VIEW_SIZE.x - MARGIN_R - 260, MARGIN_T + 20)
-	_side_label.size = Vector2(260, 52)
+	# The status reading, one line. It was two lines tall to hold hints, which wrapped in its
+	# 260 px ("each point" over an orphaned "is"); hints have their own line below now, and
+	# 340 px holds the longest reading ("moving at level 5 · 12345 frames").
+	_side_label.position = Vector2(VIEW_SIZE.x - MARGIN_R - 340, MARGIN_T + 20)
+	_side_label.size = Vector2(340, 26)
 	_side_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_side_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_side_label.add_theme_constant_override("line_spacing", -4)
+	_side_label.clip_text = true
+	_side_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_broot.add_child(_side_label)
+	# The hint's own line: full width in the empty band between the title and the rail, so a
+	# hint never wraps and never meets a long title or the status reading.
+	_hint_label = _label("", 17, _accent, 500)
+	_hint_label.position = Vector2(MARGIN_L, MARGIN_T + 50)
+	_hint_label.size = Vector2(VIEW_SIZE.x - MARGIN_L - MARGIN_R, 22)
+	_hint_label.clip_text = true
+	_hint_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_broot.add_child(_hint_label)
 	_crumb_label = _label("", CRUMB_PX, _mute, 700)
 	_crumb_label.add_theme_font_override("font", _font(700, 2))
 	_crumb_label.position = Vector2(MARGIN_L + 150, MARGIN_T + HEADER_H + 56)
@@ -1584,6 +1595,7 @@ func _apply_theme() -> void:
 	fc.a = 0.55
 	_field.modulate = fc
 	_side_label.add_theme_color_override("font_color", _accent)
+	_hint_label.add_theme_color_override("font_color", _accent)
 	_crumb_label.add_theme_color_override("font_color", _mode_col)
 	for i in _tiles.size():
 		var w := _tiles[i] as Widget
@@ -1729,7 +1741,7 @@ func update(delta: float) -> bool:
 
 
 ## The hovered tile's hint, once the ray has rested there for HINT_S. Not mid-drag: a slider
-## being dragged is already saying what it does, and the status line may be the guard.
+## being dragged is already saying what it does.
 func _tick_hint(delta: float) -> void:
 	if _hint_held:
 		return
@@ -2094,9 +2106,8 @@ func _refresh() -> void:
 		w.queue_redraw()
 	if title.is_valid():
 		_title_label.text = str(title.call())
-	if _hint != "":
-		_side_label.text = _hint
-	elif status_side.is_valid():
+	_hint_label.text = _hint
+	if status_side.is_valid():
 		_side_label.text = str(status_side.call())
 	if status_main.is_valid():
 		var foot := str(status_main.call())

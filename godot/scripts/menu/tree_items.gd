@@ -76,7 +76,6 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
 
-		MenuShared.detail(m, vis),
 		WristMenu.Item.new("look", "LEVELS",
 			func(): return "%d levels · %s branches" % [m.tree.effective_depth(),
 				m._fmt_count(m._forest_branch_count())],
@@ -116,6 +115,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).stepping(func(d: int):
 				m._set_tree_bark(wrapi(m.forest.bark_style + d, 0, Forest.BARK_STEPS.size()))).hinted(
 			"A fractal pattern grown into the bark"),
+		# The frame-time dial goes after what the trees look like, not ahead of them.
+		MenuShared.detail(m, vis),
 		MenuShared.fovea(m, vis),
 		MenuShared.glow(m, vis),
 
