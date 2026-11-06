@@ -2495,6 +2495,9 @@ func _handle_input(delta: float) -> void:
 	# on a deliberate dismissal, and not when the card opens: a first launch that the dash or a
 	# crash interrupted used to count as having read it.
 	if help.is_open():
+		# The sticks are not read under the card, so a push held as it closes would snap the
+		# room on the first frame back. Disarm; a centred stick re-arms it at once.
+		_snap_armed = false
 		if _trig[0] or _trig[1] or _key(KEY_SPACE):
 			help.close()
 			_mark_help_seen()
@@ -2585,8 +2588,9 @@ func _handle_input(delta: float) -> void:
 			var s := clampf(cloud.scale.x * (1.0 + ls.y * delta), 0.05, 40.0)
 			cloud.scale = Vector3.ONE * s
 
-	# Mid-grab the surround branch above is skipped; keep the snap's arm honest anyway.
-	if grab != null and grab.is_grabbing() and not ground_mode:
+	# Mid-grab or mid-drag of an IFS handle the surround branch above is skipped; keep the
+	# snap's arm honest anyway, or letting go with the stick still over snaps the room.
+	if ((grab != null and grab.is_grabbing()) or ifs_edit.is_editing()) and not ground_mode:
 		_snap_step(rs.x, false)
 
 	# Read every button every frame, even when this mode maps it differently. Otherwise a
