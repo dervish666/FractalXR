@@ -233,15 +233,17 @@ class ControlsCard extends Control:
 		var right_grip := PackedStringArray(["Both grips: scale", "and fly through"])
 		var face := PackedStringArray(["A · B: previous,", "next flame"])
 		var left_face := PackedStringArray(["X: home", "Y: next theme"])
-		var menu_btn := PackedStringArray(["Float the menu", "· again: back on the arm"])
-		var mode_note := "Wrist up for the menu. Point and pull; the other trigger goes back a level."
+		# The menu is the whole app past these buttons, so where it lives is on the card in every
+		# mode, on the button that floats it, not in one mode's footnote.
+		var menu_btn := PackedStringArray(["Wrist up: menu", "· button: float it"])
+		var mode_note := "In the menu, point and pull; the other trigger goes back a level."
 		if _mode == "tree":
 			# WALK takes both triggers over: held, they glide down the avenue instead.
 			left_trigger = PackedStringArray(["Regrow", "every tree", "· WALK: hold to glide"])
 			right_trigger = PackedStringArray(["Plant a tree", "at the point", "· WALK: hold to glide"])
 			face = PackedStringArray(["A · B: previous,", "next species"])
 			# WALK takes the right stick too: forward glides, the turn and push are off.
-			right_stick = PackedStringArray(["Turn the grove", "· click: spin on, off", "· WALK: push to glide"])
+			right_stick = PackedStringArray(["Snap turn", "· click: spin on, off", "· WALK: push to glide"])
 			# The grips move the whole grove, hero and planted alike: they are one cloud.
 			left_grip = PackedStringArray(["Hold to grab", "the whole grove"])
 			right_grip = PackedStringArray(["Both grips:", "scale the grove"])
@@ -250,12 +252,12 @@ class ControlsCard extends Control:
 			left_trigger = PackedStringArray(["Glide to", "the point"])
 			right_trigger = PackedStringArray(["Glide to", "the point"])
 			left_stick = PackedStringArray(["Walk the ground", "· click: passthrough"])
-			right_stick = PackedStringArray(["Turn + zoom", "· click: orbit on, off"])
-			face = PackedStringArray(["A · B: previous,", "next terrain style"])
+			right_stick = PackedStringArray(["Snap turn, zoom", "· click: orbit on, off"])
+			face = PackedStringArray(["A · B: previous,", "next family"])
 			# Ground has no object to hold. The grips drag and scale the field under you.
 			left_grip = PackedStringArray(["Hold to drag", "the ground"])
 			right_grip = PackedStringArray(["Both grips:", "zoom the ground"])
-			mode_note = "PASSTHRU shows your room; INSIDE opens the filled set to it"
+			mode_note = "PASSTHRU shows your room; HOLLOW opens the filled set to it"
 		elif _mode == "bulb":
 			left_trigger = PackedStringArray(["Previous bulb"])
 			right_trigger = PackedStringArray(["Next bulb"])
@@ -267,11 +269,10 @@ class ControlsCard extends Control:
 			left_trigger = PackedStringArray(["Hold on a handle", "to sculpt", "· DIVE: hold, eye a copy"])
 			right_trigger = PackedStringArray(["Hold on a handle", "to sculpt", "· DIVE: hold, eye a copy"])
 			right_stick = PackedStringArray(["Turn, push away", "· click: breathing on, off"])
-			face = PackedStringArray(["A · B: previous,", "next sculpture"])
-			left_face = PackedStringArray(["X: reset the shape", "Y: next theme"])
+			face = PackedStringArray(["A · B: previous,", "next shape"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
-			mode_note = "SHAPE morphs it; EDIT shows the mirrors; MOTION breathes; ECHOES fills the room"
+			mode_note = "SHAPES morphs it; EDIT puts the handles on; MOTION breathes; ECHOES fills the room"
 		# A third trigger line (WALK, DIVE) would sit on the stick's first line, so the block
 		# rises by half a line for each line past two; there is room under the subtitle.
 		var trig_y := 292.0 - 0.5 * (LABEL_SIZE + 8) * maxf(0.0, left_trigger.size() - 2)

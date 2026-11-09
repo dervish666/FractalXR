@@ -50,7 +50,8 @@ class_name WristMenu
 ## kind: .toggle(is_on), .slider(index, count), .gallery(index, count, swatch_of),
 ## .pictures(group, index, count, name_of, choose) (a picture page; give it .as_card()),
 ## .hold(), .minor() (behind MORE), .as_card(companion_section) (its own top card),
-## .in_bar() (the fixed bottom bar instead of a card).
+## .in_bar() (the fixed bottom bar instead of a card), .hinted(text) (a line under the title
+## once the ray rests on the tile). The spec itself lives in scripts/menu/, a file a mode.
 ## An item with .stepping() and no kind is a carousel; one with neither is a button.
 ##
 ## Budget: two layers, ~45 canvas items, a redraw only on the widget whose state moved,
@@ -159,6 +160,7 @@ class Item:
 	var name_of: Callable  # pictures: i -> the entry's name (also its atlas key)
 	var choose: Callable   # pictures: i -> select entry i
 	var bar := false       # lives in the fixed bottom bar
+	var hint := ""         # one line under the title once the ray rests on the tile
 	func _init(sec: String, l: String, r: Callable, a: Callable, w := false,
 			vis := Callable()) -> void:
 		section = sec
@@ -211,6 +213,11 @@ class Item:
 		return self
 	func minor() -> Item:
 		primary = false
+		return self
+	## What the tile changes on screen, in a few plain words. Shown under the title after
+	## the ray has rested on the tile for HINT_S, so sweeping across the panel stays quiet.
+	func hinted(text: String) -> Item:
+		hint = text
 		return self
 	func as_card(companion := "") -> Item:
 		card_of = companion if companion != "" else label.to_lower()
@@ -434,9 +441,12 @@ class Widget extends Control:
 		_body(18, 5)
 		var pad := 18.0
 		var has_sw := not swatches.is_empty()
-		draw_string(_f700, Vector2(pad, 28.0), label, HORIZONTAL_ALIGNMENT_LEFT, size.x - 2 * pad, 14, DIM)
+		draw_string(_f700, Vector2(pad, 28.0), label, HORIZONTAL_ALIGNMENT_LEFT, size.x - 2 * pad, CAPTION_PX, DIM)
 		var fs := 26 if big else 22
-		var vy := (size.y * 0.5 - 2.0 if big else 58.0) if has_sw else size.y * 0.5 + 10.0
+		# With swatches the value sits in the band between the caption and the swatch row
+		# (which starts SWATCH_TOP above the bottom), so a long theme name never runs into it.
+		var vy := (size.y * 0.5 - 2.0 if big else size.y - SWATCH_TOP - 7.0) if has_sw \
+			else size.y * 0.5 + 10.0
 		draw_string(_f600, Vector2(44.0, vy), value, HORIZONTAL_ALIGNMENT_CENTER, size.x - 88.0, fs,
 			LABEL.lerp(Color.WHITE, pulse))
 		# Chevrons, each a hit zone: left third steps back, the rest steps on.
@@ -450,7 +460,7 @@ class Widget extends Control:
 		# The swatch strip: neighbours either side of the current, which stands taller.
 		var n := swatches.size()
 		var slot := (size.x - 2 * pad - 4 * 6.0) / 5.0
-		var by := size.y - 26.0
+		var by := size.y - SWATCH_TOP + 5.0
 		for k in 5:
 			var i := swatch_cur - 2 + k
 			if i < 0 or i >= n:
@@ -527,15 +537,32 @@ class Widget extends Control:
 		draw_string(_f500, Vector2(r.position.x, r.get_center().y + 5.0), "not baked",
 			HORIZONTAL_ALIGNMENT_CENTER, r.size.x, 15 if big_text else 13, DIM)
 
+	## A pill, so it reads as a control and not a divider: "MORE · 5 settings" with a chevron
+	## pointing the way the box will grow, or "LESS" pointing back up. The chevron is drawn,
+	## not a glyph, because the font has no arrows.
 	func _draw_more() -> void:
 		var cy := size.y * 0.5
-		var c := DIM.lerp(LABEL, hover)
-		draw_string(_f700, Vector2(0, cy + 5.0), label, HORIZONTAL_ALIGNMENT_CENTER, size.x, 14, c)
+		var text := label if value == "" else "%s  ·  %s" % [label, value]
+		var tw := _f700.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, MORE_PX).x
+		var w := tw + 74.0
+		var r := Rect2(Vector2((size.x - w) * 0.5, 2.0), Vector2(w, size.y - 4.0))
 		var l := line
-		l.a = 0.8
-		var tw := _f700.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
-		draw_line(Vector2(0, cy), Vector2(size.x * 0.5 - tw * 0.5 - 16.0, cy), l, 1.0, true)
-		draw_line(Vector2(size.x * 0.5 + tw * 0.5 + 16.0, cy), Vector2(size.x, cy), l, 1.0, true)
+		l.a = 0.5
+		draw_line(Vector2(0, cy), Vector2(r.position.x - 12.0, cy), l, 1.0, true)
+		draw_line(Vector2(r.end.x + 12.0, cy), Vector2(size.x, cy), l, 1.0, true)
+		_sb.bg_color = ink.lerp(hue, 0.12 + 0.18 * hover)
+		_sb.set_border_width_all(2)
+		_sb.border_color = line.lerp(hue, 0.45 + 0.55 * hover)
+		_sb.set_corner_radius_all(int(r.size.y * 0.5))
+		draw_style_box(_sb, r)
+		_sb.set_border_width_all(0)
+		var c := LABEL.lerp(Color.WHITE, hover)
+		draw_string(_f700, Vector2(r.position.x + 24.0, cy + MORE_PX * 0.36), text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, MORE_PX, c)
+		var hx := r.end.x - 28.0
+		var dy := 4.0 if label == "MORE" else -4.0
+		draw_polyline(PackedVector2Array([Vector2(hx - 7.0, cy - dy), Vector2(hx, cy + dy),
+			Vector2(hx + 7.0, cy - dy)]), hue.lerp(Color.WHITE, hover), 2.5, true)
 
 	func _sb_rect(r: Rect2, c: Color, radius: int) -> void:
 		_sb.bg_color = c
@@ -691,6 +718,7 @@ var _field: TextureRect
 var _ripple: Ripple
 var _title_label: Label
 var _side_label: Label
+var _hint_label: Label
 var _foot_label: Label
 var _crumb_label: Label
 var _rail: HBoxContainer
@@ -749,6 +777,19 @@ var _dot_mat: StandardMaterial3D
 var _step_dir := 0
 var _step_timer := 0.0
 const REFRESH_S := 0.12
+## Type sizes for the small print: a carousel's caption, the MORE pill, the breadcrumb. At
+## 14 px these were the least legible text on the panel.
+const CAPTION_PX := 17
+const MORE_PX := 17
+const CRUMB_PX := 17
+## A carousel's swatch row: its top, measured up from the tile's bottom edge.
+const SWATCH_TOP := 31.0
+## How long the ray rests on a tile before its hint shows under the title.
+const HINT_S := 0.6
+var _hint_tile := -1
+var _hint_t := 0.0
+var _hint := ""
+var _hint_held := false   # the shot tool's hint, kept while the desktop has no ray to rest
 var _refresh_accum := REFRESH_S
 var _wants_stick := false
 var _focused := true
@@ -1158,6 +1199,13 @@ func _tracked(c: XRController3D) -> bool:
 	return c != null and c.is_inside_tree() and (XRServer.primary_interface == null or c.get_has_tracking_data())
 
 
+## Asleep under something above the panel in the input order (the help card): hidden, no ray, no
+## scrub or hold. The host calls it every frame, so a repeat is a no-op.
+func set_suspended(on: bool) -> void:
+	if on == _focused:
+		_set_focus(not on)
+
+
 func _set_focus(f: bool) -> void:
 	_focused = f
 	if not f:
@@ -1204,14 +1252,27 @@ func _build_viewports() -> void:
 	_title_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_broot.add_child(_title_label)
 	_side_label = _label("", 18, _accent, 500)
-	_side_label.position = Vector2(VIEW_SIZE.x - MARGIN_R - 260, MARGIN_T + 20)
-	_side_label.size = Vector2(260, 26)
+	# The status reading, one line. It was two lines tall to hold hints, which wrapped in its
+	# 260 px ("each point" over an orphaned "is"); hints have their own line below now, and
+	# 340 px holds the longest reading ("moving at level 5 · 12345 frames").
+	_side_label.position = Vector2(VIEW_SIZE.x - MARGIN_R - 340, MARGIN_T + 20)
+	_side_label.size = Vector2(340, 26)
 	_side_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_side_label.clip_text = true
+	_side_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_broot.add_child(_side_label)
-	_crumb_label = _label("", 14, _mute, 700)
+	# The hint's own line: full width in the empty band between the title and the rail, so a
+	# hint never wraps and never meets a long title or the status reading.
+	_hint_label = _label("", 17, _accent, 500)
+	_hint_label.position = Vector2(MARGIN_L, MARGIN_T + 50)
+	_hint_label.size = Vector2(VIEW_SIZE.x - MARGIN_L - MARGIN_R, 22)
+	_hint_label.clip_text = true
+	_hint_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_broot.add_child(_hint_label)
+	_crumb_label = _label("", CRUMB_PX, _mute, 700)
 	_crumb_label.add_theme_font_override("font", _font(700, 2))
 	_crumb_label.position = Vector2(MARGIN_L + 150, MARGIN_T + HEADER_H + 56)
-	_crumb_label.size = Vector2(VIEW_SIZE.x - MARGIN_L - MARGIN_R - 150, 22)
+	_crumb_label.size = Vector2(VIEW_SIZE.x - MARGIN_L - MARGIN_R - 150, 24)
 	_crumb_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	_broot.add_child(_crumb_label)
 	_foot_label = _label("", 15, DIM, 400)
@@ -1286,16 +1347,20 @@ func _build_viewports() -> void:
 	for i in items.size():
 		if items[i].card_of != "" and not absorbed.has(items[i].card_of):
 			absorbed.append(items[i].card_of)
+	# Promoted cards first, then sections in the order they first appear. Each mode's list
+	# starts with its own gallery, so without the split the galleries would interleave with
+	# the section cards in tile order.
 	var order: Array[String] = []
-	for i in items.size():
-		var it := items[i]
-		if it.section == MODE_SECTION or it.bar:
-			continue
-		var key := "item:%d" % i if it.card_of != "" else it.section
-		if it.card_of == "" and absorbed.has(it.section):
-			continue
-		if not order.has(key):
-			order.append(key)
+	for promoted in [true, false]:
+		for i in items.size():
+			var it := items[i]
+			if it.section == MODE_SECTION or it.bar or (it.card_of != "") != promoted:
+				continue
+			var key := "item:%d" % i if it.card_of != "" else it.section
+			if it.card_of == "" and absorbed.has(it.section):
+				continue
+			if not order.has(key):
+				order.append(key)
 	for key in order:
 		var card := _widget(-1, Kind.CARD)
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1336,7 +1401,7 @@ func _build_viewports() -> void:
 		box.add_child(ga)
 		var more := _widget(-1, Kind.MORE)
 		more.label = "MORE"
-		more.custom_minimum_size = Vector2(0, 34)
+		more.custom_minimum_size = Vector2(0, 40)
 		more.visible = false
 		box.add_child(more)
 		var gb := GridContainer.new()
@@ -1530,6 +1595,7 @@ func _apply_theme() -> void:
 	fc.a = 0.55
 	_field.modulate = fc
 	_side_label.add_theme_color_override("font_color", _accent)
+	_hint_label.add_theme_color_override("font_color", _accent)
 	_crumb_label.add_theme_color_override("font_color", _mode_col)
 	for i in _tiles.size():
 		var w := _tiles[i] as Widget
@@ -1661,6 +1727,7 @@ func update(delta: float) -> bool:
 		_step_timer = 0.0
 		if _hovered >= 0:
 			_haptic(0.18, 0.010)
+	_tick_hint(delta)
 	_tick_drag(hit, delta)
 	_tick_hold(delta)
 	_scrub(delta)
@@ -1671,6 +1738,28 @@ func update(delta: float) -> bool:
 		_refresh_accum = 0.0
 		_refresh()
 	return on_panel
+
+
+## The hovered tile's hint, once the ray has rested there for HINT_S. Not mid-drag: a slider
+## being dragged is already saying what it does.
+func _tick_hint(delta: float) -> void:
+	if _hint_held:
+		return
+	var tile := _hovered if _drag < 0 else -1
+	if tile != _hint_tile:
+		_hint_tile = tile
+		_hint_t = 0.0
+		if _hint != "":
+			_hint = ""
+			_refresh_accum = REFRESH_S
+		return
+	if tile < 0 or _hint != "":
+		return
+	_hint_t += delta
+	var it := _tile_item[tile]
+	if _hint_t >= HINT_S and it >= 0 and items[it].hint != "":
+		_hint = items[it].hint
+		_refresh_accum = REFRESH_S
 
 
 ## One line per open in debug builds, so a device log proves what the compositor was given.
@@ -1975,8 +2064,14 @@ func _refresh() -> void:
 		for ch in gb.get_children():
 			if (ch as Control).visible:
 				minors += 1
-		(box["more"] as Widget).visible = minors > 0
-		(box["more"] as Widget).label = "LESS" if _more else "MORE"
+		var more_w := box["more"] as Widget
+		more_w.visible = minors > 0
+		var ml := "LESS" if _more else "MORE"
+		var mv := "" if _more else ("1 setting" if minors == 1 else "%d settings" % minors)
+		if more_w.label != ml or more_w.value != mv:
+			more_w.label = ml
+			more_w.value = mv
+			more_w.queue_redraw()
 		gb.visible = minors > 0 and _more
 	_fit_cards()
 	# Widget faces.
@@ -2011,13 +2106,16 @@ func _refresh() -> void:
 		w.queue_redraw()
 	if title.is_valid():
 		_title_label.text = str(title.call())
+	_hint_label.text = _hint
 	if status_side.is_valid():
 		_side_label.text = str(status_side.call())
 	if status_main.is_valid():
 		var foot := str(status_main.call())
 		_foot_label.text = ("pinned  ·  " + foot) if _pinned else foot
+	# At the top the rail already names the mode, and the crumb sat under the gallery card's
+	# border; it only earns its place once you are inside a card.
 	if _level == "":
-		_crumb_label.text = _mode.to_upper()
+		_crumb_label.text = ""
 	else:
 		var box: Dictionary = _boxes[_level]
 		var sec: String = box["section"]
@@ -2291,6 +2389,8 @@ func debug_level(key: String, settled := true, t := 1.0) -> void:
 	for c in _cards.size():
 		if _card_keys[c] == key:
 			at = _cards[c].get_global_rect().get_center()
+	_hint_held = false
+	_hint = ""
 	_level = key
 	_more = false
 	_zoom_in = key != ""
@@ -2301,6 +2401,18 @@ func debug_level(key: String, settled := true, t := 1.0) -> void:
 	_top.visible = true
 	_zoom_t = 1.0 if settled else t
 	_open_page(key)
+	_refresh()
+	_sync_back()
+	_animate(0.0)
+
+
+## For the shot tool: hover a tile with its hint already showing.
+func debug_hint(tile: int) -> void:
+	debug_force(1.0, tile)
+	var it := _tile_item[tile] if tile >= 0 else -1
+	_hint_tile = tile
+	_hint = items[it].hint if it >= 0 else ""
+	_hint_held = true
 	_refresh()
 	_sync_back()
 	_animate(0.0)

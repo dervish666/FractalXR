@@ -47,6 +47,8 @@ enum { NONE = -1, PLANE_A = 0, PLANE_B = 1, DEPTH_FRONT = 2, DEPTH_BACK = 3 }
 const HANDLE_NAMES := ["PLANE A", "PLANE B", "DEPTH", "DEPTH"]
 
 var guides_on := false
+## UNDO restored a snapshot. The host keeps the tiles' rungs, which this cannot see.
+signal undone
 
 var _ifs: FractalIFS = null
 var _roots: Array[Node3D] = []
@@ -124,11 +126,18 @@ func has_undo() -> bool:
 	return _has_undo
 
 
-## RESET is the other direction from UNDO, so it clears this: one step back must never land
-## on a shape from before the reset.
+## A new sculpture (a preset change) clears this: one step back must never land on a shape
+## from before it.
 func clear_undo() -> void:
 	_has_undo = false
 	_undo_snap = {}
+
+
+## RESET's way back: the parameters it is about to clear become the one step UNDO restores.
+## Any FractalIFS properties will do; RESET passes the mirrors, the depth and the detail.
+func remember(p: Dictionary) -> void:
+	_undo_snap = p
+	_has_undo = not p.is_empty()
 
 
 ## The rung a drag returns to on release. Stepping DETAIL mid-drag would otherwise be undone
@@ -146,6 +155,8 @@ func undo() -> bool:
 	_apply(_undo_snap)
 	_has_undo = false
 	_undo_snap = {}
+	# Before the rebuild: the host puts its rung back on the detail this just restored.
+	undone.emit()
 	_ifs.land_edit()
 	refresh()
 	return true

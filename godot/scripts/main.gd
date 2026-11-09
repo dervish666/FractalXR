@@ -1,4 +1,5 @@
 extends Node3D
+class_name FractalMain
 
 ## FractalXR native. Chaos game in compute, splat through the rasteriser.
 ##
@@ -227,12 +228,23 @@ var orbit_on := true
 ## so grab, scale and spin apply; the cloud's own draw is hidden underneath it.
 var tree := FractalTree.new()
 var tree_mode := false
-const TREE_DISTANCE := 2.2        # metres in front of the head, on the floor; it towers
+## Metres in front of the head, on the floor. The oak is 4.8 m tall with a crown 7.7 m across
+## (measured from its meshes), so at 2.2 the crown hung over your head and opened cropped. Rendered
+## at a Quest-like 96 degree field, level gaze: at 4 the crown's near edge still left the top of the
+## view, at 5.5 its top sits about 40 degrees up and the whole tree reads with room to spare. WALK's
+## avenue is laid from the feet (Forest.place_avenue), so this does not move it.
+const TREE_DISTANCE := 5.5
 ## The hero tree stays full-detail. Everything else (the sown grove, planted trees, the
 ## succession, their caps and LOD) is the Forest's: scripts/tree/forest.gd.
 var forest := Forest.new()
-## Head-locked tunnel vignette, driven by the avenue walk and a room-size DIVE (scripts/xr/comfort_vignette.gd).
+## Head-locked tunnel vignette (scripts/xr/comfort_vignette.gd), for every way the world moves
+## past you that your hand is not doing: the avenue walk, a room-size DIVE, the ground's stick
+## walk, zoom and glide, and the galaxy's grow.
 var vignette := ComfortVignette.new()
+## This frame's tunnel. Every mover asks through _want_vignette and _process applies the
+## strongest once, so two movers cannot fight over it and a mover that stops asking clears it.
+var _vig_motion := 0.0
+var _vig_profile: Dictionary = ComfortVignette.DIVE
 const TREE_WIND := [0.3, 0.0, 0.7, 1.4]
 const TREE_WIND_NAMES := ["light", "off", "breeze", "gusty"]
 ## The FLOOR and BARK tiles' words, by Forest.FLOOR_STEPS and Forest.BARK_STEPS.
@@ -311,7 +323,14 @@ const GROUND_RENDER_IDX := 2       # RENDER_STEPS[2] = 1.0
 var _render_idx_saved := 0
 const GROUND_PAN_MPS := 1.4       # metres per second at full stick
 const GROUND_ZOOM_PER_S := 0.9    # e-folds per second at full stick
-const GROUND_TURN_RAD_S := 1.2    # radians per second at full stick
+## Right stick X on the ground turns in snaps, not smoothly: a smooth yaw with a still body is
+## the strongest vection there is, and Meta's guidance makes smooth turning opt-in at most.
+## The stick has to come back inside SNAP_REARM before it can snap again, so a held stick is
+## one snap and a stick resting near the threshold cannot chatter.
+const SNAP_TURN_RAD := PI / 6.0
+const SNAP_FIRE := 0.7
+const SNAP_REARM := 0.35
+var _snap_armed := true
 ## RENDER: 2048 levels and 4096 iterations, for a still worth the wait.
 var _render_hq := false
 var _render_iter_saved := 0
@@ -337,6 +356,8 @@ var exposure_idx := 0      # measured on-device as the best-looking end of the r
 var iter_idx := 2          # 4 iterations
 
 var _setup_done := false
+## Set by _fail: the HUD label is showing the failure and nothing may overwrite it.
+var _failed := false
 var _status := ""
 var _hud_accum := 0.0
 var _uptime := 0.0
@@ -415,22 +436,45 @@ var auto_bake := true
 # 2fps and needed a hard quit. The guard shrinks splats the moment the frame rate dives
 # and recovers slowly once it is comfortably back, so no setting can take the headset
 # below a usable floor no matter what it multiplies out to.
-const GUARD_CUT_FPS := 24.0      # act well above the 15fps floor: reaction takes frames
-const GUARD_RECOVER_FPS := 66.0
+## The lines are shares of the display's refresh, not fixed rates. The cut used to be 24 fps
+## against a 72 Hz target, so the guard stood by through a whole range of reprojected judder
+## that nobody would call usable. Recovery sits well above the cut, so a recovered scale cannot
+## land straight back under it and oscillate.
+const GUARD_CUT_SHARE := 0.8      # 57.6 fps at 72 Hz
+const GUARD_RECOVER_SHARE := 0.95 # 68.4 fps at 72 Hz
 const GUARD_HOLD_S := 3.0        # after a cut, no recovery for this long
 const GUARD_FLOOR := 0.1
-## Frames under the cut line in a row before the guard acts. One slow frame is a hitch
-## (a mesh rebuild, a pipeline compile, a readback), and shrinking splats, a fill-rate
-## lever, does nothing for a CPU stall. Six in a row is a GPU that cannot keep up.
-const GUARD_SLOW_FRAMES := 6
-## Anything longer than this is a stall, not a frame rate; it is dropped from the EMA too.
+## Seconds the smoothed rate sits under the cut line before the guard acts: about 30 frames at
+## 72 Hz, and at 5 fps a handful rather than six seconds. One slow frame is a hitch (a mesh
+## rebuild, a pipeline compile, a readback), and shrinking splats, a fill-rate lever, does
+## nothing for a CPU stall. A shortfall that holds is a GPU that cannot keep up.
+const GUARD_SLOW_S := 0.42
+## The second way in: more than GUARD_SLOW_SHARE of the last GUARD_WINDOW frames under the line.
+## A GPU missing every other vsync (13.9 / 27.8 ms, about 48 fps) has a fast frame between each
+## slow one, so a run-length counter never reached GUARD_SLOW_S and the judder went uncut.
+const GUARD_WINDOW := 30
+const GUARD_SLOW_SHARE := 0.25
+## A frame longer than this is a stall when it stands alone, and is dropped from the EMA. Two
+## or more in a row are a frame rate, however low: the guard used to drop every one of them, so
+## a sustained 5 fps never moved the slow counter and never cut.
 const GUARD_HITCH_S := 0.1
 var _perf_scale := 1.0
 var _fps_ema := 72.0
 var _guard_hold := 0.0
-var _guard_slow := 0
+var _guard_slow_s := 0.0
+var _guard_long := 0
+## Ring of the last GUARD_WINDOW measured frames, 1 for under the cut line, its sum, and how
+## many frames it holds since the last reset. A share is only read off a full window: eight
+## slow frames in a row after a mode switch are a compile burst, not a share of thirty.
+var _guard_win := PackedByteArray()
+var _guard_win_i := 0
+var _guard_win_slow := 0
+var _guard_win_n := 0
 ## False while the system dash covers the app (OpenXR session visible, not focused).
 var _xr_focused := true
+## True once the session has reported focus. _xr_focused starts true for the desktop, so it
+## cannot say whether a headset session has got there yet.
+var _xr_focus_seen := false
 ## EXIT is armed for this long after its first press.
 const EXIT_ARM_S := 4.0
 var _exit_armed_until := -1.0
@@ -573,6 +617,7 @@ func _ready() -> void:
 	cloud.add_child(ifs)
 	ifs.add_child(ifs_edit)
 	ifs_edit.setup(ifs)
+	ifs_edit.undone.connect(_on_ifs_undone)
 	ifs.add_child(ifs_echoes)
 	ifs_echoes.setup(ifs)
 	ifs_dive.setup(ifs, cloud)
@@ -585,7 +630,11 @@ func _ready() -> void:
 	flame_sky.setup(_env())
 
 	if not library.load_all():
+		# XR first: without it the headset stays on the loading screen and the message on the
+		# camera never shows. Then stop, because nothing past this point was built.
+		_init_xr()
 		_fail("presets: %s" % library.load_error)
+		set_process(false)
 		return
 
 	# flam3 can only run on an HDR colour buffer with the STORAGE bit, which Forward
@@ -598,6 +647,8 @@ func _ready() -> void:
 		$WorldEnvironment.compositor = comp
 
 	_init_xr()
+	if xr != null:
+		resume_on = true
 	_eye_res = _current_eye_res()
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 
@@ -624,10 +675,12 @@ func _on_gpu_ready(ok: bool) -> void:
 		return
 	cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
 	_apply_point_look()
-	if not _load_preset(0):
+	var r := _read_resume()
+	if not _load_preset(int(r["flame"])):
 		return
 	_setup_done = true
 	print("[fractal] ready: %d presets, %d particles" % [library.count(), cloud.get_count()])
+	_apply_resume(r)
 
 
 func _load_preset(i: int) -> bool:
@@ -652,685 +705,9 @@ func _load_preset(i: int) -> bool:
 	return true
 
 
-## Menu spec: section, label, read, advance. Adding a setting is one entry and nothing
-## else; the menu knows nothing about particle counts or exposures.
+## The menu spec lives in scripts/menu/, one file per mode.
 func _build_menu() -> void:
-	# Which modes an item belongs to. Everything else hides, and the wrist menu drops a
-	# section whose tiles are all hidden, so each mode gets only its own controls.
-	var _vis_flame := func(): return not bulb_mode and not ground_mode and not tree_mode and not ifs_mode
-	var _vis_cloud := func(): return not ground_mode and not tree_mode and not ifs_mode
-	# The tree is grabbed and spun too. The IFS is grabbed but never spun (a shape you are
-	# about to edit has to hold still), and RESET below is its CENTRE.
-	var _vis_grab := func(): return not ground_mode and not ifs_mode
-	var _vis_tree := func(): return tree_mode
-	var _vis_ifs := func(): return ifs_mode
-	menu.items = [
-		# The mode strip: five segments under the title, always in the same place.
-		WristMenu.Item.new("mode", "FLAME", func(): return "",
-			func(): _set_mode("flame")).chosen_when(func():
-				return not bulb_mode and not ground_mode and not tree_mode and not ifs_mode),
-		WristMenu.Item.new("mode", "BULB", func(): return "",
-			func(): _set_mode("bulb")).chosen_when(func(): return bulb_mode),
-		WristMenu.Item.new("mode", "GROUND", func(): return "",
-			func(): _set_mode("ground")).chosen_when(func(): return ground_mode),
-		WristMenu.Item.new("mode", "TREE", func(): return "",
-			func(): _set_mode("tree")).chosen_when(func(): return tree_mode),
-		WristMenu.Item.new("mode", "IFS", func(): return "",
-			func(): _set_mode("ifs")).chosen_when(func(): return ifs_mode),
-
-		# The picture galleries, one per mode, each its own full-width card with a page of
-		# picture buttons inside (thumbnails from tools/thumb_bake.sh). The group names the
-		# atlas section; the name is the atlas key, so a renamed entry needs a re-bake.
-		WristMenu.Item.new("pick", "FLAMES",
-			func(): return library.name_at(preset_idx),
-			func(): _morph_to_preset(preset_idx + 1),
-			false, _vis_flame).pictures("flame",
-			func(): return preset_idx, func(): return library.count(),
-			func(i: int): return library.name_at(i),
-			func(i: int): _morph_to_preset(i)).as_card(),
-		WristMenu.Item.new("pick", "BULBS",
-			func(): return str(library.bulbs[bulb_idx].get("name", "?")),
-			func(): _load_bulb(bulb_idx + 1),
-			false, func(): return bulb_mode).pictures("bulb",
-			func(): return bulb_idx, func(): return library.bulbs.size(),
-			func(i: int): return str(library.bulbs[i].get("name", "?")),
-			func(i: int): _load_bulb(i)).as_card(),
-		WristMenu.Item.new("pick", "FAMILIES",
-			func(): return ground.formula_name(),
-			func(): ground.set_formula(ground.formula + 1),
-			false, func(): return ground_mode).pictures("ground",
-			func(): return ground.formula, func(): return FractalGround.FORMULA_NAMES.size(),
-			func(i: int): return FractalGround.FORMULA_NAMES[i],
-			func(i: int): ground.set_formula(i)).as_card(),
-		WristMenu.Item.new("pick", "SPECIES",
-			func(): return FractalTree.SHAPE_NAMES[tree_shape_idx],
-			func(): _cycle_tree_shape(1),
-			false, _vis_tree).pictures("tree",
-			func(): return tree_shape_idx, func(): return FractalTree.SHAPE_NAMES.size(),
-			func(i: int): return FractalTree.SHAPE_NAMES[i],
-			func(i: int): _cycle_tree_shape(i - tree_shape_idx)).as_card(),
-		# A different rule and a different seed frame, so a shape lands like a new sculpture
-		# rather than like a changed setting.
-		WristMenu.Item.new("pick", "SHAPES",
-			func(): return FractalIFS.preset_name(ifs_preset_idx),
-			func(): _cycle_ifs_preset(1),
-			false, _vis_ifs).pictures("ifs",
-			func(): return ifs_preset_idx, func(): return FractalIFS.PRESETS.size(),
-			func(i: int): return FractalIFS.preset_name(i),
-			func(i: int): _cycle_ifs_preset(i - ifs_preset_idx)).as_card(),
-
-		# IFS controls. DEPTH and DETAIL are deliberately separate: one stretches the shape
-		# front to back, the other adds a generation. Both rebuild; the palette does not.
-		WristMenu.Item.new("make", "DETAIL",
-			func(): return "%d · %d" % [IFS_DETAIL[ifs_detail_idx], ifs.instance_count],
-			func(): _step_ifs_detail(1),
-			false, _vis_ifs).stepping(func(d: int): _step_ifs_detail(d)).slider(
-			func(): return ifs_detail_idx, IFS_DETAIL.size()),
-		WristMenu.Item.new("make", "DEPTH",
-			func(): return "%.2fx" % IFS_DEPTH[ifs_depth_idx],
-			func(): _step_ifs_depth(1),
-			false, _vis_ifs).stepping(func(d: int): _step_ifs_depth(d)),
-		# EDIT puts the handles up; the trigger only picks one while they are showing. UNDO is a
-		# single step back to the parameters the last completed edit started from, and RESET is
-		# the other direction, which is why it clears the undo.
-		WristMenu.Item.new("make", "EDIT",
-			func(): return "handles on" if ifs_edit.guides_on else "handles off",
-			func():
-				# The handles and the dive both want the trigger; the one turned on last has it.
-				if not ifs_edit.guides_on and ifs_dive.on:
-					_set_ifs_dive(false)
-				ifs_edit.set_guides(not ifs_edit.guides_on),
-			false, _vis_ifs).toggle(func(): return ifs_edit.guides_on),
-		WristMenu.Item.new("make", "DIVE",
-			func(): return ("hold trigger · %d" % ifs_dive.steps) if ifs_dive.on else "off",
-			func(): _set_ifs_dive(not ifs_dive.on),
-			false, _vis_ifs).toggle(func(): return ifs_dive.on),
-		WristMenu.Item.new("make", "UNDO",
-			func(): return "last edit" if ifs_edit.has_undo() else "nothing yet",
-			func(): ifs_edit.undo(),
-			false, _vis_ifs),
-		WristMenu.Item.new("make", "RESET",
-			func(): return "shape + pose",
-			func(): _reset_ifs(),
-			false, _vis_ifs),
-
-		WristMenu.Item.new("make", "SEED",
-			func(): return "#%d" % tree.seed_value,
-			func(): tree.reseed(),
-			false, _vis_tree),
-		WristMenu.Item.new("make", "REGROW",
-			func(): return "all trees",
-			func(): _regrow_forest(),
-			false, _vis_tree),
-		# The forest's own actions: a mixed grove, what a pull plants, and the slow turnover.
-		WristMenu.Item.new("make", "SOW",
-			func(): return "mixed grove",
-			func(): _sow_grove(),
-			false, _vis_tree),
-		# The avenue: two rows from your feet to 50 m, growing away from you. WALK is the same
-		# rows, endless, gliding toward you while a trigger is held. MIX picks their species.
-		WristMenu.Item.new("make", "AVENUE",
-			func(): return "mixed rows" if forest.plant_mix \
-				else "%s rows" % FractalTree.SHAPE_NAMES[tree_shape_idx],
-			func(): _sow_avenue(false),
-			false, _vis_tree),
-		WristMenu.Item.new("make", "WALK",
-			func(): return "hold trigger" if forest.walking() else "endless avenue",
-			func(): _toggle_walk(),
-			false, _vis_tree).toggle(func(): return forest.walking()),
-		WristMenu.Item.new("make", "MIX",
-			func(): return "species" if forest.plant_mix else "one kind",
-			func(): _toggle_plant_mix(),
-			false, _vis_tree).toggle(func(): return forest.plant_mix),
-		WristMenu.Item.new("make", "SUCCESSION",
-			func(): return "wither + regrow" if forest.succession else "off",
-			func(): _toggle_succession(),
-			false, _vis_tree).toggle(func(): return forest.succession),
-		WristMenu.Item.new("make", "CLEAR",
-			func(): return "%d trees" % forest.tree_count(),
-			func(): _clear_forest(),
-			false, _vis_tree),
-		# How many trees AVENUE, WALK and SOW grow (scripts/tree/forest.gd STEPS). A step sows
-		# the current layout again at the new size.
-		WristMenu.Item.new("make", "COUNT",
-			func(): return "%d trees" % int(forest.step()["n"]),
-			func(): _step_tree_count(1),
-			false, _vis_tree).stepping(func(d: int): _step_tree_count(d)).slider(
-			func(): return forest.count_idx, Forest.STEPS.size()),
-		# How fast WALK glides (scripts/tree/forest.gd WALK_PACES): 0.75 m/s unless you pick.
-		WristMenu.Item.new("make", "PACE",
-			func(): return "%.2f m/s" % forest.walk_pace(),
-			func(): forest.set_pace(wrapi(forest.pace_idx + 1, 0, Forest.WALK_PACES.size())),
-			false, _vis_tree).stepping(func(d: int): forest.set_pace(forest.pace_idx + d)).slider(
-			func(): return forest.pace_idx, Forest.WALK_PACES.size()),
-		# Something under the trees, in theme: a faint fractal ground, fallen leaves round every
-		# trunk, or both (forest_floor.gd, tree_litter.gd). Off by default.
-		WristMenu.Item.new("make", "FLOOR",
-			func(): return FLOOR_LABELS[forest.floor_idx],
-			func(): _set_tree_floor(wrapi(forest.floor_idx + 1, 0, Forest.FLOOR_STEPS.size())),
-			false, _vis_tree).stepping(func(d: int):
-				_set_tree_floor(wrapi(forest.floor_idx + d, 0, Forest.FLOOR_STEPS.size()))),
-		# A fractal grown into the wood (tree.gdshader BARK). Plain by default; far trees stay plain.
-		WristMenu.Item.new("make", "BARK",
-			func(): return BARK_LABELS[forest.bark_style],
-			func(): _set_tree_bark(wrapi(forest.bark_style + 1, 0, Forest.BARK_STEPS.size())),
-			false, _vis_tree).stepping(func(d: int):
-				_set_tree_bark(wrapi(forest.bark_style + d, 0, Forest.BARK_STEPS.size()))),
-
-		WristMenu.Item.new("make", "RANDOM",
-			func(): return "new flame", func(): _morph_to_new(Breed.random_genome(
-				library.next_serial(), library.themes)),
-			false, _vis_flame),
-		WristMenu.Item.new("make", "MUTATE",
-			func(): return "vary this", func(): _morph_to_new(Breed.mutate(
-				library.at(preset_idx), library.next_serial())),
-			false, _vis_flame),
-		WristMenu.Item.new("make", "BREED",
-			func(): return "mix two", func(): _morph_to_new(Breed.crossover(
-				library.at(preset_idx), library.at(preset_idx + 1 + randi() % maxi(1, library.count() - 1)),
-				library.next_serial())),
-			false, _vis_flame),
-
-		WristMenu.Item.new("scene", "DRIFT",
-			func(): return "on" if _drift else "off",
-			func(): _drift = not _drift; _drift_hold = 0.0,
-			false, _vis_cloud).toggle(func(): return _drift),
-		WristMenu.Item.new("scene", "SPIN",
-			func(): return "on" if spin else "off", func(): spin = not spin,
-			false, _vis_grab).toggle(func(): return spin),
-		WristMenu.Item.new("scene", "SPEED",
-			func(): return "%ds" % int(MORPH_STEPS[morph_idx]),
-			func(): morph_idx = (morph_idx + 1) % MORPH_STEPS.size(),
-			false, _vis_flame).stepping(func(d: int):
-				morph_idx = wrapi(morph_idx + d, 0, MORPH_STEPS.size())),
-		WristMenu.Item.new("scene", "CENTRE",
-			func(): return "reset", func(): _recenter(); cloud.request_measure(),
-			false, _vis_grab),
-		# The flame at scale. GALAXY grows it round you, ECHOES hangs copies of it round the
-		# room, TO SKY bakes it into the sky every mode can wear, and SKY, on this card in every
-		# mode, hangs or hides it (BULB keeps its own switch). Not in the bottom bar: a fourth item there cut
-		# PASSTHRU to PASS and EXIT's "hold to quit" to "hold to q".
-		WristMenu.Item.new("scene", "GALAXY",
-			func(): return "inside" if galaxy.active else "off",
-			func(): _toggle_galaxy(),
-			false, _vis_flame).toggle(func(): return galaxy.active),
-		WristMenu.Item.new("scene", "ECHOES",
-			func(): return "off" if flame_echoes.count() == 0 else "%s · %s" % [
-				flame_echoes.step_name(), _fmt_count(flame_echoes.point_total())],
-			func(): _step_flame_echoes(1),
-			false, _vis_flame).stepping(func(d: int): _step_flame_echoes(d)),
-		WristMenu.Item.new("scene", "TO SKY",
-			func():
-				if flame_sky.baking:
-					return "baking %d%%" % int(flame_sky.progress * 100.0)
-				return "baked" if flame_sky.ready else "this flame",
-			func(): _bake_sky(),
-			false, _vis_flame),
-		WristMenu.Item.new("scene", "SKY",
-			func(): return _sky_label(),
-			func(): _toggle_sky()).toggle(func(): return _sky_switch()),
-		# Which sky: the live bake of a flame, or one of the skies pre-rendered on the Mac
-		# (art/skies/), which need no bake and so are there in BULB from the start.
-		WristMenu.Item.new("scene", "SKY PICK",
-			func(): return flame_sky.pick_name(),
-			func(): _step_sky_pick(1),
-			false, func(): return not flame_sky.presets.is_empty()).stepping(
-			func(d: int): _step_sky_pick(d)),
-		# The live bake's resolution. Each step re-bakes the flame on show; a bake is a frame
-		# count, 2.8 s, 6.9 s and 15.4 s at 72 Hz (tools/sky_bake.sh measure).
-		WristMenu.Item.new("scene", "SKY RES",
-			func(): return FlameSky.RES_NAMES[sky_res_idx],
-			func(): _step_sky_res(1),
-			false, _vis_flame).stepping(func(d: int): _step_sky_res(d)).slider(
-			func(): return sky_res_idx, FlameSky.RES_STEPS.size()).minor(),
-		WristMenu.Item.new("look", "POINTS",
-			func(): return _fmt_count(cloud.get_count()),
-			func():
-				particle_idx = (particle_idx + 1) % PARTICLE_STEPS.size()
-				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
-				cloud.request_measure(),
-			false, _vis_flame).stepping(func(d: int):
-				particle_idx = wrapi(particle_idx + d, 0, PARTICLE_STEPS.size())
-				cloud.set_count(int(TEX_SIZE * TEX_SIZE * PARTICLE_STEPS[particle_idx]))
-				cloud.request_measure()),
-		WristMenu.Item.new("look", "SPLAT",
-			func():
-				if bulb_mode:
-					return "%.1fx cover" % BULB_COVERAGE[coverage_idx]
-				return "%.0fmm" % (SPLAT_STEPS[splat_idx] * 1000.0) if splat_on else "off",
-			func():
-				if bulb_mode:
-					coverage_idx = (coverage_idx + 1) % BULB_COVERAGE.size()
-				elif not splat_on:
-					splat_on = true
-				else:
-					splat_idx = (splat_idx + 1) % SPLAT_STEPS.size()
-					if splat_idx == 0:
-						splat_on = false
-				_apply_point_look(),
-			false, _vis_cloud).stepping(func(d: int):
-				if bulb_mode:
-					coverage_idx = wrapi(coverage_idx + d, 0, BULB_COVERAGE.size())
-				else:
-					# One ladder: off, then every size. Scrubbing left from the first
-					# size lands on off, not on the largest splat.
-					var cur := (splat_idx + 1) if splat_on else 0
-					var nxt := wrapi(cur + d, 0, SPLAT_STEPS.size() + 1)
-					splat_on = nxt > 0
-					splat_idx = maxi(0, nxt - 1)
-				_apply_point_look()).minor(),
-		WristMenu.Item.new("look", "ADAPT",
-			func(): return "%d%%" % int(DENSITY_STEPS[density_idx] * 100.0),
-			func():
-				density_idx = (density_idx + 1) % DENSITY_STEPS.size()
-				_apply_point_look(),
-			false, _vis_cloud).stepping(func(d: int):
-				density_idx = wrapi(density_idx + d, 0, DENSITY_STEPS.size())
-				_apply_point_look()).minor(),
-		# Splat opacity. Hidden while SURFACE is a solid mesh: it does nothing there, and two
-		# things called solid on one card would be one too many.
-		WristMenu.Item.new("look", "SOLID",
-			func(): return "%d%%" % int(OPACITY_STEPS[opacity_idx] * 100.0),
-			func():
-				opacity_idx = (opacity_idx + 1) % OPACITY_STEPS.size()
-				_apply_point_look(),
-			false, func(): return _vis_cloud.call() and SURFACE_SOLID[surface_idx] == 0).stepping(func(d: int):
-				opacity_idx = wrapi(opacity_idx + d, 0, OPACITY_STEPS.size())
-				_apply_point_look()).slider(func(): return opacity_idx, OPACITY_STEPS.size()),
-		WristMenu.Item.new("look", "SIZE",
-			func(): return "%.2f" % POINT_STEPS[point_idx],
-			func(): point_idx = (point_idx + 1) % POINT_STEPS.size(); _apply_point_look(),
-			false, _vis_flame).stepping(func(d: int):
-				point_idx = wrapi(point_idx + d, 0, POINT_STEPS.size())
-				_apply_point_look()).slider(func(): return point_idx, POINT_STEPS.size()),
-		WristMenu.Item.new("look", "AA",
-			func(): return "old" if AA_STEPS[aa_idx] < 0.0 else "%.1f px" % AA_STEPS[aa_idx],
-			func(): aa_idx = (aa_idx + 1) % AA_STEPS.size(); _apply_point_look(),
-			false, _vis_flame).stepping(func(d: int):
-				aa_idx = wrapi(aa_idx + d, 0, AA_STEPS.size())
-				_apply_point_look()).minor(),
-		WristMenu.Item.new("colour", "THEME",
-			func():
-				if recolor_on_drift:
-					return "auto %d" % (theme_idx + 1) if theme_idx >= 0 else "auto"
-				return "theme %d" % (theme_idx + 1) if theme_idx >= 0 else "preset",
-			func(): _cycle_theme()).stepping(func(d: int): _cycle_theme(d)).gallery(
-			func(): return theme_idx + 1, func(): return library.themes.size() + 1, _theme_swatch),
-		# Every mode's palette scrolling through its ramp. Beside THEME because it is the same
-		# palette moving, and like THEME it is on this card in every mode.
-		WristMenu.Item.new("colour", "CYCLE",
-			func(): return _cycle_label(),
-			func(): _step_cycle(1)).stepping(func(d: int): _step_cycle(d)),
-		WristMenu.Item.new("colour", "AUTO",
-			func(): return "on" if recolor_on_drift else "off",
-			func(): recolor_on_drift = not recolor_on_drift,
-			false, _vis_cloud).toggle(func(): return recolor_on_drift).minor(),
-		WristMenu.Item.new("colour", "BANDS",
-			func(): return "%dx" % int(COLOUR_CYCLES[colour_idx]),
-			func():
-				colour_idx = (colour_idx + 1) % COLOUR_CYCLES.size()
-				_apply_point_look()).stepping(func(d: int):
-				colour_idx = wrapi(colour_idx + d, 0, COLOUR_CYCLES.size())
-				_apply_point_look()).slider(func(): return colour_idx, COLOUR_CYCLES.size()).minor(),
-		WristMenu.Item.new("colour", "BRIGHT",
-			func(): return "%.3f" % BRIGHT_STEPS[bright_idx],
-			func(): bright_idx = (bright_idx + 1) % BRIGHT_STEPS.size(); _apply_point_look(),
-			false, _vis_cloud).stepping(func(d: int):
-				bright_idx = wrapi(bright_idx + d, 0, BRIGHT_STEPS.size())
-				_apply_point_look()).slider(func(): return bright_idx, BRIGHT_STEPS.size()),
-
-		WristMenu.Item.new("colour", "EXPOSURE",
-			func(): return "%.0fx" % EXPOSURE_MUL[exposure_idx],
-			func(): exposure_idx = (exposure_idx + 1) % EXPOSURE_MUL.size(); _apply_exposure()).stepping(
-			func(d: int): exposure_idx = wrapi(exposure_idx + d, 0, EXPOSURE_MUL.size()); _apply_exposure()).slider(
-			func(): return exposure_idx, EXPOSURE_MUL.size()),
-		WristMenu.Item.new("look", "MOTION",
-			func():
-				var m: int = BULB_STABILITY[bulb_stability_idx] if bulb_mode else STABILITY[stability_idx]
-				return "frozen" if m == 0 else "1/%d" % m,
-			func():
-				if bulb_mode:
-					bulb_stability_idx = (bulb_stability_idx + 1) % BULB_STABILITY.size()
-					# No settle: a running cloud is already projected. Just refresh the
-					# bake so a freeze stops with shapes that describe where things ARE.
-					if BULB_STABILITY[bulb_stability_idx] == 0:
-						_bake_wait = BAKE_DELAY_FRAMES
-				else:
-					stability_idx = (stability_idx + 1) % STABILITY.size(),
-			false, _vis_cloud).stepping(func(d: int):
-				if bulb_mode:
-					bulb_stability_idx = wrapi(bulb_stability_idx + d, 0, BULB_STABILITY.size())
-					if BULB_STABILITY[bulb_stability_idx] == 0:
-						_bake_wait = BAKE_DELAY_FRAMES
-				else:
-					stability_idx = wrapi(stability_idx + d, 0, STABILITY.size())).slider(
-			func(): return bulb_stability_idx if bulb_mode else stability_idx,
-			BULB_STABILITY.size()),
-		# The sculpture's own MOTION. The flame's above acts on a cloud that is not being
-		# drawn here, so the two never show at once.
-		WristMenu.Item.new("look", "MOTION",
-			func(): return "breathing" if ifs.ambient else "off",
-			func(): _toggle_ifs_motion(),
-			false, _vis_ifs).toggle(func(): return ifs.ambient),
-		# Copies of the sculpture through the room. The count is what the tile prints, because
-		# the count is what the GPU pays for; the headset's frame time decides whether MANY stays.
-		WristMenu.Item.new("look", "ECHOES",
-			func():
-				return "off" if ifs_echoes.count() == 0 else "%s · %d" % [
-					ifs_echoes.step_name(), ifs_echoes.count()],
-			func(): ifs_echoes.set_step(ifs_echoes.step + 1),
-			false, _vis_ifs).stepping(func(d: int): ifs_echoes.set_step(ifs_echoes.step + d)),
-		# Where the echoes stand: the seeded scatter, or where the sculpture's own maps put its
-		# relatives, so the room is the next generations out.
-		WristMenu.Item.new("look", "LAYOUT",
-			func(): return ifs_echoes.layout_name(),
-			func(): ifs_echoes.set_family(not ifs_echoes.family),
-			false, _vis_ifs).toggle(func(): return ifs_echoes.family),
-		WristMenu.Item.new("look", "SIZE",
-			func(): return "room" if ifs_room else "table",
-			func(): _set_ifs_room(not ifs_room),
-			false, _vis_ifs).toggle(func(): return ifs_room),
-		WristMenu.Item.new("look", "BAKE",
-			func():
-				if cloud.is_baking():
-					return "%d%%" % int(cloud.bake_progress * 100.0)
-				if not auto_bake:
-					return "off"
-				return "on" if cloud.bake_ready else "wait",
-			func():
-				auto_bake = not auto_bake
-				if auto_bake:
-					RenderingServer.call_on_render_thread(cloud.bake)
-				else:
-					cloud.clear_bake(),
-			false, func(): return bulb_mode).toggle(func(): return auto_bake).minor(),
-		WristMenu.Item.new("look", "LINES",
-			func(): return "off" if _line_slices() == 0 else "%d %s" % [_line_slices(),
-				LINE_PATTERNS[line_pattern_idx]],
-			func(): _step_lines(1),
-			false, func(): return bulb_mode).stepping(func(d: int): _step_lines(d)),
-		# Only while LINES is on: with it off there are no lines to pattern or thin.
-		WristMenu.Item.new("look", "PATTERN",
-			func(): return LINE_PATTERNS[line_pattern_idx],
-			func(): _step_line_pattern(1),
-			false, func(): return bulb_mode and _line_slices() > 0).stepping(
-			func(d: int): _step_line_pattern(d)),
-		WristMenu.Item.new("look", "WIDTH",
-			func(): return LINE_WIDTH_NAMES[line_width_idx],
-			func(): _step_line_width(1),
-			false, func(): return bulb_mode and _line_slices() > 0).stepping(
-			func(d: int): _step_line_width(d)).slider(
-			func(): return line_width_idx, LINE_WIDTHS.size()).minor(),
-		WristMenu.Item.new("look", "BREATHE",
-			func():
-				# A frozen cloud cannot show a moving surface, so say so rather than
-				# reporting a rate that nothing is acting on.
-				if BULB_STABILITY[bulb_stability_idx] == 0:
-					return "held"
-				return "off" if BREATH_STEPS[breath_idx] == 0.0 else "%.0fx" % BREATH_STEPS[breath_idx],
-			func(): breath_idx = (breath_idx + 1) % BREATH_STEPS.size(),
-			false, func(): return bulb_mode).stepping(func(d: int):
-				breath_idx = wrapi(breath_idx + d, 0, BREATH_STEPS.size())),
-		# Splats or a raymarched surface. The ms readout in the footer is the verdict.
-		WristMenu.Item.new("look", "SURFACE",
-			func():
-				if SURFACE_SOLID[surface_idx] > 0:
-					if solid.is_building():
-						return "growing %d%%" % int(solid.progress() * 100.0)
-					if solid.is_ready():
-						return "solid %dk" % int(solid.tri_count / 1000)
-					if solid.get_error() != "":
-						return "solid failed"
-				return SURFACE_NAMES[surface_idx],
-			func(): surface_idx = (surface_idx + 1) % SURFACE_STEPS.size(); _apply_surface(),
-			false, func(): return bulb_mode).stepping(func(d: int):
-				surface_idx = wrapi(surface_idx + d, 0, SURFACE_STEPS.size())
-				_apply_surface()).slider(func(): return surface_idx, SURFACE_STEPS.size()),
-		# ENTER (stand inside the shape at its roomiest hollow) is not on the headset menu.
-		# Measured 2026-09-12: 85-103 ms GPU at 48 steps on a 0.6x eye buffer, every pixel
-		# of both eyes marching, and the bail-out left the renderer in a broken pipeline
-		# state that the GPU then faulted on. _enter_inside() stays for the desktop shot
-		# harness and for the day the interior gets a quarter-res pass with reprojection.
-		# Hidden in IFS, where DETAIL is a recursion rung. Two tiles reading DETAIL on one
-		# panel is worse than losing the eye-buffer step in the one mode that draws a few
-		# hundred opaque instances; the right menu button still steps it there.
-		WristMenu.Item.new("look", "DETAIL",
-			func(): return "%.2fx" % (MARCH_RENDER_SCALE if march.is_on() else RENDER_STEPS[render_idx]),
-			func(): _step_detail(1),
-			false, func(): return not ifs_mode).stepping(func(d: int): _step_detail(d)).slider(
-			func(): return render_idx, RENDER_STEPS.size()),
-		WristMenu.Item.new("look", "JULIA",
-			func(): return "from here" if ground.julia else "off",
-			func():
-				if ground.julia:
-					ground.set_julia(false)
-				else:
-					ground.julia_here(),
-			false, func(): return ground_mode).toggle(func(): return ground.julia),
-		WristMenu.Item.new("look", "ITER",
-			# Past stage 10 the ground raises the count itself (FractalGround.iter_floor);
-			# say so, or the tile names a number the fill is not using.
-			func(): return str(GROUND_ITER[ground_iter_idx]) if ground.iter_floor() <= GROUND_ITER[ground_iter_idx] \
-				else "%d deep" % ground.effective_iter(),
-			func():
-				ground_iter_idx = (ground_iter_idx + 1) % GROUND_ITER.size()
-				ground.set_max_iter(GROUND_ITER[ground_iter_idx]),
-			false, func(): return ground_mode).stepping(func(d: int):
-				ground_iter_idx = wrapi(ground_iter_idx + d, 0, GROUND_ITER.size())
-				ground.set_max_iter(GROUND_ITER[ground_iter_idx])),
-		WristMenu.Item.new("look", "RELIEF",
-			func(): return GROUND_RELIEF[ground_relief_idx],
-			func():
-				ground_relief_idx = (ground_relief_idx + 1) % GROUND_RELIEF.size()
-				_apply_ground_look(),
-			false, func(): return ground_mode).stepping(func(d: int):
-				ground_relief_idx = wrapi(ground_relief_idx + d, 0, GROUND_RELIEF.size())
-				_apply_ground_look()),
-		WristMenu.Item.new("look", "HEIGHT",
-			func():
-				var h: float = GROUND_HEIGHT[ground_height_idx]
-				return "flat" if h == 0.0 else "%.1fx" % h,
-			func():
-				ground_height_idx = (ground_height_idx + 1) % GROUND_HEIGHT.size()
-				_apply_ground_look(),
-			false, func(): return ground_mode).stepping(func(d: int):
-				ground_height_idx = wrapi(ground_height_idx + d, 0, GROUND_HEIGHT.size())
-				_apply_ground_look()),
-		WristMenu.Item.new("look", "TEXTURE",
-			func(): return "%d%%" % int(GROUND_TEXTURE[ground_texture_idx] * 100.0),
-			func():
-				ground_texture_idx = (ground_texture_idx + 1) % GROUND_TEXTURE.size()
-				_apply_ground_look(),
-			false, func(): return ground_mode).stepping(func(d: int):
-				ground_texture_idx = wrapi(ground_texture_idx + d, 0, GROUND_TEXTURE.size())
-				_apply_ground_look()).minor(),
-		WristMenu.Item.new("look", "FREQ",
-			func(): return "%.1fx" % GROUND_FREQ[ground_freq_idx],
-			func():
-				ground_freq_idx = (ground_freq_idx + 1) % GROUND_FREQ.size()
-				_apply_ground_look(),
-			false, func(): return ground_mode).stepping(func(d: int):
-				ground_freq_idx = wrapi(ground_freq_idx + d, 0, GROUND_FREQ.size())
-				_apply_ground_look()).minor(),
-		WristMenu.Item.new("look", "HUE",
-			func(): return "%.2f" % ground_hue,
-			func():
-				ground_hue = fmod(ground_hue + 0.125, 1.0)
-				_apply_ground_look(),
-			false, func(): return ground_mode).stepping(func(d: int):
-				ground_hue = fposmod(ground_hue + 0.125 * d, 1.0)
-				_apply_ground_look()).slider(func(): return int(round(ground_hue * 8.0)) % 8, 8).minor(),
-		WristMenu.Item.new("look", "BUMP",
-			func(): return "%.1fx" % GROUND_BUMP[ground_bump_idx],
-			func():
-				ground_bump_idx = (ground_bump_idx + 1) % GROUND_BUMP.size()
-				_apply_ground_look(),
-			false, func(): return ground_mode).stepping(func(d: int):
-				ground_bump_idx = wrapi(ground_bump_idx + d, 0, GROUND_BUMP.size())
-				_apply_ground_look()).minor(),
-		WristMenu.Item.new("look", "SKY",
-			func(): return "off" if GROUND_SKY[ground_sky_idx] == 0.0 else "mirror %.0fm" % GROUND_SKY[ground_sky_idx],
-			func():
-				ground_sky_idx = (ground_sky_idx + 1) % GROUND_SKY.size()
-				_apply_ground_look(),
-			false, func(): return ground_mode).stepping(func(d: int):
-				ground_sky_idx = wrapi(ground_sky_idx + d, 0, GROUND_SKY.size())
-				_apply_ground_look()).slider(func(): return ground_sky_idx, GROUND_SKY.size()).minor(),
-		WristMenu.Item.new("look", "INSIDE",
-			func(): return "room" if ground_inside_room and passthrough else ("needs room" if ground_inside_room else "solid"),
-			func():
-				ground_inside_room = not ground_inside_room
-				_apply_ground_look(),
-			false, func(): return ground_mode).toggle(func(): return ground_inside_room).minor(),
-		WristMenu.Item.new("look", "HOME",
-			func(): return "reset view",
-			func(): ground.home(),
-			false, func(): return ground_mode),
-		# The orbit of the point under the pointing hand, hung in the air over the map.
-		WristMenu.Item.new("look", "ORBIT",
-			func(): return "on" if orbit_on else "off",
-			func():
-				orbit_on = not orbit_on
-				orbit.visible = false,
-			false, func(): return ground_mode).toggle(func(): return orbit_on),
-		WristMenu.Item.new("look", "DEPTH",
-			func(): return "%d · %s" % [tree.effective_depth(), _fmt_count(_forest_branch_count())],
-			func():
-				tree_depth_idx = (tree_depth_idx + 1) % TREE_DEPTH_DELTA.size()
-				tree.depth_delta = TREE_DEPTH_DELTA[tree_depth_idx]
-				tree.build(),
-			false, _vis_tree).stepping(func(d: int):
-				tree_depth_idx = wrapi(tree_depth_idx + d, 0, TREE_DEPTH_DELTA.size())
-				tree.depth_delta = TREE_DEPTH_DELTA[tree_depth_idx]
-				tree.build()),
-		WristMenu.Item.new("look", "WIND",
-			func(): return TREE_WIND_NAMES[tree_wind_idx],
-			func():
-				tree_wind_idx = (tree_wind_idx + 1) % TREE_WIND.size()
-				_set_forest_wind(TREE_WIND[tree_wind_idx]),
-			false, _vis_tree).stepping(func(d: int):
-				tree_wind_idx = wrapi(tree_wind_idx + d, 0, TREE_WIND.size())
-				_set_forest_wind(TREE_WIND[tree_wind_idx])),
-		WristMenu.Item.new("look", "LEAVES",
-			func(): return "on" if tree.leaves_on else "off",
-			func(): _set_forest_leaves(not tree.leaves_on),
-			false, _vis_tree).toggle(func(): return tree.leaves_on),
-		# Double the level size and max the iterations: four times the fill for a still
-		# that is sharp out to the middle distance. The status line counts it in.
-		WristMenu.Item.new("look", "RENDER",
-			func(): return "hq 2048 / 4096" if _render_hq else "normal",
-			func(): _set_render_hq(not _render_hq),
-			false, func(): return ground_mode).toggle(func(): return _render_hq).minor(),
-		# Fixed foveated rendering, the largest fragment-cost lever on a Quest. Off by
-		# default because the cloud showed it at the edges; this dial is the instrument
-		# for measuring it per mode (ground and tree may take it for free). Applied a
-		# frame later, on its own: changing it in the same frame as the eye buffer broke
-		# the framebuffer (2026-09-12 log).
-		WristMenu.Item.new("look", "FOVEA",
-			func(): return "off" if fovea_idx == 0 else "fixed %d" % FOVEA_STEPS[fovea_idx],
-			func():
-				fovea_idx = (fovea_idx + 1) % FOVEA_STEPS.size()
-				call_deferred("_apply_foveation"),
-			false).stepping(func(d: int):
-				fovea_idx = wrapi(fovea_idx + d, 0, FOVEA_STEPS.size())
-				call_deferred("_apply_foveation")).slider(func(): return fovea_idx, FOVEA_STEPS.size()).minor(),
-		# Glow is a downsample/blur/upsample chain per eye on a tiler, and its cost has
-		# never been measured. This toggle is the instrument: flip it and read the ms.
-		WristMenu.Item.new("look", "GLOW",
-			func(): return "on" if _env().glow_enabled else "off",
-			func(): _env().glow_enabled = not _env().glow_enabled).toggle(
-			func(): return _env().glow_enabled).minor(),
-		# The bottom bar, at every level, in the order Sam asked for. EXIT is a hold: the menu
-		# is driven by a ray and a trigger, and a single stray pull should not end the
-		# session; the ring fills for a second before this runs.
-		WristMenu.Item.new("app", "EXIT",
-			func(): return "hold to quit",
-			func(): get_tree().quit()).hold().in_bar(),
-		WristMenu.Item.new("app", "PASSTHRU",
-			func(): return passthru_label,
-			func(): _set_passthrough(not passthrough)).toggle(func(): return passthrough).in_bar(),
-		WristMenu.Item.new("app", "HELP",
-			func(): return "controls", func(): help.open()).in_bar(),
-	]
-	menu.title = func():
-		if ifs_mode:
-			return "%s  ·  detail %d" % [FractalIFS.preset_name(ifs_preset_idx).capitalize(),
-				IFS_DETAIL[ifs_detail_idx]]
-		if tree_mode:
-			return "%s forest  ·  %d trees" % [FractalTree.SHAPE_NAMES[tree_shape_idx].capitalize(), _forest_tree_count()]
-		if ground_mode:
-			var z := ground.zoom_factor()
-			var fam: String = ground.formula_name().capitalize()
-			return "%s  ·  zoom %s" % [(fam + " julia") if ground.julia else fam,
-				_zoom_text(z)]
-		return str(library.bulbs[bulb_idx].get("name", "?")) if bulb_mode else library.name_at(preset_idx)
-	menu.status_side = func():
-		if ifs_mode:
-			# Which handle has the trigger, while it has it. Nothing else on this line matters
-			# as much mid-drag as knowing what your hand is holding.
-			if ifs_edit.is_editing():
-				return ifs_edit.status()
-			if ifs_dive.in_step():
-				return "diving %d%%" % int(ifs_dive.progress() * 100.0)
-			if ifs.is_morphing():
-				return "morphing %d%%" % int(ifs.morph_t * 100.0)
-			# A capped build is the one thing here worth interrupting for: it means the rung
-			# on the tile is not the rung on the screen.
-			if ifs.cap_note != "":
-				return "capped at level %d" % ifs.levels_built
-			# Breathing and a morph rebuild on every frame, so they run at the rung a drag runs
-			# at. Naming it keeps the frame count below from reading as the wrong number for
-			# the rung on the DETAIL tile.
-			# Instance and triangle counts are instruments: debug builds only, so they stay
-			# out of a release build's menu shots.
-			var dbg := OS.is_debug_build()
-			if ifs.levels_built < IFS_DETAIL[ifs_detail_idx]:
-				return ("moving at level %d · %d frames" % [ifs.levels_built, ifs.instance_count]) \
-						if dbg else "moving at level %d" % ifs.levels_built
-			return ("%d frames · %s tri" % [ifs.instance_count, _fmt_count(ifs.triangle_count)]) \
-					if dbg else ""
-		if tree_mode:
-			if forest.walking():
-				return "walking" if forest.walk_speed > 0.0 else "hold trigger to walk"
-			# At capacity the trigger stops doing anything and the marker goes away, so
-			# say why here rather than leaving the floor silently dead.
-			if not forest.can_plant():
-				return "forest full · CLEAR to replant"
-			var gp := tree.grow_progress()
-			return ("growing %d%%" % int(gp * 100.0)) if gp < 1.0 else "grown"
-		if ground_mode:
-			var pr := ground.progress()
-			return ("rendering %d%%" % int(pr * 100.0)) if pr < 1.0 else "sharp"
-		if _perf_scale < 0.999:
-			# Name the intervention, or a guarded 42mm splat looks like a broken setting.
-			return "guard %d%%" % int(_perf_scale * 100.0)
-		if cloud.is_baking():
-			return "baking %d%%" % int(cloud.bake_progress * 100.0)
-		if _inside:
-			return "inside · %.1fx eye" % RENDER_STEPS[render_idx]
-		if _inside_bailed_until > _uptime:
-			return "inside bailed: %.0f ms" % _inside_bailed_ms
-		if _march_bailed_until > _uptime:
-			return "march bailed: %.0f ms" % _march_bailed_ms
-		if bulb_mode and _bulb_settle > 0:
-			return "settling"
-		if _morph_t < 1.0:
-			return "morphing"
-		return "drifting" if _drift else ""
-
-	menu.status_main = func():
-		# The footer is a perf readout. A release build shows nothing there.
-		if not OS.is_debug_build():
-			return ""
-		if ifs_mode:
-			# Build time, not draw time: the sculpture is static, so what a rung costs to
-			# generate is the number that decides whether a drag can rebuild every frame.
-			return "%.0f fps  ·  detail %d  ·  build %.2f ms" % [
-				Engine.get_frames_per_second(), IFS_DETAIL[ifs_detail_idx], ifs.build_ms]
-		return "%.0f fps  ·  %d flames  ·  %.1f ms" % [
-			Engine.get_frames_per_second(), library.count(),
-			RenderingServer.viewport_get_measured_render_time_gpu(get_viewport().get_viewport_rid())
-				+ (ground.ground_us if ground_mode else (0.0 if tree_mode else cloud.iterate_us)) / 1000.0]
+	MenuItems.install(self, menu)
 	# Worn like a watch: inside of the left forearm, tilted up toward the face.
 	# Along the forearm, angled up toward the face like a watch worn high on the wrist.
 	menu.transform = Transform3D(Basis(), Vector3(0.0, 0.06, 0.10))
@@ -1422,6 +799,8 @@ func _set_mode(kind: String) -> void:
 ## its source but is hidden and not iterated, so the tree has the frame to itself.
 func _set_tree_mode(on: bool) -> void:
 	tree_mode = on
+	if grab != null:
+		grab.level = on
 	if not on:
 		plant_marker.hide_marker()
 		plant_marker.update(1.0)
@@ -1502,14 +881,45 @@ func _step_ifs_depth(d: int) -> void:
 	ifs_edit.refresh()   # the depth plates sit on the published z extent, which just moved
 
 
-## Back to the shape and the pose the mode opens with. Geometry and placement only: the
-## palette, the eye buffer and passthrough are the user's choices, not this mode's.
+## RESET: back to the shape and the pose the mode opens with. Geometry and placement only: the
+## palette, the eye buffer and passthrough are the user's choices, not this mode's. The mirrors
+## it clears become the one step UNDO restores, so a sculpt is never one tile away from gone.
 func _reset_ifs() -> void:
 	# A morph in flight lands first, on the preset the SHAPE tile is already naming. Resetting
 	# to a shape that is still travelling somewhere else would undo itself a frame later.
 	ifs.settle()
+	ifs_edit.cancel()
+	# Everything _reset_ifs_shape puts back. The mirrors alone used to be saved, so UNDO after
+	# RESET came back with the planes and without the stretch or the levels.
+	var shape := {
+		"plane1_normal": ifs.plane1_normal, "plane1_offset": ifs.plane1_offset,
+		"plane2_normal": ifs.plane2_normal, "plane2_offset": ifs.plane2_offset,
+		"depth": ifs.depth, "detail": ifs.detail,
+	}
+	var sculpted: bool = ifs.plane1_normal != FractalIFS.DEFAULT_N1 \
+		or ifs.plane2_normal != FractalIFS.DEFAULT_N2 \
+		or ifs.plane1_offset != 0.0 or ifs.plane2_offset != 0.0 \
+		or ifs.depth != IFS_DEPTH[0] or ifs.detail != IFS_DETAIL[_ifs_detail_idx(ifs.preset_detail())]
 	_reset_ifs_shape()
+	if sculpted:
+		ifs_edit.remember(shape)
 	_recenter()
+
+
+## UNDO moved the sculpture's numbers under the tiles that name them; put the tiles back on them.
+func _on_ifs_undone() -> void:
+	ifs_detail_idx = _ifs_detail_idx(ifs.detail)
+	ifs.detail = IFS_DETAIL[ifs_detail_idx]
+	ifs_edit.set_detail(ifs.detail)
+	# A dragged depth can sit between rungs; the tile shows the nearest one.
+	var best := 0
+	for i in IFS_DEPTH.size():
+		if absf(IFS_DEPTH[i] - ifs.depth) < absf(IFS_DEPTH[best] - ifs.depth):
+			best = i
+	ifs_depth_idx = best
+	# A stretched sculpture cannot be dived, as STRETCH already enforces.
+	if ifs_dive.on and ifs.depth != 1.0:
+		_set_ifs_dive(false)
 
 
 ## The shape half of RESET, shared with a preset change. Everything the rule owns goes back to
@@ -1612,14 +1022,6 @@ func _ifs_scale() -> float:
 	return IFS_WIDTH_M / span
 
 
-## The selected species controls the hero tree and the next sapling planted with the
-## trigger. Existing trees keep their species, so a forest can genuinely be mixed.
-## Previous (-1) or next (+1) specimen for whatever mode is showing. One place, so A and
-## B mean the same thing everywhere and a new mode has one obvious thing to implement.
-## GDScript's format strings have no %e, so "%.1ex" printed nothing and logged
-## "String formatting error: unsupported format character" once per menu refresh for as
-## long as you stayed zoomed in. The title went blank at exactly the zoom where knowing
-## the zoom starts to matter. Build the mantissa and exponent by hand.
 ## The second half of the [perf] line. Appended, never inserted: see the note above the
 ## print. Each field here exists because a question could not be answered from a log.
 ##
@@ -1693,6 +1095,10 @@ func _perf_tail() -> String:
 	return head + " mode=flame morph=%.2f drift=%s" % [_morph_t, str(_drift)]
 
 
+## GDScript's format strings have no %e, so "%.1ex" printed nothing and logged
+## "String formatting error: unsupported format character" once per menu refresh for as
+## long as you stayed zoomed in. The title went blank at exactly the zoom where knowing
+## the zoom starts to matter. Build the mantissa and exponent by hand.
 func _zoom_text(z: float) -> String:
 	if z < 1000.0:
 		return "%.0fx" % z
@@ -1712,6 +1118,8 @@ func _theme_swatch(i: int) -> Array:
 	return out
 
 
+## Previous (-1) or next (+1) specimen for whatever mode is showing. One place, so A and
+## B mean the same thing everywhere and a new mode has one obvious thing to implement.
 func _step_specimen(d: int) -> void:
 	# IFS has a gallery of its own now, so A and B step it like every other mode's. DETAIL is
 	# a rung and not a specimen; it stays on the tile and the stick.
@@ -1728,6 +1136,8 @@ func _step_specimen(d: int) -> void:
 		_morph_to_preset(preset_idx + d)
 
 
+## The selected species controls the hero tree and the next sapling planted with the
+## trigger. Existing trees keep their species, so a forest can genuinely be mixed.
 func _cycle_tree_shape(d: int) -> void:
 	tree_shape_idx = wrapi(tree_shape_idx + d, 0, FractalTree.SHAPE_NAMES.size())
 	tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
@@ -1933,6 +1343,11 @@ func _tick_orbit() -> void:
 ## Grip drags the world with the hand and twists it with the wrist; two hands also zoom
 ## by their spread. Returns true while any grip is held, so the sticks stay quiet.
 func _ground_grab() -> bool:
+	# Floating the menu by its grip is not a drag of the field, and a ray on the panel stops a
+	# drag from starting (one already held carries on), as WorldGrab does in the other modes.
+	if menu.is_holding() or (_menu_active and _gg_hands.is_empty()):
+		_gg_hands = []
+		return false
 	var hands: Array[int] = []
 	var pos: Array[Vector2] = []
 	var yaw := 0.0
@@ -2340,7 +1755,9 @@ func _tick_morph(delta: float) -> void:
 		# Bulbs cannot morph (there is no meaningful path between a Mandelbox scale and a
 		# KIFS fold angle), but DRIFT still promises a tour of the gallery, so honour it
 		# by cutting to the next one on the same timer rather than leaving the button dead.
-		if _drift and _xr_focused:
+		if _drift_paused():
+			_drift_hold = 0.0
+		elif _drift and _xr_focused:
 			_drift_hold += delta
 			if _drift_hold >= BULB_DRIFT_HOLD:
 				_drift_hold = 0.0
@@ -2371,16 +1788,16 @@ func _tick_morph(delta: float) -> void:
 			_measure_countdown = MEASURE_EVERY
 			cloud.request_measure()
 	if _morph_t >= 1.0:
-		if _drift and _xr_focused:
+		if _drift_paused():
+			_drift_hold = 0.0
+		elif _drift and _xr_focused:
 			_drift_hold += delta
 			if _drift_hold >= DRIFT_HOLD:
 				_drift_hold = 0.0
 				if recolor_on_drift and not library.themes.is_empty():
 					_begin_theme_blend()
 					theme_idx = randi() % library.themes.size()
-				# Step by a coprime stride so a drift session tours the whole gallery
-				# instead of ping-ponging between neighbours.
-				_morph_to_preset(preset_idx + 5)
+				_morph_to_preset(preset_idx + _drift_stride(library.count()))
 		return
 
 	var was := _morph_t
@@ -2410,6 +1827,32 @@ func _tick_morph(delta: float) -> void:
 		RenderingServer.call_on_render_thread(src.update_params)
 
 
+## Drift waits while you hold the thing or work the menu: a held bulb used to be swapped out of
+## your hands and a placed flame start morphing. The hold restarts from zero on release.
+func _drift_paused() -> bool:
+	return _menu_active or (grab != null and grab.is_grabbing())
+
+
+## The drift's step through n flames: about a third of the gallery, so it tours instead of
+## ping-ponging between neighbours, and coprime with n so it reaches every one. A fixed +5
+## cycled three entries once the gallery held 15 (13 presets and 2 bred).
+static func _drift_stride(n: int) -> int:
+	if n <= 2:
+		return 1
+	var s := maxi(2, n / 3)
+	while s < n and _gcd(s, n) != 1:
+		s += 1
+	return s if s < n else 1
+
+
+static func _gcd(a: int, b: int) -> int:
+	while b != 0:
+		var t := b
+		b = a % b
+		a = t
+	return a
+
+
 # --- The flame at scale: GALAXY, ECHOES, SKY -------------------------------------------------
 
 ## Once a frame in every mode, before any of them returns early: the galaxy's ease and near
@@ -2421,6 +1864,8 @@ func _tick_flame_scale(delta: float) -> void:
 			galaxy.stop()
 		else:
 			cloud.global_transform = galaxy.step(delta)
+			# Eight seconds of a flame growing to 24 m around you is optic flow on every side.
+			_want_vignette(ComfortVignette.DIVE, galaxy.motion())
 	var fade := FlameGalaxy.NEAR_FADE_M if galaxy.active or galaxy.is_moving() else 0.0
 	if fade != _near_fade:
 		_near_fade = fade
@@ -2549,10 +1994,21 @@ func _sky_label() -> String:
 	return "on" if flame_sky.has_sky() else "no flame"
 
 
+## A setup or compute failure. The log alone left the headset an empty void with nothing to
+## say why, so the retired HUD label comes back, head-locked and centred, naming what failed.
+## Nothing else is drawing by then, and a message that follows the head cannot be lost behind you.
 func _fail(msg: String) -> void:
 	_status = "FAILED: %s" % msg
 	push_error(_status)
 	print("[fractal] %s" % _status)
+	var what := msg.get_slice("\n", 0)
+	if what.length() > 72:
+		what = what.left(69) + "..."
+	hud.text = "Something went wrong\n%s\n\nRestart the app" % what
+	hud.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hud.position = Vector3(0.0, 0.0, -0.9)
+	hud.visible = true
+	_failed = true
 
 
 func _init_xr() -> void:
@@ -2586,13 +2042,18 @@ func _init_xr() -> void:
 	# session_visible is "visible but not focused": the Quest dash is up. Drift, spin
 	# and the guard all measure or animate against frames the runtime is throttling.
 	xr.session_visible.connect(func(): _xr_focused = false)
-	xr.session_focussed.connect(func(): _xr_focused = true)
+	xr.session_focussed.connect(_on_session_focussed)
 	# Phase 2 measured the point rendering as vertex-bound, not fill-bound: cutting the
 	# eye buffer 2.8x saved only 1ms. 0.75 lands near the Quest 3's native ~2064x2208
 	# and costs nothing visually, so take the free ~1ms and move on.
 	xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
 	print("[fractal] OpenXR up. refresh=%.1f target=%s views=%d" % [
 		xr.get_display_refresh_rate(), str(xr.get_render_target_size()), xr.get_view_count()])
+
+
+func _on_session_focussed() -> void:
+	_xr_focused = true
+	_xr_focus_seen = true
 
 
 func _env() -> Environment:
@@ -2633,23 +2094,66 @@ func _home_transform() -> Transform3D:
 func _run_guard(delta: float) -> void:
 	_guard_hold = maxf(0.0, _guard_hold - delta)
 	if delta > GUARD_HITCH_S:
-		return   # a stall, not a measurement
+		_guard_long += 1
+		if _guard_long < 2:
+			return   # a lone stall, not a measurement
+	else:
+		_guard_long = 0
 	var fps := 1.0 / maxf(delta, 1e-4)
 	_fps_ema = lerpf(_fps_ema, fps, 0.08)
 	if not splat_on:
 		if _perf_scale < 1.0:
 			_perf_scale = 1.0
 			cloud.set_perf_scale(1.0)
+		_guard_reset()
 		return
-	_guard_slow = _guard_slow + 1 if fps < GUARD_CUT_FPS else 0
-	if _guard_slow >= GUARD_SLOW_FRAMES:
-		_guard_slow = 0
-		_perf_scale = maxf(GUARD_FLOOR, _perf_scale * clampf(sqrt(_fps_ema / GUARD_CUT_FPS), 0.5, 0.95))
+	# A bulb drawn MARCHED or SOLID keeps splat_on with the cloud hidden. The frame time is the
+	# surface's then, and cutting splats nobody sees only brought the bulb back thin. The scale
+	# is kept: those are the splats that will be drawn again.
+	if cloud.is_hidden():
+		_guard_reset()
+		return
+	var hz := _refresh_hz()
+	var cut_fps := GUARD_CUT_SHARE * hz
+	_guard_slow_s = _guard_slow_s + delta if _fps_ema < cut_fps else 0.0
+	if _guard_win.size() != GUARD_WINDOW:
+		_guard_win.resize(GUARD_WINDOW)
+		_guard_win.fill(0)
+		_guard_win_slow = 0
+	var slow := 1 if fps < cut_fps else 0
+	_guard_win_slow += slow - _guard_win[_guard_win_i]
+	_guard_win[_guard_win_i] = slow
+	_guard_win_i = (_guard_win_i + 1) % GUARD_WINDOW
+	_guard_win_n = mini(_guard_win_n + 1, GUARD_WINDOW)
+	if _guard_slow_s >= GUARD_SLOW_S or (_guard_win_n == GUARD_WINDOW \
+			and _guard_win_slow > GUARD_SLOW_SHARE * GUARD_WINDOW):
+		_guard_reset()
+		_perf_scale = maxf(GUARD_FLOOR, _perf_scale * clampf(sqrt(_fps_ema / cut_fps), 0.5, 0.95))
 		cloud.set_perf_scale(_perf_scale)
 		_guard_hold = GUARD_HOLD_S
-	elif _perf_scale < 1.0 and _guard_hold <= 0.0 and _fps_ema > GUARD_RECOVER_FPS:
+		# Start the average at the line, not down in the dip that earned the cut. From the dip
+		# it needed ~0.5 s to climb past a rate the cut had already fixed, long enough for the
+		# slow-time arm to cut a second time for nothing.
+		_fps_ema = maxf(_fps_ema, cut_fps)
+	elif _perf_scale < 1.0 and _guard_hold <= 0.0 and _fps_ema > GUARD_RECOVER_SHARE * hz:
 		_perf_scale = minf(1.0, _perf_scale * 1.01)
 		cloud.set_perf_scale(_perf_scale)
+
+
+## Forget the evidence for a cut: after one, so the next has to be earned afresh, and whenever
+## the guard is not looking at splats.
+func _guard_reset() -> void:
+	_guard_slow_s = 0.0
+	_guard_win.fill(0)
+	_guard_win_slow = 0
+	_guard_win_n = 0
+
+
+## The display's refresh rate, or TARGET_HZ where there is none to ask (the desktop, or a
+## session that has not reported one yet).
+func _refresh_hz() -> float:
+	var hz := xr.get_display_refresh_rate() if xr != null else 0.0
+	return hz if hz > 1.0 else TARGET_HZ
 
 
 func _set_passthrough(on: bool) -> void:
@@ -2766,6 +2270,8 @@ func _process(delta: float) -> void:
 	# the walk picks is applied by the dirty check below in the same frame.
 	_tick_cycle(delta)
 	_process_frame(delta)
+	vignette.set_profile(_vig_profile)
+	vignette.set_motion(_vig_motion)
 	# After every early return in _process_frame, so whatever recoloured this frame lands.
 	if _palette_dirty:
 		_palette_dirty = false
@@ -2780,6 +2286,7 @@ func _process(delta: float) -> void:
 
 func _process_frame(delta: float) -> void:
 	_uptime += delta
+	_vig_motion = 0.0
 	cloud.ease_framing(delta)
 	if _theme_blend < 1.0:
 		# Match the shape transition, so colour and form arrive together. CYCLE's theme walk
@@ -2793,11 +2300,27 @@ func _process_frame(delta: float) -> void:
 	if not _placed and _setup_done and xr_camera.global_transform.origin.length_squared() > 1e-6:
 		_placed = true
 		_recenter()
+		# Pinned floats the panel in front of the head, so it waits for a tracked head as the
+		# recentre does: restored at startup it would float in front of wherever the origin is.
+		if _resume_pin:
+			_resume_pin = false
+			menu.set_pinned(true, true)
 		if _help_pending:
 			_help_pending = false
-			_mark_help_seen()
 			help.open()
+	if _resume_passthrough and _xr_focused and (xr == null or _xr_focus_seen):
+		_resume_passthrough = false
+		_set_passthrough(true)
 	help.update(delta)
+	_tick_resume(delta)
+	# Input has one owner a frame, highest first: an unfocused session (the system dash is
+	# up), then the help card, then the wrist menu when a ray is on it, then the world. The
+	# menu is put to sleep under the card the way it sleeps under the dash, or its scrub and
+	# hold ran on the same sticks and trigger the card was waiting on.
+	if help.is_open():
+		menu.set_suspended(true)
+	elif _xr_focused:
+		menu.set_suspended(false)
 	_menu_active = menu.update(delta)
 	if _xr_focused:
 		_run_guard(delta)
@@ -2859,7 +2382,10 @@ func _process_frame(delta: float) -> void:
 	if grab != null:
 		# Ground reads the same grips to drag the field; without this the hidden cloud
 		# was dragged along with it and came back in a moved pose when ground was left.
-		grab.suspended = ifs_edit.is_editing() or ground_mode or menu.is_holding()
+		# Anything above the world in the owner order suspends it too. A ray on the panel only
+		# stops a grab from starting: one already held carries on when the ray crosses it.
+		grab.suspended = ifs_edit.is_editing() or ground_mode or menu.is_holding() \
+			or not _xr_focused or help.is_open() or (_menu_active and not grab.is_grabbing())
 		grab.update(delta)
 	_handle_input(delta)
 	_update_hud(delta)
@@ -2870,7 +2396,13 @@ func _process_frame(delta: float) -> void:
 		_fail(cloud.get_error())
 	if ground_mode:
 		var hp := xr_camera.global_transform.origin
+		# Cancelled rather than paused: a glide that picked up again as the dash closed would be
+		# motion nobody asked for in that moment. The tiles keep filling either way.
+		if not _xr_focused or help.is_open() or _menu_active:
+			ground.stop_glide()
 		ground.update(Vector2(hp.x, hp.z), delta)
+		# A trigger glide carries you with no hand in it, so it gets the walk's tunnel.
+		_want_vignette(ComfortVignette.WALK, ground.glide_mps / GROUND_PAN_MPS)
 		_tick_orbit()
 		return
 	if tree_mode:
@@ -2881,12 +2413,12 @@ func _process_frame(delta: float) -> void:
 		# Either trigger held glides down the walking avenue; G held on the desktop (the
 		# arrows are the right stick there). Only while nothing else owns the trigger, so a
 		# press on the menu never starts a walk.
-		forest.walk_held = forest.walking() and not _menu_active and not help.is_open() \
+		forest.walk_held = forest.walking() and _xr_focused and not _menu_active \
+			and not help.is_open() \
 			and (_trig_held[0] or _trig_held[1] or _walk_stick or Input.is_key_pressed(KEY_G))
 		forest.tick(delta, xr_camera.global_transform.origin)
 		# The walk's tunnel: tighter than the dive's, shut early, with the rest frame in it.
-		vignette.set_profile(ComfortVignette.WALK)
-		vignette.set_motion(forest.walk_motion())
+		_want_vignette(ComfortVignette.WALK, forest.walk_motion())
 		return
 	# The sculpture's only per-frame work: the ambient clocks, and whatever rebuild breathing
 	# or a SHAPE morph is asking for. Nothing is dispatched, which is what keeps the chaos
@@ -2901,8 +2433,7 @@ func _process_frame(delta: float) -> void:
 		# Room size flies the beams past your face, so the periphery dims while a step moves,
 		# eased with the step as the walk's is. At table size the sculpture moves in front of
 		# you and the view is left alone.
-		vignette.set_profile(ComfortVignette.DIVE)
-		vignette.set_motion(ifs_dive.motion() if ifs_room else 0.0)
+		_want_vignette(ComfortVignette.DIVE, ifs_dive.motion() if ifs_room else 0.0)
 		# A captured handle owns the shape, so the ambient clock stops while it is held. So does
 		# a dive step: it re-roots by the maps it started with, and a breath would move them.
 		ifs.ambient_hold = ifs_edit.is_editing() or not _xr_focused or ifs_dive.in_step()
@@ -2929,8 +2460,10 @@ func _process_frame(delta: float) -> void:
 # Left menu (≡)          pin the wrist menu open, press again to let go
 # Left stick click       passthrough on / off
 # Right stick click      the mode's ambient motion on / off
-# Right stick            turn, push away and pull back (ground: turn and zoom; tree WALK:
-#                        forward glides like the trigger, and nothing else)
+# Right stick            turn, push away and pull back. Around you (ground, tree, galaxy,
+#                        room-size IFS) the turn is a 30 degree snap; ground zooms instead
+#                        of pushing; tree pushes level; tree WALK: forward glides like the
+#                        trigger, and nothing else
 # Left stick             grow and shrink (ground: walk; off during tree WALK)
 # Triggers               THE MODE'S OWN: prev/next flame or bulb, glide (ground),
 #                        regrow/plant (tree), sculpt a handle (ifs)
@@ -2948,11 +2481,26 @@ func _handle_input(delta: float) -> void:
 	var l_y := _pressed(left_hand, "by_button")
 	var l_menu := _pressed(left_hand, "menu_button")
 	# No right menu read: on a Quest that is the system button and the app never sees it.
+	_walk_stick = false
+	# A ground grip held into the dash or the card is let go, and taken again on the way out.
+	# Kept, its last position made the first frame back apply every move the hand made meanwhile.
+	if not _xr_focused or help.is_open():
+		_gg_hands = []
+	# Unfocused, nothing acts: the edges above are spent so a press made under the dash does
+	# not land when it closes.
+	if not _xr_focused:
+		return
 	# While the card is up the triggers only dismiss it. The edges were read in _process, for
-	# both hands, so nothing here can leave one hand's edge state stale.
+	# both hands, so nothing here can leave one hand's edge state stale. Seen is written here,
+	# on a deliberate dismissal, and not when the card opens: a first launch that the dash or a
+	# crash interrupted used to count as having read it.
 	if help.is_open():
+		# The sticks are not read under the card, so a push held as it closes would snap the
+		# room on the first frame back. Disarm; a centred stick re-arms it at once.
+		_snap_armed = false
 		if _trig[0] or _trig[1] or _key(KEY_SPACE):
 			help.close()
+			_mark_help_seen()
 		return
 
 	var rs := Vector2.ZERO
@@ -2967,11 +2515,11 @@ func _handle_input(delta: float) -> void:
 	# |x| >= 0.6, so a diagonal push used to clear the deadzone on Y and move the world too,
 	# and a floated panel can make the left hand the pointer. Zeroed here, every mode below
 	# is gated at once.
-	if menu.wants_stick():
+	# Any ray on the panel owns them too: a stick nudge meant for a tile must not move the world.
+	if menu.wants_stick() or _menu_active:
 		rs = Vector2.ZERO
 		ls = Vector2.ZERO
 
-	_walk_stick = false
 	if ground_mode:
 		# Left stick walks the fractal under you, in the direction you face; right stick
 		# Y zooms about the ground under your feet.
@@ -2983,13 +2531,19 @@ func _handle_input(delta: float) -> void:
 		if right.length_squared() > 1e-6:
 			right = right.normalized()
 		var grabbing := _ground_grab()
+		var snap := _snap_step(rs.x, not grabbing)
 		if not grabbing:
+			# Walk and zoom move the floor past you with no hand in it, so both close the tunnel.
+			var moving := 0.0
 			if ls.length() > 0.15:
 				ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
+				moving = minf(1.0, ls.length())
 			if absf(rs.y) > 0.15:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
-			if absf(rs.x) > 0.15:
-				ground.rotate_about_head(-rs.x * GROUND_TURN_RAD_S * delta)
+				moving = maxf(moving, minf(1.0, absf(rs.y)))
+			_want_vignette(ComfortVignette.WALK, moving)
+			if snap != 0:
+				ground.rotate_about_head(-snap * SNAP_TURN_RAD)
 	# WALK owns the sticks. The right stick pushed forward glides like a held trigger, under
 	# the same pace, ease and tunnel; it used to shove the whole avenue at 1.5 m/s with no
 	# vignette. Turning and scaling the avenue mid-walk are off: a smooth turn swung the rows
@@ -3001,14 +2555,43 @@ func _handle_input(delta: float) -> void:
 	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
 	# the sculpture moves out from under the plane you are dragging.
 	elif (grab == null or not grab.is_grabbing()) and not ifs_edit.is_editing():
-		if absf(rs.x) > 0.15:
+		# Around you (the grove, inside the galaxy, a room-size sculpture) the stick turns and
+		# moves the world, so it follows the ground's rules: snap turns, and the walk's tunnel
+		# while it pushes or scales. A hand-sized flame or bulb is a thing in front of you, and
+		# turning that smoothly is turning an object, not the room.
+		var surround: bool = tree_mode or galaxy.active or (ifs_mode and ifs_room)
+		if surround:
+			var snap := _snap_step(rs.x, true)
+			if snap != 0:
+				# About a vertical line through the head, so the view turns and nothing swings
+				# past you; same sense as the smooth turn it replaces.
+				var head := xr_camera.global_transform.origin
+				var turn := Basis(Vector3.UP, snap * SNAP_TURN_RAD)
+				cloud.global_transform = Transform3D(turn, head - turn * head) * cloud.global_transform
+			var moving := 0.0
+			if absf(rs.y) > 0.15:
+				moving = absf(rs.y)
+			if absf(ls.y) > 0.15:
+				moving = maxf(moving, absf(ls.y))
+			_want_vignette(ComfortVignette.WALK, minf(1.0, moving))
+		elif absf(rs.x) > 0.15:
 			cloud.rotate_y(rs.x * 1.2 * delta)
 		if absf(rs.y) > 0.15:
 			var fwd := -xr_camera.global_transform.basis.z
+			# The grove and its floor stand on the real floor: push and pull them level, or a
+			# downward glance sank them through it.
+			if tree_mode:
+				fwd.y = 0.0
+				fwd = fwd.normalized() if fwd.length_squared() > 1e-4 else Vector3.ZERO
 			cloud.global_translate(fwd * rs.y * 1.5 * delta)
 		if absf(ls.y) > 0.15:
 			var s := clampf(cloud.scale.x * (1.0 + ls.y * delta), 0.05, 40.0)
 			cloud.scale = Vector3.ONE * s
+
+	# Mid-grab or mid-drag of an IFS handle the surround branch above is skipped; keep the
+	# snap's arm honest anyway, or letting go with the stick still over snaps the room.
+	if ((grab != null and grab.is_grabbing()) or ifs_edit.is_editing()) and not ground_mode:
+		_snap_step(rs.x, false)
 
 	# Read every button every frame, even when this mode maps it differently. Otherwise a
 	# held button becomes a phantom new press after a hand regains tracking or a mode flips.
@@ -3034,6 +2617,10 @@ func _handle_input(delta: float) -> void:
 			# the grab. Falling through would quietly walk the flame gallery behind the
 			# sculpture, which is the bug the bulb branch below was added to fix.
 			pass
+		elif grab != null and grab.holds(right_hand):
+			# People curl the index finger when they squeeze a grip, so a trigger on the hand
+			# that is holding the thing is not a request for the next one.
+			pass
 		elif bulb_mode:
 			# Bulb mode used to fall through to the flame morph. Nothing moved, because
 			# _tick_morph returns early for bulbs, but preset_idx advanced anyway: the
@@ -3052,6 +2639,8 @@ func _handle_input(delta: float) -> void:
 				_regrow_forest()
 		elif ifs_mode:
 			pass   # same as the right trigger: the handles have it
+		elif grab != null and grab.holds(left_hand):
+			pass   # the gripping hand, as on the right
 		elif bulb_mode:
 			_load_bulb(bulb_idx - 1)
 		else:
@@ -3091,13 +2680,40 @@ func _handle_input(delta: float) -> void:
 		_step_detail(1)
 
 
-## X: home. The mode's own idea of "put it back": the ground's start view, the
-## sculpture's shape and pose, otherwise the cloud's framing in front of you.
+## Right stick X as snap turns, shared by every mode that turns the world around you. Returns
+## -1, 0 or 1. The stick has to come back inside SNAP_REARM before it can fire again, and it
+## re-arms even while `can_fire` is false (a grip held), so letting go of a grip with the stick
+## centred is a clean start.
+func _snap_step(x: float, can_fire: bool) -> int:
+	if absf(x) < SNAP_REARM:
+		_snap_armed = true
+	elif not can_fire and absf(x) > SNAP_FIRE:
+		# A push made while the turn was not allowed (mid-grab) is spent, or letting go of the
+		# grip with the stick still over would snap the world on the first free frame.
+		_snap_armed = false
+	elif can_fire and _snap_armed and absf(x) > SNAP_FIRE:
+		_snap_armed = false
+		return 1 if x > 0.0 else -1
+	return 0
+
+
+## Ask for the tunnel this frame: 0 still, 1 full speed, in a ComfortVignette profile. The
+## strongest ask wins and _process applies it once.
+func _want_vignette(profile: Dictionary, m: float) -> void:
+	if m > _vig_motion:
+		_vig_motion = m
+		_vig_profile = profile
+
+
+## X: home. The mode's own idea of "put it back": the ground's start view, otherwise the
+## thing's framing in front of you. Pose only, in every mode: X is pressed by feel, and in IFS
+## it used to reset the sculpture and drop its undo, so one stray thumb lost the work. The
+## shape reset lives on the RESET tile, which keeps an UNDO.
 func _go_home() -> void:
 	if ground_mode:
 		ground.home()
 	elif ifs_mode:
-		_reset_ifs()
+		_recenter()
 	else:
 		_recenter()
 		if not tree_mode:
@@ -3524,7 +3140,7 @@ func _update_hud(delta: float) -> void:
 	var fps := Engine.get_frames_per_second()
 	var grabbing := 0 if grab == null else grab.grip_count()
 
-	if hud.visible:   # retired to the wrist; the perf print below is what this is for now
+	if hud.visible and not _failed:   # retired to the wrist; the perf print is what this is for now
 		hud.text = "\n".join(_hud_lines(fps, gpu, sim, grabbing))
 
 	# Log the levers that could be quietly reducing image quality over time, so the
@@ -3578,26 +3194,168 @@ func _fmt_time(s: float) -> String:
 	return "%d:%02d" % [int(s) / 60, int(s) % 60]
 
 
-## First-run state lives in user://, which survives an update but not an uninstall. One key,
-## one file: anything more would be a settings system nobody asked for. The menu's pin used to
-## live here too and is gone on purpose: a launch that opened the panel floating wherever the
-## last session left it put it somewhere arbitrary. The menu always starts on the wrist; an old
-## file's stale menu_pinned key is never read.
+## State lives in user://, which survives an update but not an uninstall: [ui] seen_help, and
+## [resume], the session to come back to. The menu pin is in [resume] on purpose: the old
+## [ui] menu_pinned floated the panel wherever the last session had left it, while this one only
+## says pinned, and the panel floats in front of you once the head is tracked. An old file's
+## [ui] menu_pinned is never read.
 const STATE_PATH := "user://state.cfg"
+## A var so a check can point it at a scratch file instead of the real one.
+var state_path := STATE_PATH
+## Resume runs in a headset session, or when a check sets this before _ready. Every desktop
+## harness shares one user:// folder, so a desktop resume would open the next harness in
+## whatever mode the last one quit in.
+var resume_on := false
+const RESUME_MODES := ["flame", "bulb", "ground", "tree", "ifs"]
+## Seconds between checks for a changed setting. Comparing a dozen ints once a second costs
+## nothing, and it catches every tile without a save call in each one.
+const RESUME_CHECK_S := 1.0
+var _resume_saved := {}
+var _resume_t := 0.0
+var _resume_pin := false
+var _resume_passthrough := false
 
 
 func _help_seen() -> bool:
 	var cfg := ConfigFile.new()
-	if cfg.load(STATE_PATH) != OK:
+	if cfg.load(state_path) != OK:
 		return false
 	return bool(cfg.get_value("ui", "seen_help", false))
 
 
 func _mark_help_seen() -> void:
+	if _help_seen():
+		return
 	var cfg := ConfigFile.new()
-	cfg.load(STATE_PATH)  # keep whatever else is in there
+	cfg.load(state_path)  # keep whatever else is in there; a missing file is a first launch
 	cfg.set_value("ui", "seen_help", true)
-	cfg.save(STATE_PATH)
+	var err := cfg.save(state_path)
+	if err != OK:
+		push_warning("[state] could not save seen_help (error %d)" % err)
+
+
+func _mode_name() -> String:
+	if ifs_mode:
+		return "ifs"
+	if tree_mode:
+		return "tree"
+	if ground_mode:
+		return "ground"
+	return "bulb" if bulb_mode else "flame"
+
+
+## What [resume] holds: the mode, the specimen on show in each mode, the theme, CYCLE,
+## passthrough, the walk's PACE (the only comfort setting there is), and the menu pin.
+func _resume_state() -> Dictionary:
+	return {
+		"mode": _mode_name(), "flame": preset_idx, "bulb": bulb_idx, "tree": tree_shape_idx,
+		"ifs": ifs_preset_idx, "ground_set": ground.formula, "ground_relief": ground_relief_idx,
+		"theme": theme_idx, "cycle": cycle_idx, "passthrough": passthrough,
+		"pace": forest.pace_idx, "pinned": menu.is_pinned(),
+	}
+
+
+## Defaults for every key, then whatever the file holds that is the right type and in range.
+## Anything else is logged and left at its default. A missing file or section is a first launch,
+## which behaves exactly as it always did.
+func _read_resume() -> Dictionary:
+	var r := _resume_state()
+	r["mode"] = "flame"
+	r["flame"] = 0
+	r["pinned"] = false
+	r["passthrough"] = false
+	if not resume_on:
+		return r
+	var cfg := ConfigFile.new()
+	var err := cfg.load(state_path)
+	if err != OK:
+		if err != ERR_FILE_NOT_FOUND:
+			print("[state] %s unreadable (error %d); starting fresh" % [state_path, err])
+		return r
+	if not cfg.has_section("resume"):
+		return r
+	var limits := {
+		"flame": library.count(), "bulb": library.bulbs.size(),
+		"tree": FractalTree.SHAPE_NAMES.size(), "ifs": FractalIFS.PRESETS.size(),
+		"ground_set": FractalGround.FORMULA_NAMES.size(), "ground_relief": GROUND_RELIEF.size(),
+		"cycle": CYCLE_STEPS.size(), "pace": Forest.WALK_PACES.size(),
+	}
+	for k in cfg.get_section_keys("resume"):
+		if not r.has(k):
+			continue
+		var v: Variant = cfg.get_value("resume", k)
+		var ok := false
+		if k == "mode":
+			ok = v is String and v in RESUME_MODES
+		elif k == "passthrough" or k == "pinned":
+			ok = v is bool
+		elif k == "theme":
+			ok = v is int and v >= -1 and v < library.themes.size()
+		else:
+			ok = v is int and v >= 0 and v < int(limits[k])
+		if ok:
+			r[k] = v
+		else:
+			print("[state] resume %s=%s is not valid here; using %s" % [k, str(v), str(r[k])])
+	return r
+
+
+## Put a read state back, after the GPU is up and the first flame is loading. Specimens first,
+## so the mode switch opens on them.
+func _apply_resume(r: Dictionary) -> void:
+	if resume_on:
+		bulb_idx = int(r["bulb"])
+		tree_shape_idx = int(r["tree"])
+		ifs_preset_idx = int(r["ifs"])
+		ground_relief_idx = int(r["ground_relief"])
+		ground.set_formula(int(r["ground_set"]))
+		theme_idx = int(r["theme"])
+		_step_cycle(int(r["cycle"]) - cycle_idx)
+		forest.set_pace(int(r["pace"]))
+		# Applied on the first focused frame (_process_frame): a blend mode set before the session
+		# is focused is not one the runtime has to honour.
+		_resume_passthrough = bool(r["passthrough"])
+		_resume_pin = bool(r["pinned"])
+		if r["mode"] != "flame":
+			_set_mode(r["mode"])
+		_palette_dirty = true
+		print("[state] resumed %s" % str(r))
+	_resume_saved = _resume_state()
+
+
+## Save [resume] whenever it differs from what was last written, checked once a second.
+func _tick_resume(delta: float) -> void:
+	if not resume_on or not _setup_done:
+		return
+	_resume_t += delta
+	if _resume_t < RESUME_CHECK_S:
+		return
+	_resume_t = 0.0
+	_save_resume()
+
+
+func _save_resume() -> void:
+	if not resume_on or not _setup_done:
+		return
+	var st := _resume_state()
+	if st == _resume_saved:
+		return
+	var cfg := ConfigFile.new()
+	cfg.load(state_path)  # keep [ui]; a missing file is a first launch
+	for k in st:
+		cfg.set_value("resume", k, st[k])
+	var err := cfg.save(state_path)
+	if err != OK:
+		push_warning("[state] could not save resume state (error %d)" % err)
+		return
+	_resume_saved = st
+
+
+## The Quest pauses an app it sends to the background and may never resume it, so the state is
+## written then rather than at the next once-a-second check.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_resume()
 
 
 func _exit_tree() -> void:

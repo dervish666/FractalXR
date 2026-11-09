@@ -5,6 +5,40 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Council review, 2026-11-05/06
+A three-model review (Claude Opus 5.5, GPT-6.1 Sol, Claude Fable 5.1) scored the native app on
+eight categories and fixed what held each one under 8.5. Nothing here has been on the headset yet.
+
+- **Controls.** X is "home" in every mode and never destroys work: in IFS it recentres, and
+  RESET keeps the sculpt it replaces (mirrors, STRETCH, LEVELS) as one UNDO. A trigger on a hand
+  that is gripping is ignored. DRIFT pauses while you hold something or point at the menu, and
+  now tours every flame. The help card, the menu and the world take input in that order, so
+  nothing moves behind an open card or the system dash.
+- **Comfort.** GROUND, the grove, inside GALAXY and a room-size IFS sculpture all turn in 30°
+  snaps on the right stick, and stick walking, zoom, push and scale bring up the comfort tunnel,
+  as does GALAXY's grow. A ground glide is capped at 6 m and 1.5 m/s and stops when the card or
+  dash opens. The grove stays level when pushed or grabbed. A stick pushed during a grab no
+  longer snaps on release.
+- **First minute.** Every GROUND family opens on its own structure instead of a blank plain.
+  TREE opens 5.5 m back so the whole crown shows. "Wrist up for the menu" is on every mode's
+  card, and the card only counts as seen after you dismiss it. A startup failure shows a message
+  in the headset instead of an empty void. The app reopens in the mode, specimens, theme, CYCLE,
+  passthrough, PACE and menu pin you left.
+- **Menu words.** One word, one meaning: SURFACE picks how a bulb is drawn (splats, lines,
+  solid, marched) and OPACITY is what SOLID used to be; MIRROR, LEVELS, STRETCH, STEADY (higher
+  is steadier), HOME, BY RULE; toggles named for what ON does; THEME reads "auto · Ember",
+  BRIGHT in words. TREE MAKE is trimmed, with FLOOR and BARK on LOOK. MORE is a visible pill
+  with a count. A hint line under the title explains the tile you rest the ray on. ADAPT, AA,
+  FOVEA and GLOW are debug builds only. Labels are 17 px.
+- **Gallery.** Bulb pictures are baked from a pose and palette that tell them apart.
+- **Performance.** The splat guard works from the display's refresh rate: it cuts when frames
+  stay under 0.8x refresh or a quarter of the last 30 run slow, ignores a lone stall, leaves
+  splats alone while a bulb is drawn marched or solid, and cuts once per dip.
+- **Developers.** The menu lives in `godot/scripts/menu/`, one file per mode, and `menu_shot.sh`
+  fails on a label that means two things. `logic_check.sh` covers resume, the guard, snap turns,
+  RESET/UNDO and input owners. Harness watchdogs kill only their own run. `godot/README.md`
+  describes the current app and every tool.
+
 ### Added
 - **FLOOR: something under the trees, in theme (off by default).** A stepper on TREE's MAKE
   card: off, fractal ground, fallen leaves, ground + leaves. It replaces the ROOTS prototype

@@ -113,6 +113,25 @@ var julia_c: Vector2:
 ## the switch in ground.glsl's iterate(). Append only, and keep the shader in step.
 const FORMULA_NAMES := ["mandelbrot", "burning ship", "tricorn", "celtic",
 	"perpendicular", "buffalo", "cubic", "quartic"]
+## Where each family opens, indexed like FORMULA_NAMES: (cx, cy) is the fractal point under
+## your feet and z the world metres per fractal unit. One home for all of them, -0.6 on the
+## real axis, stood every family but the Mandelbrot on a blank plain: inside the set, near
+## black, or on a smooth exterior with the boundary at the horizon. Each was picked by
+## rendering candidates from the ground_shot pose (standing eye, 22 degrees down, facing -y
+## in fractal space) and keeping one with boundary detail under the feet and ahead. The
+## Mandelbrot moved too: at -0.6 you stood inside the cardioid on the near-black interior.
+## Julia views open from these too. Their picture follows the seed JULIA takes from where you
+## stand, not the home, so they were not given a table of their own and were not rendered.
+const HOMES := [
+	Vector3(-0.55, 0.62, 30.0),   # mandelbrot: above the cardioid, its bulbs ahead
+	Vector3(-1.6, 0.0, 120.0),    # burning ship: the mast and its flames, near the ship
+	Vector3(-1.2, 0.08, 30.0),    # tricorn: astride the left spike
+	Vector3(-1.35, 0.5, 30.0),    # celtic: the speckled field left of the body
+	Vector3(-0.4, 0.9, 30.0),     # perpendicular: the upper-left fringe
+	Vector3(-1.25, -0.05, 30.0),  # buffalo: the left lobe's edge
+	Vector3(-0.55, 0.3, 30.0),    # cubic: the left flank of the body
+	Vector3(-0.75, 0.3, 60.0),    # quartic: between the body and its left bulb
+]
 var formula := 0
 var max_iter := 256
 ## Raise the iteration count with depth (iter_floor). tools/ground_check.gd turns it off to
@@ -161,6 +180,13 @@ var _timed := false         # a GPU timestamp pair has been read at least once
 ## fractal = centre + M * world_xz / wpu.
 var _m := Transform2D.IDENTITY
 var _glide := Vector2.ZERO        # world metres still to travel toward a trigger target
+## The glide's own speed last frame, m/s, for the comfort vignette.
+var glide_mps := 0.0
+## A pick near the horizon lands tens of metres out (23.5 m was measured), and the ease's first
+## frame then ran at ~80 m/s. The pick is clamped to GLIDE_MAX_M along its own direction and the
+## travel to GLIDE_MAX_MPS, so a far pick is a steady glide that way, not a lurch.
+const GLIDE_MAX_M := 6.0
+const GLIDE_MAX_MPS := 1.5
 var _lfx := 0.0                   # fractal point the floor is levelled to; lags the viewer
 var _lfy := 0.0
 ## Level-0 texel index of the anchor, in 64-bit ints. Every texel index this node stores or
@@ -410,25 +436,34 @@ func set_viewer_fractal(x: float, y: float) -> void:
 	_cy = y - o.y
 
 
-## Zoom factor relative to the home view, for the status line.
+## Zoom factor relative to WPU_BASE, for the status line. A family whose home sits deeper
+## (HOMES z) opens at more than 1x.
 func zoom_factor() -> float:
 	return wpu / WPU_BASE
 
 
+## Back to the current family's HOMES entry, the head over its point, facing as it opens.
 func home() -> void:
-	wpu = WPU_BASE
+	var h: Vector3 = HOMES[formula]
+	wpu = h.z
 	_m = Transform2D.IDENTITY
 	_glide = Vector2.ZERO
-	_cx = -0.6 - _head_xz.x / wpu
-	_cy = -_head_xz.y / wpu
+	_cx = h.x - _head_xz.x / wpu
+	_cy = h.y - _head_xz.y / wpu
 	_level_set = false
 	_sync_stage()
+
+
+## Drop what is left of a glide. The host calls it while something above the world owns input:
+## a trip that carried on under the dash or the card moved the viewer with no hand in it.
+func stop_glide() -> void:
+	_glide = Vector2.ZERO
 
 
 ## Glide so that the world point `target_xz` ends up under the viewer. Eased over about
 ## a second; a new target replaces the old.
 func glide_to(target_xz: Vector2) -> void:
-	_glide = target_xz - _head_xz
+	_glide = (target_xz - _head_xz).limit_length(GLIDE_MAX_M)
 
 
 ## 0..1 fill progress of the work queued since the queue was last empty.
@@ -474,13 +509,15 @@ func set_julia(on: bool) -> void:
 	invalidate()
 
 
-## Every tile in every level is wrong the moment this changes, so it is a full rebuild.
+## Every tile in every level is wrong the moment this changes, so it is a full rebuild. A new
+## family opens at its own home: the old spot is a blank plain for most of them.
 func set_formula(i: int) -> void:
 	var n := wrapi(i, 0, FORMULA_NAMES.size())
 	if n == formula:
 		return
 	formula = n
 	invalidate()
+	home()
 
 
 func formula_name() -> String:
@@ -621,10 +658,13 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_mesh_instance.position = Vector3(head_xz.x, 0.0, head_xz.y)
 	_sky.position.x = head_xz.x
 	_sky.position.z = head_xz.y
+	glide_mps = 0.0
 	if _glide.length() > 0.02 and delta > 0.0:
 		var f := 1.0 - exp(-delta * 3.5)
-		pan(_glide * f)
-		_glide *= 1.0 - f
+		var step := (_glide * f).limit_length(GLIDE_MAX_MPS * delta)
+		pan(step)
+		_glide -= step
+		glide_mps = step.length() / delta
 	else:
 		_glide = Vector2.ZERO
 	if effective_iter() != _iter_used:
