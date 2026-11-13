@@ -479,6 +479,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 |---|---|---|
 | `selftest.sh` | The compute chain on this machine's GPU: steps every preset, writes `.spike-out/selftest.png`. | `SELFTEST PASS`: no NaN, no escaping cloud, no collapse to a point, no flat-in-z genome, frame looks like a live chaos game. |
 | `parse_all.sh` | Parses every `.gd` under `scripts/` and `tools/`, plus a deliberately broken control. | `PARSEALL PASS`: zero errors, at least one file parsed, and the control failed as it must. |
+| `trailer.sh` | Desktop Movie Maker cut from editable `data/trailer.json`, all five modes, slow camera moves and hard cuts. Writes H.264 MP4 with silent AAC and a labelled contact sheet under `.spike-out/trailer/`. | `TRAILER PASS`: every shot settled and rendered, no script or shader errors, decoded frame counts match, final H.264/AAC streams and duration validated with ffprobe. Inspect the pictures and play the cut before publishing. |
 | `shader_check.sh` | Compiles the `.gdshader` files you pass (`tools/shader_check.sh shaders/a.gdshader ...`), headless. | One `SHADERCHECK <path> params=N` line per shader with `N` above 0. A shader with `params=0` or a `SHADER ERROR` did not compile. |
 | `de_check.sh` | The five bulb distance estimates: the marcher's shader copy against the CPU port (`BulbSource.de`), plus a hollow finder. | `DECHECK` line with a small `max_err` and `control=FAIL` (the wrong-parameter control must fail). Run after touching any of the three copies. |
 | `rooms.sh` | Regenerates `data/rooms.json`: each bulb's measured extent and best enclosed room. Headless, a few minutes. | `ROOMS PASS bulbs=N`. Run after `node tools/export-presets.mjs`. |
@@ -542,6 +543,55 @@ Candidate renders come from the web build: `npm run art` in the repo root, then
 `--xr-mode off` is load-bearing on the Mac and is baked into `tools/env.sh`. Without
 it the OpenXR loader hunts for a runtime that isn't there and hangs the process for
 minutes. That cost an hour; don't remove it.
+
+### Offline store trailer
+
+```bash
+bash godot/tools/selftest.sh
+bash godot/tools/parse_all.sh
+bash godot/tools/trailer.sh
+```
+
+`trailer.sh` calls `trailer.py` and `trailer.gd`. The default cut is 51.5 seconds,
+2560x1440, 60 fps. Each shot starts a fresh desktop app with XR off. Godot Movie Maker
+writes fixed-step MJPEG, then ffmpeg removes startup frames and encodes H.264 at CRF 18.
+The final MP4 has a silent stereo AAC track for the store. No titles or music are baked in.
+The output directory contains `FractalXR-trailer.mp4`, `contact-sheet.jpg`, individual
+clips and midpoint PNGs, `render-shots.json`, `render-report.json`, logs and `ffprobe.json`.
+Raw AVI files are removed after successful encoding unless `--keep-raw` is set.
+
+Edit `data/trailer.json` to change the cut. Array order is cut order. Each shot specifies
+`id`, `mode`, a named `preset`, `duration` in seconds, vertical `fov` in degrees, and
+`camera_start` / `camera_end` dictionaries with `position` and `look_at` vectors.
+Durations round to the nearest frame at the selected fps.
+Coordinates are metres, Y up. `subject` sets the fractal's world `position`, uniform `scale`
+and optional Euler `rotation` in degrees. Camera position and aim interpolate linearly.
+The authored moves stay under 0.1 metres per second, with hard cuts every 2 to 3 seconds.
+
+Optional settings are `theme` (index in `data/presets.json`, -1 for the preset palette),
+`seed`, `warmup_frames` (180 by default), FLAME `point_style` (the app's POINT index,
+0 to 3; this cut uses 3 for 2-pixel points at 1440p), TREE `wind` and `bark`, BULB `surface`
+(the app's SURFACE index), and IFS `detail`, `ambient` and `echoes` (the app's count index).
+GROUND needs `ground_centre` (fractal coordinates) and `ground_wpu` (world metres per
+fractal unit). `animation` accepts `[start, end]` values for `colour_cycle` and `ifs_depth`.
+The latter rebuilds the IFS at each frame. Keep it gentle.
+
+```bash
+# Select views quickly without encoding a movie.
+bash godot/tools/trailer.sh --stills --resolution 960x540 --output godot/.spike-out/trailer/scout
+# Lower the render cost if needed.
+bash godot/tools/trailer.sh --resolution 1920x1080 --fps 30
+# Re-render named IFS shots after its new presets land, without changing app code.
+bash godot/tools/trailer.sh --only 04-twist,09-tetra,14-star,19-frames,21-cross \
+  --output godot/.spike-out/trailer/ifs-review
+```
+
+`--shots path/to/cut.json` selects another cut. `--only` preserves its original order and
+writes a separate cut of the selected shots. Use a separate `--output` to preserve a master.
+Movie Maker reads project viewport dimensions before the script starts, so the helper creates
+an exclusive temporary `godot/override.cfg` for each run and removes it on success or failure.
+It refuses to overwrite an existing override. Run one trailer job at a time per checkout.
+No production rendering settings or saved headset state are changed.
 
 ## History
 
