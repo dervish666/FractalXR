@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode unshaded, cull_back, fog_disabled, shadows_disabled;
+render_mode unshaded, cull_disabled, fog_disabled, shadows_disabled;
 
 // The IFS sculpture's frames: one instanced seed polyhedron per node of the assembly.
 // Two things move here so the script never rewrites the instance buffer for either of them,
@@ -10,7 +10,7 @@ render_mode unshaded, cull_back, fog_disabled, shadows_disabled;
 // COLOR.rgb is not a colour here: it packs the parent's origin in the instance's own mesh
 // space, the one per-instance slot left once INSTANCE_CUSTOM is full. It is packed into
 // [0, 1] rather than written raw because an instance colour is a colour to the renderer and
-// may be stored normalised. The axis shade therefore rides in UV.x instead of vertex colour.
+// may be stored normalised. UV.x carries axial surface bands; UV.y carries seed fade groups.
 
 uniform sampler2D ramp : filter_linear, repeat_enable;
 uniform float anim_t = 0.0;        // seconds, from FractalIFS.tick
@@ -63,8 +63,11 @@ uniform float echo_glow = 1.5;     // gain swing per unit of breathe, so a swell
 
 varying float v_u;
 varying float v_shade;
+varying float v_level;
+varying vec3 v_normal;
 
 void vertex() {
+	v_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
 	float level = INSTANCE_CUSTOM.x;
 	float radius = INSTANCE_CUSTOM.y;
 	float birth = INSTANCE_CUSTOM.z;
@@ -99,6 +102,7 @@ void vertex() {
 		float c = cos(a);
 		float s = sin(a);
 		rel = rel * c + cross(k, rel) * s + k * dot(k, rel) * (1.0 - c);
+		v_normal = v_normal * c + cross(k, v_normal) * s + k * dot(k, v_normal) * (1.0 - c);
 		vec3 wob = echo_wander.xyz * sin(echo_wander.w * t * vec3(1.0, 1.37, 0.71) + vec3(0.0, 2.1, 4.2));
 		w = echo_centre + rel + wob;
 		VERTEX = inverse(mat3(MODEL_MATRIX)) * (w - MODEL_MATRIX[3].xyz);
@@ -109,11 +113,20 @@ void vertex() {
 		+ echo_life.w * echo_t;
 	// Its own line: FractalIFS._variant anchors on the one above, whole.
 	v_u += colour_cycle;
-	v_shade = UV.x * echo_gain * (1.0 + echo_glow * swell);
+	v_shade = echo_gain * (1.0 + echo_glow * swell);
+	v_level = level;
 }
 
 void fragment() {
 	// fract() keeps the drifting coordinate precise after minutes of scrolling; the ramp is
 	// built cyclic, first colour repeated at 1.0, so the wrap is not a seam.
-	ALBEDO = texture(ramp, vec2(fract(v_u), 0.5)).rgb * v_shade * brightness;
+	vec3 n = normalize(v_normal);
+	float key = max(dot(n, normalize(vec3(-0.4, 0.8, 0.6))), 0.0);
+	float fill = max(dot(n, normalize(vec3(0.7, 0.1, -0.5))), 0.0);
+	float light = 0.42 + 0.68 * key + 0.24 * fill;
+	float recess = mix(1.0, 0.80, v_level);
+	// Low contrast bands, derivative-filtered before fine levels become subpixel.
+	float phase = UV.x * 12.0 + v_level * 2.0;
+	float band = 1.0 - 0.045 * cos(phase * 6.2831853) / (1.0 + 4.0 * fwidth(phase));
+	ALBEDO = texture(ramp, vec2(fract(v_u), 0.5)).rgb * v_shade * brightness * light * recess * band;
 }

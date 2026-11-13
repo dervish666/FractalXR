@@ -467,6 +467,8 @@ build). `godot` installs headless Godot 4.7.2, imports the project, then require
 harnesses cannot run on a runner, because headless Godot has no RenderingDevice. They are
 your job before a push.
 
+IFS rules, sources, geometry costs and verification evidence are in [ifs-variety.md](../docs/ifs-variety.md).
+
 ## Tools
 
 Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, parse error or
@@ -482,7 +484,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `rooms.sh` | Regenerates `data/rooms.json`: each bulb's measured extent and best enclosed room. Headless, a few minutes. | `ROOMS PASS bulbs=N`. Run after `node tools/export-presets.mjs`. |
 | `orbit_check.sh` | Headless maths: GROUND world and fractal mappings are inverses, the orbit trace iterates correctly, the deepest zoom stage keeps its texel bookkeeping. | `MAPCHECK`, `ORBITCHECK` and `DEEPCHECK` lines all say PASS. The script pipes through grep, so read the lines, the exit code is grep's. |
 | `tree_check.sh` | Headless geometry: every tree shape at default depth, a depth-0 control that must build nothing, forest branch cap and LOD ladder. | `TREECHECK PASS`. Same grep caveat as `orbit_check.sh`. |
-| `ifs_check.sh` | Numeric checks for `FractalIFS`. | `IFSCHECK PASS failures=0`. |
+| `ifs_check.sh` | Numeric checks for `FractalIFS`, shared endpoint seals, and edit/undo/DIVE on all 13 presets. | `IFSCHECK PASS failures=0`. |
 | `startup_check.sh` | First rendered loading view, then content setup; composition-layer pose, hide/show, menu reparent and cleanup on desktop. | `STARTUPCHECK PASS failures=0 control=FAIL`. Quest OS splash, compositor handoff and launch-intent latency still need the headset. |
 | `logic_check.sh` | `main.gd` logic through the real scene: resume parsing, the splat guard, drift stride, snap-turn re-arm and the surround snap, RESET then UNDO in IFS, glide and ground grip stopping under the help card; focus-loss signals, pointer hiding, stopped locomotion and help recovery. Windowed. Headset only, no check: a preset-load failure showing its message, and resumed passthrough showing the room. | `LOGICCHECK PASS failures=0`; its broken control must fail. |
 | `ground_check.sh` | `ground.glsl` df32 and f32 fills against a 64-bit CPU port, read back from the GPU. Windowed. | `GROUNDCHECK PASS stage=N`. |
@@ -498,7 +500,8 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `forest_shot.sh` | A small planted forest: sowing, ring, eye clearance, branch cap, governor. | `FORESTSHOT` lines, exit 0. |
 | `avenue_shot.sh` | TREE's avenue, standing and walking: sow and walk cost, recycles, far trees. | `AVENUESHOT` lines, exit 0. |
 | `tree_look_shot.sh` | FLOOR and BARK shots and their GPU time on this Mac. | Run finishes, exit 0. Ratios only, not Quest milliseconds. |
-| `ifs_shot.sh` | Standalone `FractalIFS` captures. | Exit 0, no missing PNG. |
+| `ifs_variety_cost.sh` | Desktop IFS timing at fixed camera and resolution. Optional baseline generated from git as described in `../docs/ifs-variety.md`. | `IFSVARIETYCOST DONE`; GPU time prints `unavailable` when unsupported. |
+| `ifs_shot.sh` | Standalone `FractalIFS` captures, outside and clipped interior views of every preset. | Exit 0, no missing PNG. |
 | `ifs_mode_shot.sh` | IFS mode through the real scene: capture plus mode-pair and input assertions (sculpt, undo, shapes). | `IFSMODE` lines, no failed assertion, every PNG present. |
 | `ifs_family_shot.sh` | BY RULE (echo placement), room size and DIVE through the real scene. | Exit 0, no failed check. |
 | `ifs_echo_shot.sh` | IFS ECHOES captures. | Exit 0, no missing PNG. |

@@ -13,6 +13,16 @@ All notable changes to FractalXR are documented here. Format based on
   global-transform reads before tree entry. Panels retain their world poses and visibility.
 - Debug and release exports require the OS splash metadata and the exact PNG asset in the APK.
 
+### IFS sculptures, 2026-11-13
+
+- Beam ends now meet shared vertex nodes. Rounded tubes replace square beams, with directional
+  surface shading, depth darkening and filtered procedural bands. Mirrored copies draw both sides.
+- The gallery has 13 sculptures. New entries include a Sierpinski tetrahedron, square pyramid,
+  octahedron flake, Menger frame sponge, Jerusalem cube, 3D Vicsek, Cantor dust and Mosely snowflake.
+  Mirror masks avoid duplicate copies on symmetry planes. Every shape keeps editing and DIVE.
+- EVOLVE controls slow contraction breathing, twisting and radial drift. It pauses for edits and
+  DIVE. Sculptures open 32 cm wide, centred 60 cm away. The gallery atlas has been rebaked.
+
 ### Store readiness, 2026-11-13
 
 - System dash and session shutdown hide pointers, release grabs and stop locomotion. Snap turn

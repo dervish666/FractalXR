@@ -276,14 +276,12 @@ const IFS_ROOM_CLEAR := 0.36
 ## Tabletop framing. The IFS is real geometry in construction units, so its scale comes from
 ## its own published bounds rather than from the particle cloud's measured extent, which
 ## describes a flame that is not being drawn.
-## 0.6 m across with its centre 0.8 m out puts the near face about half a metre from the
-## eyes: close enough to reach into, far enough to focus on. The first values tried put the
-## centre at 0.55 m, which left the near face 0.25 m away and filled the whole view.
-const IFS_WIDTH_M := 0.6          # how wide the sculpture arrives, in metres
-const IFS_DISTANCE := 0.8         # to the centre, along the viewer's forward axis
-const IFS_DROP := 0.28            # below the eye line, like something set down on a table
-## Recursion rungs. 3 is the default: 585 frames and ~84k triangles, the rung IFS-1
-## captured. 4 is 4,681 frames and is the rung worth measuring on the headset.
+## A 32 cm sculpture at 60 cm is hand-sized and within reach. Its near face stays
+## over 40 cm from the eyes, even before the slight downward placement.
+const IFS_WIDTH_M := 0.32
+const IFS_DISTANCE := 0.60
+const IFS_DROP := 0.18
+## Recursion rungs. Each preset supplies its own opening and live-rebuild rung.
 const IFS_DETAIL := [1, 2, 3, 4]
 ## Only the fallback now. Each preset carries the rung it opens at, because the branching
 ## factor differs between them and the same rung is not the same number of frames.
@@ -965,7 +963,7 @@ func _reset_ifs_shape() -> void:
 	ifs_edit.refresh()
 
 
-## The five sculptures. A preset is a new rule and often a new seed frame, so it arrives with
+## The sculpture gallery. A preset is a new rule and often a new seed frame, so it arrives with
 ## the mirrors back at the origin, the depth back at 1x and nothing left to undo, at whatever
 ## rung that preset says lands in the comfortable range for its branching factor.
 func _cycle_ifs_preset(d: int) -> void:
@@ -1010,10 +1008,8 @@ func _set_ifs_dive(on: bool) -> void:
 	ifs.set_clip(ifs_room or ifs_dive.on)
 
 
-## Room size: the construction origin, the clearest point of every preset (a grid search found
-## none clearer), at the eyes, and the lowest beam on the floor, so the scale is the eye height
-## over how far the shape reaches below its centre, kept inside IFS_ROOM_M. Never so small that
-## a beam starts inside the clip sphere: CROSS seated needs that (tools/ifs_check.sh).
+## Room size centres the sculpture on the eyes and caps its width at four metres.
+## Dense centred families can meet the eye position; the room shader clips those beams.
 func _ifs_room_scale(eye_h: float) -> float:
 	var span := maxf(ifs.bounds.size.x, ifs.bounds.size.y)
 	if span < 1e-3:
