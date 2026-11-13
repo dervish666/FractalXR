@@ -22,7 +22,36 @@ MODES = {"FLAME", "BULB", "GROUND", "TREE", "IFS"}
 # ffmpeg xfade transitions that read well on fractal material; "cut" is a straight join.
 TRANSITIONS = {"cut", "fade", "fadeblack", "fadewhite", "dissolve", "zoomin", "circleopen",
                "circleclose", "radial", "hblur", "fadegrays", "smoothup", "smoothdown",
-               "smoothleft", "smoothright", "distance"}
+               "smoothleft", "smoothright", "distance", "fadefast", "fadeslow", "diagtl",
+               "diagtr", "diagbl", "diagbr", "vertopen", "horzopen"}
+# Transitions built here as xfade custom expressions over yuv420p (TV range: Y 16-235, chroma
+# centred on 128). P runs 1 to 0 across the overlap, so 1-P is the progress.
+#   flash: a hard cut at the midpoint under a white bloom that peaks there, sharper than
+#     fadewhite, which dims both shots towards white.
+#   leak: a crossfade with a warm light leak, a soft orange-white band that sweeps across the
+#     frame on a slight diagonal and is brightest at the midpoint.
+#   dip: to black and back, black from the midpoint to three quarters and the next shot in by
+#     the end. ffmpeg's fadeblack is asymmetric: over a second its black sat 0.15 to 0.35 s in,
+#     so a fade meant to be black on the one-beat break was already lifting through it.
+#   No st()/ld(): xfade runs slice threads over one shared expression, and its registers race
+#   (horizontal streaks through both shots). Each term is spelled out instead.
+_FLASH_CUT = "if(gt(P,0.5),A,B)"
+_FLASH_GLOW = "pow(1-abs(2*P-1),2.5)"
+_LEAK_D = "(X/W+0.35*Y/H-(1.7*(1-P)-0.35))"
+_LEAK_GLOW = f"(exp(-{_LEAK_D}*{_LEAK_D}/0.045)*sin(PI*(1-P))*0.9)"
+_LEAK_MIX = "(A*P+B*(1-P))"
+_DIP_A = "max(0,1-2*(1-P))"
+_DIP_B = "min(1,max(0,4*(1-P)-3))"
+CUSTOM = {
+    "dip": (f"if(eq(PLANE,0),16+(A-16)*{_DIP_A}+(B-16)*{_DIP_B},"
+            f"128+(A-128)*{_DIP_A}+(B-128)*{_DIP_B})"),
+    "flash": (f"if(eq(PLANE,0),{_FLASH_CUT}+(235-{_FLASH_CUT})*{_FLASH_GLOW},"
+              f"{_FLASH_CUT}+(128-{_FLASH_CUT})*{_FLASH_GLOW})"),
+    "leak": (f"if(eq(PLANE,0),{_LEAK_MIX}+(235-{_LEAK_MIX})*{_LEAK_GLOW},"
+             f"if(eq(PLANE,1),{_LEAK_MIX}+(92-{_LEAK_MIX})*{_LEAK_GLOW},"
+             f"{_LEAK_MIX}+(172-{_LEAK_MIX})*{_LEAK_GLOW}))"),
+}
+TRANSITIONS |= set(CUSTOM)
 TRACKS = {"colour_cycle", "sim_speed", "ground_zoom", "ground_hue", "ifs_depth", "bulb_clock",
           "subject_pos", "subject_scale", "subject_rot", "subject_turn"}
 EVENTS = {"theme", "flame_morph", "ifs_morph", "dive", "galaxy", "cycle"}
@@ -105,6 +134,8 @@ def validate(data, fps):
                 raise ValueError(f"{sid}: bad event {e}")
         if not isinstance(s.get("post", ""), str):
             raise ValueError(f"{sid}: post must be an ffmpeg filter string")
+        if not isinstance(s.get("samples", 1), int) or not 1 <= s.get("samples", 1) <= 16:
+            raise ValueError(f"{sid}: samples must be a whole number from 1 to 16")
         if s["mode"] == "GROUND" and (len(s.get("ground_centre", [])) != 2 or not s.get("ground_wpu", 0) > 0):
             raise ValueError(f"{sid}: GROUND needs ground_centre and a positive ground_wpu")
         tr = s.get("transition", data.get("transition", {"type": "fade", "seconds": 0.5}))
@@ -147,11 +178,17 @@ def render_shot(base, snapshot, index, shot, args, out, kind):
                      'window/stretch/mode="viewport"\nwindow/stretch/aspect="keep"\n')
     try:
         if kind == "movie":
+            # Subframes arrive K per frame; tmix averages each run of K and select keeps the
+            # frame where a run completes, back at the clip's own rate.
+            samples = shot.get("samples", 1)
+            average = (f"tmix=frames={samples},select='eq(mod(n\\,{samples})\\,{samples - 1})',"
+                       f"setpts=N/({args.fps}*TB)," if samples > 1 else "")
             encoder = subprocess.Popen(
                 ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo",
-                 "-pix_fmt", "rgba", "-s", args.resolution, "-r", str(args.fps),
+                 "-pix_fmt", "rgba", "-s", args.resolution, "-r", str(args.fps * samples),
                  "-i", f"tcp://127.0.0.1:{port}?listen=1&listen_timeout={args.timeout * 1000}",
-                 "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+                 "-vf", f"{average}scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+                 "-r", str(args.fps),
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", *COLOUR, str(clip)],
                 stderr=(out / f"{name}.ffmpeg.log").open("w"))
         with logpath.open("w") as log:
@@ -174,6 +211,10 @@ def render_shot(base, snapshot, index, shot, args, out, kind):
         video = next(s for s in probe(clip)["streams"] if s["codec_type"] == "video")
         if (video["width"], video["height"]) != (width, height) or int(video["nb_read_frames"]) != frames:
             raise RuntimeError(f"{name}: wrong clip size or frame count {video['width']}x{video['height']} {video['nb_read_frames']}")
+        if shot.get("samples", 1) > 1:
+            # Godot saved its mid-shot still from one subframe; take the averaged frame instead.
+            run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(clip), "-vf",
+                 f"select='eq(n\\,{frames // 2})'", "-frames:v", "1", "-q:v", "2", str(out / f"{name}.jpg")])
     settle = re.search(r"settle_frames=(\d+)", text)
     return dict(id=name, mode=shot["mode"], preset=shot["preset"], frames=frames,
                 duration=frames / args.fps, settle_frames=int(settle.group(1)) if settle else 0)
@@ -270,7 +311,8 @@ def assemble(data, shots, manifest, out, args):
             graph.append(f"[{prev}][s{i}]concat=n=2:v=1:a=0,settb=1/{fps}[{label}]")
         else:
             offset = (total - overlap) / fps
-            graph.append(f"[{prev}][s{i}]xfade=transition={kind}:duration={overlap / fps:.6f}:offset={offset:.6f}[{label}]")
+            how = f"custom:expr='{CUSTOM[kind]}'" if kind in CUSTOM else kind
+            graph.append(f"[{prev}][s{i}]xfade=transition={how}:duration={overlap / fps:.6f}:offset={offset:.6f}[{label}]")
         cuts.append(dict(into=manifest[i]["id"], transition=kind, at=round((total - overlap) / fps, 3),
                          seconds=round(overlap / fps, 3)))
         total += manifest[i]["frames"] - overlap
@@ -419,7 +461,18 @@ def main():
                          duration=frames / args.fps, reused=True)
         else:
             print(f"TRAILER rendering {shot['id']} {shot['mode']} / {shot['preset']}", flush=True)
-            entry = render_shot(base, snapshot, i, shot, args, out, kind)
+            try:
+                entry = render_shot(base, snapshot, i, shot, args, out, kind)
+            except RuntimeError as error:
+                # The frame socket has dropped at frame 0 twice in about forty clips (ffmpeg
+                # reads a short packet, Godot reports the connection lost). The shot is
+                # deterministic, so a second run is the same clip. One retry, said aloud with
+                # the first run's failure line, since the retry overwrites its logs.
+                log = out / f"{shot['id']}.log"
+                why = [l for l in log.read_text(errors="replace").splitlines()
+                       if "TRAILERSHOT FAIL" in l] if log.exists() else []
+                print(f"TRAILER retrying {shot['id']} after: {error} {why[:1]}", flush=True)
+                entry = render_shot(base, snapshot, i, shot, args, out, kind)
             if kind == "movie":
                 keys[shot["id"]] = key
                 cache.write_text(json.dumps(keys, indent=1) + "\n")

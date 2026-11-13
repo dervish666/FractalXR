@@ -15,6 +15,15 @@ extends SceneTree
 ##   raw RGBA frames. (FileAccess cannot open a FIFO, and a socket needs no disk.)
 ##   kind "strip": the whole shot is simulated, and STRIP_N evenly spaced frames are saved as
 ##   PNGs under <output>/strips/, for judging motion without encoding.
+##
+## A shot with "samples": K renders K subframes for every recorded frame, spread across
+## "shutter" (a share of the frame interval, default 0.5) and centred on the frame's time, with
+## the app clock stepped to each one. A movie streams all K and ffmpeg averages them (tmix in
+## trailer.py). A settled flame is frozen in the app (STABILITY "frozen"), which would make every
+## subframe the same picture, so a sampled FLAME shot steps the whole cloud once more per
+## subframe with no reseeding (_tick): each subframe is a fresh draw from the attractor, and the
+## averaged frame has K times the points and about 1/sqrt(K) of the grain. A strip saves the
+## last subframe, so strips still show single-sample grain.
 const STRIP_N := 6
 ## Extra unrecorded frames allowed per recorded frame while the ground or forest catches up.
 const SETTLE_MAX := 24
@@ -37,6 +46,9 @@ var _orbit: Dictionary = {}
 ## The subject's pose once settled; subject_turn spins it about its own centre from here.
 var _subject_base := Transform3D()
 var _turn_on := false
+## A FLAME shot with samples > 1: keep the settled cloud iterating (see the header).
+var _resample := false
+var _settled_once := false
 
 
 func _init() -> void:
@@ -94,6 +106,7 @@ func _run() -> void:
 		return
 	_pose(0.0)
 	_hide_ui()
+	_resample = String(shot["mode"]) == "FLAME" and int(shot.get("samples", 1)) > 1
 	_events = shot.get("events", []).duplicate()
 	_events.sort_custom(func(a, b): return float(a["at"]) < float(b["at"]))
 	var warm_dt := float(shot.get("warmup_dt", 1.0 / fps))
@@ -115,6 +128,7 @@ func _run() -> void:
 		_die("shot did not settle: %s" % main.cloud.get_error())
 		return
 	_after_settle()
+	_settled_once = true
 	# A settled scene can still be easing in (a SOLID mesh grows in over 0.35 s): run on,
 	# unrecorded, at the first pose.
 	for i in roundi(float(shot.get("hold", 0.6)) * fps):
@@ -150,31 +164,45 @@ func _run() -> void:
 	for k in STRIP_N:
 		strip_at[roundi(float(k) * (frames - 1) / float(STRIP_N - 1))] = k
 	var settles := 0
+	var samples := maxi(1, int(shot.get("samples", 1)))
+	var shutter := clampf(float(shot.get("shutter", 0.5)), 0.0, 1.0)
+	# The app clock steps from subframe to subframe, so it always reads the shot time.
+	var clock := 0.0
 	for frame in frames:
-		var t := float(frame) / fps
-		_fire(t)
-		_apply_tracks(t)
-		_pose(t)
-		_tick(_track("sim_speed", t, 1.0) / fps)
-		await RenderingServer.frame_post_draw
-		var extra := 0
-		while extra < SETTLE_MAX and not _settled(false):
-			extra += 1
-			_settle_tick()
-			await process_frame
+		var img: Image
+		for k in samples:
+			# Subframes centred on the frame's time; one sample is the frame time itself.
+			var t := float(frame) / fps
+			if samples > 1:
+				t += ((float(k) + 0.5) / samples - 0.5) * shutter / fps
+			_fire(t)
+			_apply_tracks(t)
+			_pose(t)
+			# The first frame has always advanced one step, as before subframes existed.
+			var dt := 1.0 / fps if frame == 0 and k == 0 else t - clock
+			clock = t
+			_tick(_track("sim_speed", t, 1.0) * maxf(dt, 0.0))
 			await RenderingServer.frame_post_draw
-		settles += extra
-		var img := root.get_texture().get_image()
-		if img.get_size() != size:
-			_die("frame size changed")
-			return
-		if kind == "movie":
-			if img.get_format() != Image.FORMAT_RGBA8:
-				img.convert(Image.FORMAT_RGBA8)
-			if sink.put_data(img.get_data()) != OK:
-				_die("encoder connection lost at frame %d" % frame)
+			var extra := 0
+			while extra < SETTLE_MAX and not _settled(false):
+				extra += 1
+				_settle_tick()
+				await process_frame
+				await RenderingServer.frame_post_draw
+			settles += extra
+			img = root.get_texture().get_image()
+			if img.get_size() != size:
+				_die("frame size changed")
 				return
-		elif strip_at.has(frame):
+			if kind == "movie":
+				if img.get_format() != Image.FORMAT_RGBA8:
+					img.convert(Image.FORMAT_RGBA8)
+				if sink.put_data(img.get_data()) != OK:
+					_die("encoder connection lost at frame %d" % frame)
+					return
+			if k < samples - 1:
+				await process_frame
+		if kind == "strip" and strip_at.has(frame):
 			var path := out.path_join("strips/%s_%d.png" % [shot["id"], strip_at[frame]])
 			if img.save_png(path) != OK:
 				_die("cannot save %s" % path)
@@ -185,8 +213,8 @@ func _run() -> void:
 			await process_frame
 	if sink != null:
 		sink.disconnect_from_host()
-	print("TRAILERSHOT PASS id=%s frames=%d size=%dx%d settle_frames=%d" % [
-		shot["id"], frames, size.x, size.y, settles])
+	print("TRAILERSHOT PASS id=%s frames=%d samples=%d size=%dx%d settle_frames=%d" % [
+		shot["id"], frames, samples, size.x, size.y, settles])
 	quit()
 
 
@@ -204,6 +232,10 @@ func _configure() -> bool:
 				if shot.has("particles"):
 					main.particle_idx = int(shot["particles"])
 					main.cloud.set_count(int(main.TEX_SIZE * main.TEX_SIZE * main.PARTICLE_STEPS[main.particle_idx]))
+				# Past the PARTICLE ladder (its top is 0.6 of the texture): a share of every
+				# particle the texture holds, for an offline shot that can afford them.
+				if shot.has("particle_share"):
+					main.cloud.set_count(int(main.TEX_SIZE * main.TEX_SIZE * clampf(float(shot["particle_share"]), 0.05, 1.0)))
 				main._load_preset(idx)
 				main.point_idx = int(shot.get("point_style", 3))
 				main.bright_idx = int(shot.get("bright", main.bright_idx))
@@ -211,6 +243,7 @@ func _configure() -> bool:
 				main._apply_exposure()
 				if shot.has("flame_echoes"):
 					main.flame_echoes.set_step(int(shot["flame_echoes"]))
+					main._place_flame_echoes()
 		"bulb":
 			var entries: Array = main.library.bulbs
 			for i in entries.size():
@@ -286,6 +319,18 @@ func _configure() -> bool:
 	if idx < 0:
 		_die("unknown %s preset '%s'" % [shot["mode"], name])
 		return false
+	if shot.has("sky"):
+		# One of the baked flame skies (art/skies), hung behind the shot as SKY PICK does.
+		var pick := -1
+		for i in main.flame_sky.presets.size():
+			if String(main.flame_sky.presets[i]["name"]).nocasecmp_to(String(shot["sky"])) == 0:
+				pick = i + 1
+		if pick < 0:
+			_die("unknown sky '%s'" % shot["sky"])
+			return false
+		main.flame_sky.set_pick(pick)
+		main.sky_on = true
+		main.sky_bulb_on = true
 	_apply_subject(0.0)
 	main.theme_idx = int(shot.get("theme", -1))
 	main._apply_palette()
@@ -344,6 +389,17 @@ func _settle_tick() -> void:
 func _tick(dt: float) -> void:
 	main._tick_cycle(dt)
 	main._process_frame(dt)
+	# The app's own iterate has run by now (call_on_render_thread runs at once on a
+	# single-threaded renderer): a no-op on a frozen cloud, a slab of it in a morph. Step it once
+	# more with every particle moving and nothing reseeded, so each subframe is a fresh sample
+	# and a morphing cloud keeps up with its genome. Not before the shot has settled: the first
+	# settle is the app's own converge from a seed ball.
+	if _resample and _settled_once:
+		var src := main.cloud.source as FlameSource
+		if src != null:
+			src.update_mod = 1
+			src.reseed_prob = 0.0
+			RenderingServer.call_on_render_thread(main.cloud.iterate)
 	if main._palette_dirty:
 		main._palette_dirty = false
 		main._apply_palette()
