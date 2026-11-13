@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import struct
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -64,6 +65,9 @@ def apk(dump, archive):
     splash_type = root.findall("application/meta-data[@name='com.oculus.ossplash.type']")
     if len(splash_type) != 1 or splash_type[0].get("value") != "mono":
         raise ValueError("APK requires mono system splash")
+    splash_color = root.findall("application/meta-data[@name='com.oculus.ossplash.colorspace']")
+    if len(splash_color) != 1 or splash_color[0].get("value") != "Rec.709":
+        raise ValueError("APK requires Rec.709 system splash")
     with zipfile.ZipFile(archive) as source:
         png = source.read("assets/vr_splash.png")
     expected = Path(__file__).resolve().parents[1] / "art/icon_512.png"
@@ -90,7 +94,29 @@ def apk(dump, archive):
             launchers.append(activities.get(qualified(target)))
     if not launchers or any(n is None or n.get("excludeFromRecents") != "true" for n in launchers):
         raise ValueError("APK launch activity requires excludeFromRecents=true")
-    print("MANIFEST APK PASS android.hardware.vr.headtracking required=true launch activity excludeFromRecents=true ossplash=true mono PNG=512x512")
+    print("MANIFEST APK PASS android.hardware.vr.headtracking required=true launch activity excludeFromRecents=true ossplash=true mono colorspace=Rec.709 PNG=512x512")
+
+
+def controls(dump, archive):
+    apk(dump, archive)
+    original = Path(dump).read_text()
+    with tempfile.TemporaryDirectory() as directory:
+        bad = Path(directory) / "manifest.txt"
+        for label, old, new in [
+            ("wrong-colorspace", "Rec.709", "P3"),
+            ("missing-colorspace", "com.oculus.ossplash.colorspace", "com.oculus.unused.colorspace"),
+        ]:
+            if old not in original:
+                raise ValueError(f"cannot construct {label} control")
+            bad.write_text(original.replace(old, new))
+            try:
+                apk(bad, archive)
+            except ValueError as error:
+                if "requires Rec.709 system splash" not in str(error):
+                    raise
+            else:
+                raise ValueError(f"accepted {label} control")
+    print("MANIFEST CONTROLS PASS rejected=2 wrong-colorspace=FAIL missing-colorspace=FAIL")
 
 
 if __name__ == "__main__":
@@ -99,7 +125,9 @@ if __name__ == "__main__":
             template(*sys.argv[2:])
         elif len(sys.argv) == 4 and sys.argv[1] == "apk":
             apk(*sys.argv[2:])
+        elif len(sys.argv) == 4 and sys.argv[1] == "controls":
+            controls(*sys.argv[2:])
         else:
-            raise ValueError("usage: manifest_check.py template android_source.zip AndroidManifest.xml | apk aapt2-dump.txt app.apk")
+            raise ValueError("usage: manifest_check.py template android_source.zip AndroidManifest.xml | apk|controls aapt2-dump.txt app.apk")
     except (OSError, ValueError, zipfile.BadZipFile, KeyError) as error:
         sys.exit(f"[build] manifest check failed: {error}")

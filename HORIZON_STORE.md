@@ -55,6 +55,11 @@ permission, and then the install screen asks for something.
   (`godot/art/icon_512.png`, existing 512x512 mono PNG) into `assets/vr_splash.png` and adds
   application metadata `com.oculus.ossplash=true` and type `mono`. No manifest-template
   override is needed. Every export checks both the manifest and the exact packaged image.
+  **13 November headset result:** the owner sees no OS splash in the sideloaded debug build,
+  despite a correct manifest and PNG. Published sources do not establish a store-only
+  restriction. See [the investigation](godot/SPLASH_RESEARCH.md) for fetched sources, the
+  removed unused Mobile pipeline compile, and the tiny boot-scene fallback. The OS-splash
+  failure remains unresolved.
   Meta's [native splash guide](https://developers.meta.com/vr/documentation/native/android/mobile-splash/)
   (updated 2026-10-09) requires PNG and the case-sensitive asset name, with no fixed mono
   resolution. Aspect ratio determines displayed size; resolution determines sharpness.

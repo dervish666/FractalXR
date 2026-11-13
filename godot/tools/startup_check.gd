@@ -25,6 +25,8 @@ func _run() -> void:
 		_check(main.cloud.get_parent() == null, "cloud setup preceded first draw")
 		_check(main.library.count() == 0, "JSON loaded before first draw")
 		_check(main.menu._vp == null, "menu built before first draw")
+		_check(main.tonemap._rd == null and not main.tonemap._pipeline.is_valid(),
+			"Mobile startup compiled the unused flam3 compute pass")
 		_check(main.hud.visible and main.hud.text == "Loading FractalXR...", "loading label absent")
 		root.get_texture().get_image().save_png("res://.spike-out/startup_loading.png"), CONNECT_ONE_SHOT)
 	root.add_child(main)
