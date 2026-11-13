@@ -34,6 +34,9 @@ var _galaxy := {}
 var _cam_keys: Array = []
 var _cam_ease := Vector2(1, 1)
 var _orbit: Dictionary = {}
+## The subject's pose once settled; subject_turn spins it about its own centre from here.
+var _subject_base := Transform3D()
+var _turn_on := false
 
 
 func _init() -> void:
@@ -119,7 +122,14 @@ func _run() -> void:
 		_tick(1.0 / fps)
 		await RenderingServer.frame_post_draw
 		await process_frame
+	_subject_base = main.cloud.transform
+	_turn_on = shot.get("tracks", {}).has("subject_turn")
 	size = root.get_texture().get_size()
+	var want := Vector2i(ProjectSettings.get_setting("display/window/size/viewport_width"),
+		ProjectSettings.get_setting("display/window/size/viewport_height"))
+	if size != want:
+		_die("rendering at %s, not the requested %s" % [size, want])
+		return
 	if kind == "movie":
 		sink = StreamPeerTCP.new()
 		if sink.connect_to_host("127.0.0.1", int(args[5])) != OK:
@@ -243,7 +253,8 @@ func _configure() -> bool:
 				main.ifs.build(false)
 				main.ifs.finish_grow()
 				main.ifs_echoes.set_family(bool(shot.get("family", false)))
-				main.ifs_echoes.set_step(int(shot.get("echoes", 0)))
+				# ECHOES index; 5 is off. The app opens on 2 ("lots"), and 0 is "few", not none.
+				main.ifs_echoes.set_step(int(shot.get("echoes", 5)))
 				if bool(shot.get("room", false)):
 					main._set_ifs_room(true)
 				else:
@@ -429,6 +440,12 @@ func _apply_tracks(t: float) -> void:
 		main._bulb.clock = _track("bulb_clock", t, 0.0)
 	if tracks.has("subject_pos") or tracks.has("subject_scale") or tracks.has("subject_rot"):
 		_apply_subject(t)
+	if _turn_on:
+		var turn := _vtrack("subject_turn", t, Vector3.ZERO) * PI / 180.0
+		var b := _subject_base.basis
+		var s := b.get_scale()
+		main.cloud.transform = Transform3D(
+			(b.orthonormalized() * Basis.from_euler(turn)).scaled(s), _subject_base.origin)
 
 
 func _apply_subject(t: float) -> void:

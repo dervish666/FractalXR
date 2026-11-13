@@ -24,7 +24,7 @@ TRANSITIONS = {"cut", "fade", "fadeblack", "fadewhite", "dissolve", "zoomin", "c
                "circleclose", "radial", "hblur", "fadegrays", "smoothup", "smoothdown",
                "smoothleft", "smoothright", "distance"}
 TRACKS = {"colour_cycle", "sim_speed", "ground_zoom", "ground_hue", "ifs_depth", "bulb_clock",
-          "subject_pos", "subject_scale", "subject_rot"}
+          "subject_pos", "subject_scale", "subject_rot", "subject_turn"}
 EVENTS = {"theme", "flame_morph", "ifs_morph", "dive", "galaxy", "cycle"}
 FONT = PROJ / "fonts/SpaceGrotesk-VF.ttf"
 COLOUR = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
@@ -99,7 +99,7 @@ def validate(data, fps):
             if name not in TRACKS:
                 raise ValueError(f"{sid}: unsupported track {name}")
             keys = spec["keys"] if isinstance(spec, dict) else spec
-            check_keys(f"{sid}.{name}", keys, 3 if name in {"subject_pos", "subject_rot"} else 1)
+            check_keys(f"{sid}.{name}", keys, 3 if name in {"subject_pos", "subject_rot", "subject_turn"} else 1)
         for e in s.get("events", []):
             if e.get("do") not in EVENTS or not finite([e.get("at", -1)]) or e["at"] < 0:
                 raise ValueError(f"{sid}: bad event {e}")
@@ -137,11 +137,14 @@ def render_shot(base, snapshot, index, shot, args, out, kind):
                       "--position", "0,0", "--disable-vsync", "--script", "tools/trailer.gd",
                       "--", str(snapshot), str(index), str(args.fps), str(out), kind, str(port)]
     encoder = None
-    # The root viewport takes the project's viewport size, not the window's: an exclusive
-    # override sets it for this process and is always removed.
+    # The frame size must not depend on the screen: a 2560x1440 window is clamped on a smaller
+    # display, and the root viewport follows the window unless stretch mode is "viewport", which
+    # renders at the base size and only scales the result into the window. An exclusive
+    # override sets both for this process and is always removed.
     override = PROJ / "override.cfg"
     with override.open("x") as config:
-        config.write(f"[display]\nwindow/size/viewport_width={width}\nwindow/size/viewport_height={height}\n")
+        config.write(f"[display]\nwindow/size/viewport_width={width}\nwindow/size/viewport_height={height}\n"
+                     'window/stretch/mode="viewport"\nwindow/stretch/aspect="keep"\n')
     try:
         if kind == "movie":
             encoder = subprocess.Popen(
@@ -299,7 +302,25 @@ def assemble(data, shots, manifest, out, args):
     else:
         graph.append(f"[{prev}]null[v]")
     audio = len(manifest) + (1 if card else 0)
-    inputs += ["-f", "lavfi", "-t", f"{duration:.6f}", "-i", "anullsrc=r=48000:cl=stereo"]
+    music = data.get("music", {})
+    if args.music:
+        # Delay so the track's beats land on the cut's half-second grid, normalise loudness in two
+        # passes, fade the tail, then pad or trim to the picture.
+        delay = round(music.get("offset", 0.0) * 1000)
+        lufs = music.get("lufs", -14)
+        fade = music.get("fade_out", 2.0)
+        measured = loudness(args.music, lufs)
+        chain = (f"adelay={delay}:all=1," if delay > 0 else "") + (
+            f"loudnorm=I={lufs}:TP=-1.5:LRA=11:measured_I={measured['input_i']}:"
+            f"measured_TP={measured['input_tp']}:measured_LRA={measured['input_lra']}:"
+            f"measured_thresh={measured['input_thresh']}:offset={measured['target_offset']}:linear=true,"
+            f"aresample=48000,apad,atrim=0:{duration:.6f},afade=t=out:st={duration - fade:.3f}:d={fade}")
+        inputs += ["-i", str(args.music)]
+        graph.append(f"[{audio}:a]{chain}[a]")
+        audio_map = "[a]"
+    else:
+        inputs += ["-f", "lavfi", "-t", f"{duration:.6f}", "-i", "anullsrc=r=48000:cl=stereo"]
+        audio_map = f"{audio}:a:0"
     final = out / "FractalXR-trailer.mp4"
     rate = re.fullmatch(r"(\d+(?:\.\d+)?)([kM])", args.maxrate)
     if not rate:
@@ -307,13 +328,29 @@ def assemble(data, shots, manifest, out, args):
     bufsize = f"{float(rate.group(1)) * 2:g}{rate.group(2)}"
     (out / "filter-graph.txt").write_text(";\n".join(graph) + "\n")
     run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
-         "-filter_complex", ";".join(graph), "-map", "[v]", "-map", f"{audio}:a:0",
+         "-filter_complex", ";".join(graph), "-map", "[v]", "-map", audio_map,
          "-c:v", "libx264", "-preset", args.preset, "-crf", str(args.crf),
          "-maxrate", args.maxrate, "-bufsize", bufsize,
          "-profile:v", "high",
          "-pix_fmt", "yuv420p", *COLOUR, "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
          "-t", f"{duration:.6f}", "-movflags", "+faststart", str(final)])
     return final, duration, total, cuts
+
+
+def loudness(path, target):
+    """loudnorm's first pass: the track's measured loudness, fed to the second pass."""
+    text = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-af",
+         f"loudnorm=I={target}:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"],
+        capture_output=True, text=True, check=True).stderr
+    return json.loads(text[text.rindex("{"):text.rindex("}") + 1])
+
+
+def integrated_lufs(path):
+    text = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(path), "-map", "0:a",
+                           "-af", "ebur128", "-f", "null", "-"],
+                          capture_output=True, text=True, check=True).stderr
+    return float(re.findall(r"I:\s+(-?[\d.]+) LUFS", text)[-1])
 
 
 def contact_sheet(final, out, duration):
@@ -336,6 +373,8 @@ def main():
     parser.add_argument("--strips", action="store_true",
                         help="simulate every frame but save only six PNGs per shot, for judging motion fast")
     parser.add_argument("--reuse", action="store_true", help="keep existing clips that match the snapshot")
+    parser.add_argument("--music", type=Path,
+                        help="audio track for the cut, loudness-normalised and faded; silent AAC without it")
     parser.add_argument("--crf", type=int, default=18)
     parser.add_argument("--preset", default="slow")
     parser.add_argument("--maxrate", default="16M",
@@ -409,11 +448,16 @@ def main():
         if {s["mode"] for s in manifest} != MODES:
             raise RuntimeError("a full cut must include all five modes")
         sheet = contact_sheet(final, out, duration)
+        if args.music:
+            report["music"] = str(args.music.resolve())
+            report["lufs"] = integrated_lufs(final)
         report.update(duration=round(duration, 3), frames=frames, cuts=cuts,
                       bytes=final.stat().st_size, contact_sheet=str(sheet))
     report["wall_seconds"] = round(time.monotonic() - start, 2)
     (out / "render-report.json").write_text(json.dumps(report, indent=2) + "\n")
     tail = f" duration={report['duration']:.2f}s size={report['bytes']}" if full else ""
+    if "lufs" in report:
+        tail += f" lufs={report['lufs']:.1f}"
     print(f"TRAILER PASS shots={len(manifest)}{tail} wall={report['wall_seconds']:.2f}s output={out}")
 
 

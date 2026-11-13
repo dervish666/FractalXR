@@ -562,7 +562,9 @@ fades) and encodes the master with libx264 `-preset slow -crf 18` under a 16 Mb/
 (`--maxrate`; uncapped, the grain in the flame shots ran past 70 Mb/s), BT.709, plus a silent stereo
 AAC track for the owner to replace with music.
 
-The default cut is 13 shots and about 55 seconds at 2560x1440, 60 fps. Output goes to
+The default cut is 13 shots, 56.5 seconds at 2560x1440, 60 fps. Every duration and transition
+is a multiple of half a second, so each cut lands on a beat at 120 BPM; keep that when retiming
+to music. Output goes to
 `.spike-out/trailer/`: `FractalXR-trailer.mp4`, `contact-sheet.jpg` (the cut every two
 seconds), `filmstrips.jpg` and `filmstrips/<id>.jpg` (six frames across each clip), the clips,
 logs, `render-shots.json`, `filter-graph.txt`, `render-report.json` and `ffprobe.json`.
@@ -610,7 +612,10 @@ head at room size, tree trunk and avenue starting ahead along -z.
 - `tracks`: keyed values as `[[t, v], ...]` or `{"keys": ..., "ease": [in, out]}`:
   `colour_cycle` (the palette scroll global), `sim_speed` (multiplies the app clock: EVOLVE,
   DIVE, morphs, wind), `ground_zoom` (octaves from the start, about the point under the camera),
-  `ground_hue`, `ifs_depth`, `bulb_clock`, `subject_pos`, `subject_rot`, `subject_scale`.
+  `ground_hue`, `ifs_depth`, `bulb_clock`, `subject_pos`, `subject_rot`, `subject_scale`, and `subject_turn` (degrees, a spin about the
+  subject's own centre on top of wherever the mode placed it; the SOLID bulb's light turns with
+  it). A fast `colour_cycle` plus `theme` events about a second apart is how the bulb shots
+  keep their colour moving.
 - `events`, each `{"at": seconds, "do": ...}`: `theme` (`theme`, `seconds`: the app's theme
   cross-fade), `flame_morph` (`preset`, `seconds` rounded to the app's MORPH steps), `ifs_morph`
   (`preset`), `dive` (IFS DIVE held from then on), `galaxy` (`seconds`: GALAXY's grow), `cycle`
@@ -625,7 +630,8 @@ head at room size, tree trunk and avenue starting ahead along -z.
   `inside`, `march_steps`. GROUND: `ground_centre` and `ground_wpu` (required), `relief`,
   `height`, `ground_sky` (mirrored ceiling rung), `hue`, `iterations`, `render_hq`,
   `ground_turn`. TREE: `layout` (`hero`, `grove` or `avenue`), `count` (COUNT index), `mix`,
-  `floor`, `bark`, `wind`. IFS: `detail`, `evolve`, `echoes`, `family`, `room`, `dive`.
+  `floor`, `bark`, `wind`. IFS: `detail`, `evolve`, `echoes` (ECHOES index, 5 is off and the default here), `family`,
+  `room`, `dive`.
 
 ## History
 
