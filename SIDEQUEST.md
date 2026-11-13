@@ -47,9 +47,9 @@ godot/tools/make_store_art.py godot/art/candidates/vortex.png godot/art/candidat
 
 - Launcher icon: currently **Glacier**, the blue spiral. Swap it by re-running `make_icons.py`
   against a different candidate; `--keep` and `--air` control how tightly it crops to the core.
-- `godot/art/store/card_1024x576.png` — the listing artwork, the card shown in the library and on
+- `godot/art/store/card_1024x576.png`: the listing artwork, the card shown in the library and on
   the homepage. This is the one that decides whether anyone clicks.
-- `godot/art/store/background_1920x1080.png` — the listing background. Their guide is explicit:
+- `godot/art/store/background_1920x1080.png`: the listing background. Their guide is explicit:
   no text, no logos.
 
 **Screenshots and the trailer have to come out of the headset.** 3 to 6 of them, 16:9, and a
@@ -69,43 +69,47 @@ dozen people and finding out what breaks.
 
 **Title**: FractalXR
 
-**Summary**: Grab glowing fractals, walk a forest, and sculpt repeating worlds in VR.
+**Summary**: Hold a fractal in your hands, pull it open and walk through it.
 
-**Description** (their markdown subset permits bold, italic, lists and links):
+**Description** (their markdown subset: bold, italic, lists, links, no tables or HTML):
 
 ```
-FractalXR makes live fractals on your headset. Take hold of a cloud of light, grow it around
-you, explore a fractal floor, plant a forest, or reshape a repeating sculpture.
+FractalXR puts a fractal within arm's reach and lets you take hold of it. Every form is
+computed live on the headset, not played back from a video, so more detail appears as you
+bring it closer.
+
+Squeeze a grip to move and turn it. Squeeze both grips and pull your hands apart to scale it
+up and pass through the middle. Turn your left wrist toward your face for the menu.
 
 **Five modes**
 
-- FLAME has 13 fractal flames, breeding and morphing, with about a million points by default.
-  Grip to move one, use both grips to scale it, and pull a trigger to pick the next or previous
-  flame. GALAXY grows it around you; ECHOES and SKY fill the space.
-- BULB has 21 forms, including Mandelbulbs, Mandelboxes and quaternion Julia sets. They open
-  hand-sized. Grab and scale them, use the triggers to browse, and pick splats, lines, a solid
-  mesh or a marched surface under SURFACE.
-- GROUND has eight fractal families. Walk with the left stick, zoom and snap turn with the
-  right, drag with a grip, or point and pull a trigger to glide. JULIA explores the set at your
-  feet; ORBIT traces the point you aim at.
-- TREE has 13 species. The left trigger regrows the trees; the right plants at your pointer.
-  SOW fills a grove, AVENUE lays out rows at COUNT settings up to about 500 trees, and WALK
-  glides along them while you hold a trigger or push the right stick forward.
-- IFS makes repeating sculptures. Use EDIT and hold a trigger on a handle to sculpt, with UNDO
-  for the last edit. Both grips scale it. DIVE flies into a copy while you hold a trigger;
-  ROOM and ECHOES put the sculpture around you.
+- **FLAME.** A cloud of about a million glowing points. 13 flames, each morphing into the next.
+- **BULB.** 21 forms (Mandelbulbs, Mandelboxes, quaternion Julia sets) that open hand-sized,
+  drawn as soft splats, contour lines, a solid sculpture or a marched surface.
+- **GROUND.** A fractal floor that runs to the horizon. Eight families, each with its Julia
+  twin. Walk with the left stick, or point and pull a trigger to glide there.
+- **TREE.** 13 species that grow from the base and sway. Point at the floor and pull the right
+  trigger to plant one, or lay out an avenue of about 500.
+- **IFS.** A sculpture of mirrored frames. Turn on EDIT, hold a trigger on a handle and drag to
+  reshape it.
 
-Pick among 26 colour themes, let CYCLE move the colours, or turn on passthrough to see your
-room. Turn your left wrist toward your face for the menu. A controls card explains each mode
-on first launch, and HELP brings it back.
+**Also**
 
-**Early Access.** Free, native, and computed live on the headset. Tell me what breaks.
+- 26 colour themes, and CYCLE to keep them moving
+- Passthrough, so the fractal hangs in your room
+- No account, no permissions, no internet
+
+**Early Access.** Tell me what breaks.
+
+A controls card shows on first launch. HELP in the wrist menu brings it back.
 ```
 
-**Tags**: fractal, art, relaxing, psychedelic, passthrough, mixed reality, experience, sandbox
+**Tags**: fractal, art, relaxing, mixed reality, passthrough, sandbox, creative, psychedelic
+(the first five on the Meta store)
 **Devices**: Quest 3 and Quest 3S (3S untested) · **Position**: seated, standing and roomscale · **License**: free
-**Comfort**: moderate. Grabbing moves the fractal rather than you, but flying through it moves
-the whole world past your eyes, which some people will feel.
+**Comfort**: moderate. Grabbing moves the fractal, not you. GROUND, TREE's WALK, IFS DIVE and
+GALAXY move the world past you, with 30 degree snap turns and a tunnel vignette. FLAME and BULB
+at tabletop size are comfortable seated.
 
 ## 4. Before strangers touch it
 
