@@ -479,7 +479,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 |---|---|---|
 | `selftest.sh` | The compute chain on this machine's GPU: steps every preset, writes `.spike-out/selftest.png`. | `SELFTEST PASS`: no NaN, no escaping cloud, no collapse to a point, no flat-in-z genome, frame looks like a live chaos game. |
 | `parse_all.sh` | Parses every `.gd` under `scripts/` and `tools/`, plus a deliberately broken control. | `PARSEALL PASS`: zero errors, at least one file parsed, and the control failed as it must. |
-| `trailer.sh` | The store trailer, rendered offline through the real app from editable `data/trailer.json`: spline camera moves, keyed tracks and timed app events per shot, ffmpeg transitions, title card and fades. Writes an H.264 MP4 with silent AAC, per-shot filmstrips and a contact sheet under `.spike-out/trailer/`. `--strips` simulates every frame but saves six PNGs per shot for judging motion. | `TRAILER PASS`: every shot settled and rendered, no script or shader errors, every clip and the cut have the expected size and decoded frame count, H.264/AAC streams and duration validated with ffprobe, 30 to 120 seconds, all five modes. Watch the cut before publishing. |
+| `trailer.sh` | The store trailer, rendered offline through the real app from editable `data/trailer.json`: spline camera moves, keyed tracks and timed app events per shot, ffmpeg transitions, title card and fades. Writes an H.264 MP4 with AAC (silent, or `--music <file>` normalised to -14 LUFS and faded), per-shot filmstrips and a contact sheet under `.spike-out/trailer/`. `--strips` simulates every frame but saves six PNGs per shot for judging motion. | `TRAILER PASS`: every shot settled and rendered, no script or shader errors, every clip and the cut have the expected size and decoded frame count, H.264/AAC streams and duration validated with ffprobe, 30 to 120 seconds, all five modes. Watch the cut before publishing. |
 | `shader_check.sh` | Compiles the `.gdshader` files you pass (`tools/shader_check.sh shaders/a.gdshader ...`), headless. | One `SHADERCHECK <path> params=N` line per shader with `N` above 0. A shader with `params=0` or a `SHADER ERROR` did not compile. |
 | `de_check.sh` | The five bulb distance estimates: the marcher's shader copy against the CPU port (`BulbSource.de`), plus a hollow finder. | `DECHECK` line with a small `max_err` and `control=FAIL` (the wrong-parameter control must fail). Run after touching any of the three copies. |
 | `rooms.sh` | Regenerates `data/rooms.json`: each bulb's measured extent and best enclosed room. Headless, a few minutes. | `ROOMS PASS bulbs=N`. Run after `node tools/export-presets.mjs`. |
@@ -559,12 +559,21 @@ the root viewport and streams it raw over a local TCP socket to ffmpeg, which en
 are never recorded, so a fast zoom stays sharp. Movie Maker is not used: it records every drawn
 frame. ffmpeg then cuts the clips together in one filter graph (transitions, grade, title card,
 fades) and encodes the master with libx264 `-preset slow -crf 18` under a 16 Mb/s ceiling
-(`--maxrate`; uncapped, the grain in the flame shots ran past 70 Mb/s), BT.709, plus a silent stereo
-AAC track for the owner to replace with music.
+(`--maxrate`; uncapped, the grain in the flame shots ran past 70 Mb/s), BT.709, plus stereo AAC.
+With `--music <file>` the audio is that track, delayed by `music.offset`, normalised to
+`music.lufs` (default -14 LUFS, true peak -1.5 dB) by two-pass `loudnorm`, padded or trimmed to
+the picture and faded out over the last `music.fade_out` seconds (default 2). Without it the
+track is silent.
 
-The default cut is 13 shots, 56.5 seconds at 2560x1440, 60 fps. Every duration and transition
-is a multiple of half a second, so each cut lands on a beat at 120 BPM; keep that when retiming
-to music. Output goes to
+The default cut is 13 shots, 57.5 seconds at 2560x1440, 60 fps, timed to
+`.spike-out/music/take1.mp3`. That track measures 120 BPM with its kick 0.035 s past each half
+second (onsets in the low band, checked against the waveform); the 0.465 s offset puts every
+kick on a half-second multiple of the cut. Its sections, in cut time: quiet intro to the drop at
+16.5 s (the zoom into shot 04 lands), a one-beat break from 32.0 s (shot 09's fade is black),
+re-entry at 32.5 s, full energy until the release at 48.5 s (the white flash into the finale),
+then the outro decaying under the title. The other flashes, cuts and theme changes sit on beats.
+Every duration and transition is a multiple of a quarter second; when retiming to a new track,
+work out its beat grid first and keep cut points on it. Output goes to
 `.spike-out/trailer/`: `FractalXR-trailer.mp4`, `contact-sheet.jpg` (the cut every two
 seconds), `filmstrips.jpg` and `filmstrips/<id>.jpg` (six frames across each clip), the clips,
 logs, `render-shots.json`, `filter-graph.txt`, `render-report.json` and `ffprobe.json`.
@@ -576,6 +585,8 @@ bash godot/tools/trailer.sh --strips --resolution 960x540 --fps 30 --output godo
 bash godot/tools/trailer.sh --resolution 960x540 --fps 30 --preset veryfast --output godot/.spike-out/trailer/preview
 # After editing one shot: rerender only the clips whose JSON changed, then recut.
 bash godot/tools/trailer.sh --reuse
+# The release cut, with music.
+bash godot/tools/trailer.sh --reuse --music godot/.spike-out/music/take1.mp3
 # Clips and filmstrips of named shots only, no cut.
 bash godot/tools/trailer.sh --only 03-bulb-push,13-finale --output godot/.spike-out/trailer/review
 ```
@@ -591,7 +602,9 @@ Top level: `transition` (the default, `{"type": "fade", "seconds": 0.5}`), `fini
 (`fade_in` and `fade_out` seconds, `grade` as an ffmpeg filter string), and `title_card`
 (`text`, `line`, `hold` seconds before the end it starts fading in, `fade`, `y` as the text
 block's centre in frame heights, `size` in points at 1440p, `shade` for the dark pool behind
-it). `shots` is the cut, in order.
+it). `music` holds the `--music` settings (`offset` seconds of delay, `lufs`, `fade_out`) and,
+for the record only, the beat map the cut was timed to (`bpm`, `first_beat` in the source file,
+`drop`, `break`, `release` in cut time). `shots` is the cut, in order.
 
 Every shot has `id`, `mode`, a named `preset`, `duration` (seconds, including the overlap with
 its neighbours) and `camera`. Coordinates are metres, Y up. Before setup the head stands at

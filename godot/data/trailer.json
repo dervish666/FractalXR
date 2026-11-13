@@ -2,8 +2,9 @@
   "title": "FractalXR store trailer v2",
   "notes": "Metres, Y up, vertical FOV in degrees. Array order is cut order. Camera keys are times in seconds within the shot; see godot/README.md (Offline store trailer) for every field.",
   "transition": {"type": "fade", "seconds": 0.5},
-  "finish": {"fade_in": 0.25, "fade_out": 1.0, "grade": "vignette=angle=0.32"},
-  "title_card": {"text": "FractalXR", "line": "Fractals you can hold, walk through and stand inside", "hold": 5.0, "fade": 1.4, "y": 0.76, "shade": 0.55},
+  "finish": {"fade_in": 0.25, "fade_out": 1.5, "grade": "vignette=angle=0.32"},
+  "title_card": {"text": "FractalXR", "line": "Fractals you can hold, walk through and stand inside", "hold": 7.5, "fade": 1.4, "y": 0.76, "shade": 0.55},
+  "music": {"offset": 0.465, "lufs": -14, "fade_out": 2.0, "bpm": 120.0, "first_beat": 0.035, "drop": 16.5, "break": 32.0, "release": 48.5},
   "shots": [
     {
       "id": "01-infinite-zoom",
@@ -27,7 +28,7 @@
       "transition": {"type": "fade", "seconds": 0.5},
       "mode": "GROUND",
       "preset": "mandelbrot",
-      "duration": 4.5,
+      "duration": 4.25,
       "fov": 75,
       "theme": 2,
       "ground_centre": [-0.75, 0.1],
@@ -35,24 +36,24 @@
       "ground_sky": 2,
       "camera": {"ease": [0, 0], "keys": [
         {"t": 0, "pos": [0, 2.2, 12], "look": [0, 3.3, -30], "roll": -5},
-        {"t": 4.5, "pos": [4, 2.8, -30], "look": [8, 3.6, -75], "roll": 5}
+        {"t": 4.25, "pos": [4, 2.8, -30], "look": [8, 3.6, -75], "roll": 5}
       ]},
-      "tracks": {"ground_hue": [[0, 0], [4.5, 0.18]]}
+      "tracks": {"ground_hue": [[0, 0], [4.25, 0.18]]}
     },
     {
       "id": "03-bulb-push",
       "transition": {"type": "fadewhite", "seconds": 0.5},
       "mode": "BULB",
       "preset": "Classic",
-      "duration": 5.0,
+      "duration": 6.25,
       "fov": 50,
       "surface": 6,
       "camera": {"ease": [0.3, 0], "keys": [
         {"t": 0, "pos": [0.38, 1.66, 0.05], "look": [0, 1.45, -0.7]},
-        {"t": 5.0, "pos": [0.035, 1.5, -0.49], "look": [0, 1.45, -0.7]}
+        {"t": 6.25, "pos": [0.035, 1.5, -0.49], "look": [0, 1.45, -0.7]}
       ]},
-      "events": [{"at": 0.5, "do": "theme", "theme": 0, "seconds": 0.7}, {"at": 1.75, "do": "theme", "theme": 12, "seconds": 0.7}, {"at": 3.0, "do": "theme", "theme": 23, "seconds": 0.7}, {"at": 4.25, "do": "theme", "theme": 13, "seconds": 0.6}],
-      "tracks": {"subject_turn": {"keys": [[0, [0, 0, 0]], [5.0, [10, 75, 0]]], "ease": [0.4, 0]}, "colour_cycle": {"keys": [[0, 0.02], [5.0, 1.6]], "ease": [0.3, 0]}}
+      "events": [{"at": 0.75, "do": "theme", "theme": 0, "seconds": 0.7}, {"at": 2.25, "do": "theme", "theme": 12, "seconds": 0.7}, {"at": 3.75, "do": "theme", "theme": 23, "seconds": 0.7}, {"at": 5.25, "do": "theme", "theme": 13, "seconds": 0.5}],
+      "tracks": {"subject_turn": {"keys": [[0, [0, 0, 0]], [6.25, [12, 95, 0]]], "ease": [0.4, 0]}, "colour_cycle": {"keys": [[0, 0.02], [6.25, 2.0]], "ease": [0.3, 0]}}
     },
     {
       "id": "04-cathedral",
@@ -65,7 +66,7 @@
       "surface": 6,
       "camera": {"ease": [0, 0], "orbit": {"centre": [0, 1.45, -0.7], "radius": [0.6, 0.36], "height": [0.3, -0.04], "angle": [-80, 30], "roll": [-8, 6]}},
       "tracks": {"subject_turn": {"keys": [[0, [0, 0, 0]], [2.5, [0, -40, 15]]], "ease": [0, 0]}, "colour_cycle": {"keys": [[0, 0.1], [2.5, 1.1]], "ease": [0, 0]}},
-      "events": [{"at": 1.25, "do": "theme", "theme": 2, "seconds": 0.5}]
+      "events": [{"at": 1.5, "do": "theme", "theme": 2, "seconds": 0.5}]
     },
     {
       "id": "05-mercury",
@@ -85,12 +86,12 @@
       "transition": {"type": "cut"},
       "mode": "BULB",
       "preset": "Starflower",
-      "duration": 2.0,
+      "duration": 2.25,
       "fov": 45,
       "theme": 13,
       "surface": 6,
       "camera": {"ease": [0, 0.3], "orbit": {"centre": [0, 1.45, -0.7], "radius": [0.58, 0.33], "height": [0.25, 0.0], "angle": [-50, 50], "roll": [-10, 0]}},
-      "tracks": {"subject_turn": {"keys": [[0, [0, 0, 0]], [2.0, [0, 60, 0]]], "ease": [0, 0]}, "colour_cycle": {"keys": [[0, 0.5], [2.0, 1.5]], "ease": [0, 0]}},
+      "tracks": {"subject_turn": {"keys": [[0, [0, 0, 0]], [2.25, [0, 68, 0]]], "ease": [0, 0]}, "colour_cycle": {"keys": [[0, 0.5], [2.25, 1.6]], "ease": [0, 0]}},
       "events": [{"at": 1.0, "do": "theme", "theme": 17, "seconds": 0.5}]
     },
     {
@@ -98,20 +99,20 @@
       "transition": {"type": "fadewhite", "seconds": 0.5},
       "mode": "FLAME",
       "preset": "Ember",
-      "duration": 5.0,
+      "duration": 4.75,
       "fov": 45,
       "point_style": 3,
       "bright": 4,
       "particles": 3,
       "camera": {"ease": [0, 0.3], "orbit": {"centre": [0, 1.45, -2.6], "radius": [2.2, 1.55], "height": [0.2, 0.0], "angle": [-25, 25]}},
-      "events": [{"at": 0.9, "do": "flame_morph", "preset": "Orchid", "seconds": 3}]
+      "events": [{"at": 0.75, "do": "flame_morph", "preset": "Orchid", "seconds": 3}]
     },
     {
       "id": "08-flame-galaxy",
       "transition": {"type": "fade", "seconds": 0.5},
       "mode": "FLAME",
       "preset": "Nautilus",
-      "duration": 6.5,
+      "duration": 6.0,
       "fov": 65,
       "point_style": 3,
       "bright": 5,
@@ -119,9 +120,9 @@
       "post": "hqdn3d=1.5:1.5:5:5",
       "camera": {"ease": [0.2, 0.5], "keys": [
         {"t": 0, "pos": [0, 1.6, 0.8], "look": [0, 1.45, -2.6]},
-        {"t": 6.5, "pos": [0, 1.6, -0.7], "look": [0.8, 1.6, -3]}
+        {"t": 6.0, "pos": [0, 1.6, -0.7], "look": [0.8, 1.6, -3]}
       ]},
-      "events": [{"at": 0.2, "do": "galaxy", "seconds": 4.5}, {"at": 3.2, "do": "flame_morph", "preset": "Vortex", "seconds": 3}]
+      "events": [{"at": 0.2, "do": "galaxy", "seconds": 4.2}, {"at": 3.0, "do": "flame_morph", "preset": "Vortex", "seconds": 3}]
     },
     {
       "id": "09-avenue-rise",
@@ -152,13 +153,13 @@
       "transition": {"type": "fade", "seconds": 0.5},
       "mode": "IFS",
       "preset": "MENGER",
-      "duration": 4.0,
+      "duration": 3.5,
       "fov": 45,
       "theme": 7,
       "evolve": true,
       "msaa": true,
       "camera": {"ease": [0.2, 0], "orbit": {"centre": [0, 1.42, -0.6], "radius": [0.62, 0.3], "height": [0.22, 0.03], "angle": [55, 5]}},
-      "tracks": {"sim_speed": [[0, 6], [4.0, 6]]},
+      "tracks": {"sim_speed": [[0, 6], [3.5, 6]]},
       "echoes": 5
     },
     {
@@ -166,7 +167,7 @@
       "transition": {"type": "zoomin", "seconds": 0.5},
       "mode": "IFS",
       "preset": "MENGER",
-      "duration": 4.5,
+      "duration": 3.5,
       "fov": 75,
       "theme": 7,
       "msaa": true,
@@ -176,18 +177,18 @@
       "evolve": true,
       "camera": {"ease": [0, 1], "keys": [
         {"t": 0, "pos": [0, 1.6, 0], "look": [-0.6, 1.75, -1]},
-        {"t": 2.2, "pos": [0, 1.6, 0], "look": [0.1, 1.55, -1], "still": true},
-        {"t": 4.5, "pos": [0, 1.6, 0], "look": [0.15, 1.55, -1]}
+        {"t": 1.6, "pos": [0, 1.6, 0], "look": [0.1, 1.55, -1], "still": true},
+        {"t": 3.5, "pos": [0, 1.6, 0], "look": [0.15, 1.55, -1]}
       ]},
-      "tracks": {"sim_speed": [[0, 5], [4.5, 5]], "colour_cycle": [[0, 0], [4.5, 0.25]]},
-      "events": [{"at": 1.6, "do": "dive"}]
+      "tracks": {"sim_speed": [[0, 5], [3.5, 5]], "colour_cycle": [[0, 0], [3.5, 0.2]]},
+      "events": [{"at": 1.0, "do": "dive"}]
     },
     {
       "id": "12-octaflake",
       "transition": {"type": "cut"},
       "mode": "IFS",
       "preset": "OCTAFLAKE",
-      "duration": 3.5,
+      "duration": 4.5,
       "fov": 75,
       "theme": 2,
       "msaa": true,
@@ -197,9 +198,9 @@
       "evolve": true,
       "camera": {"ease": [0, 1], "keys": [
         {"t": 0, "pos": [0, 1.6, 0], "look": [0.5, 1.4, -1]},
-        {"t": 3.5, "pos": [0, 1.6, 0], "look": [0, 1.6, -1]}
+        {"t": 4.5, "pos": [0, 1.6, 0], "look": [0, 1.6, -1]}
       ]},
-      "tracks": {"sim_speed": [[0, 5], [3.5, 5]], "colour_cycle": [[0, 0.1], [3.5, 0.35]]},
+      "tracks": {"sim_speed": [[0, 5], [4.5, 5]], "colour_cycle": [[0, 0.1], [4.5, 0.45]]},
       "events": [{"at": 0, "do": "dive"}]
     },
     {
@@ -207,13 +208,13 @@
       "transition": {"type": "fadewhite", "seconds": 1.0},
       "mode": "BULB",
       "preset": "Quaternion",
-      "duration": 8.5,
+      "duration": 9.5,
       "fov": 40,
       "theme": 23,
       "surface": 6,
       "camera": {"ease": [0.3, 1], "orbit": {"centre": [0, 1.45, -0.7], "radius": [0.42, 0.62], "height": [0.06, 0.02], "angle": [-50, 15], "look_offset": [0, -0.085, 0]}},
-      "events": [{"at": 1.5, "do": "theme", "theme": 18, "seconds": 1.5}, {"at": 4.0, "do": "theme", "theme": 20, "seconds": 1.5}, {"at": 6.5, "do": "theme", "theme": 23, "seconds": 1.5}],
-      "tracks": {"subject_turn": {"keys": [[0, [0, 0, 0]], [8.5, [110, 0, 0]]], "ease": [0.5, 0]}, "colour_cycle": {"keys": [[0, 0.05], [8.5, 1.5]], "ease": [0.3, 0]}}
+      "events": [{"at": 1.5, "do": "theme", "theme": 18, "seconds": 1.5}, {"at": 4.0, "do": "theme", "theme": 20, "seconds": 1.5}, {"at": 6.5, "do": "theme", "theme": 23, "seconds": 1.5}, {"at": 8.5, "do": "theme", "theme": 18, "seconds": 1.5}],
+      "tracks": {"subject_turn": {"keys": [[0, [0, 0, 0]], [9.5, [125, 0, 0]]], "ease": [0.5, 0]}, "colour_cycle": {"keys": [[0, 0.05], [9.5, 1.7]], "ease": [0.3, 0]}}
     }
   ]
 }
