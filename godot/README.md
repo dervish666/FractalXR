@@ -479,7 +479,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 |---|---|---|
 | `selftest.sh` | The compute chain on this machine's GPU: steps every preset, writes `.spike-out/selftest.png`. | `SELFTEST PASS`: no NaN, no escaping cloud, no collapse to a point, no flat-in-z genome, frame looks like a live chaos game. |
 | `parse_all.sh` | Parses every `.gd` under `scripts/` and `tools/`, plus a deliberately broken control. | `PARSEALL PASS`: zero errors, at least one file parsed, and the control failed as it must. |
-| `trailer.sh` | Desktop Movie Maker cut from editable `data/trailer.json`, all five modes, slow camera moves and hard cuts. Writes H.264 MP4 with silent AAC and a labelled contact sheet under `.spike-out/trailer/`. | `TRAILER PASS`: every shot settled and rendered, no script or shader errors, decoded frame counts match, final H.264/AAC streams and duration validated with ffprobe. Inspect the pictures and play the cut before publishing. |
+| `trailer.sh` | The store trailer, rendered offline through the real app from editable `data/trailer.json`: spline camera moves, keyed tracks and timed app events per shot, ffmpeg transitions, title card and fades. Writes an H.264 MP4 with silent AAC, per-shot filmstrips and a contact sheet under `.spike-out/trailer/`. `--strips` simulates every frame but saves six PNGs per shot for judging motion. | `TRAILER PASS`: every shot settled and rendered, no script or shader errors, every clip and the cut have the expected size and decoded frame count, H.264/AAC streams and duration validated with ffprobe, 30 to 120 seconds, all five modes. Watch the cut before publishing. |
 | `shader_check.sh` | Compiles the `.gdshader` files you pass (`tools/shader_check.sh shaders/a.gdshader ...`), headless. | One `SHADERCHECK <path> params=N` line per shader with `N` above 0. A shader with `params=0` or a `SHADER ERROR` did not compile. |
 | `de_check.sh` | The five bulb distance estimates: the marcher's shader copy against the CPU port (`BulbSource.de`), plus a hollow finder. | `DECHECK` line with a small `max_err` and `control=FAIL` (the wrong-parameter control must fail). Run after touching any of the three copies. |
 | `rooms.sh` | Regenerates `data/rooms.json`: each bulb's measured extent and best enclosed room. Headless, a few minutes. | `ROOMS PASS bulbs=N`. Run after `node tools/export-presets.mjs`. |
@@ -552,46 +552,80 @@ bash godot/tools/parse_all.sh
 bash godot/tools/trailer.sh
 ```
 
-`trailer.sh` calls `trailer.py` and `trailer.gd`. The default cut is 51.5 seconds,
-2560x1440, 60 fps. Each shot starts a fresh desktop app with XR off. Godot Movie Maker
-writes fixed-step MJPEG, then ffmpeg removes startup frames and encodes H.264 at CRF 18.
-The final MP4 has a silent stereo AAC track for the store. No titles or music are baked in.
-The output directory contains `FractalXR-trailer.mp4`, `contact-sheet.jpg`, individual
-clips and midpoint PNGs, `render-shots.json`, `render-report.json`, logs and `ffprobe.json`.
-Raw AVI files are removed after successful encoding unless `--keep-raw` is set.
+`trailer.sh` calls `trailer.py`, which starts one Godot per shot running `trailer.gd` against
+`main.tscn` with XR off. The script steps the app at a fixed 1/fps, reads each frame back from
+the root viewport and streams it raw over a local TCP socket to ffmpeg, which encodes the clip
+(CRF 12 intermediate). Frames drawn only so the GROUND clipmap or the forest builds can catch up
+are never recorded, so a fast zoom stays sharp. Movie Maker is not used: it records every drawn
+frame. ffmpeg then cuts the clips together in one filter graph (transitions, grade, title card,
+fades) and encodes the master with libx264 `-preset slow -crf 18` under a 16 Mb/s ceiling
+(`--maxrate`; uncapped, the grain in the flame shots ran past 70 Mb/s), BT.709, plus a silent stereo
+AAC track for the owner to replace with music.
 
-Edit `data/trailer.json` to change the cut. Array order is cut order. Each shot specifies
-`id`, `mode`, a named `preset`, `duration` in seconds, vertical `fov` in degrees, and
-`camera_start` / `camera_end` dictionaries with `position` and `look_at` vectors.
-Durations round to the nearest frame at the selected fps.
-Coordinates are metres, Y up. `subject` sets the fractal's world `position`, uniform `scale`
-and optional Euler `rotation` in degrees. Camera position and aim interpolate linearly.
-The authored moves stay under 0.1 metres per second, with hard cuts every 2 to 3 seconds.
-
-Optional settings are `theme` (index in `data/presets.json`, -1 for the preset palette),
-`seed`, `warmup_frames` (180 by default), FLAME `point_style` (the app's POINT index,
-0 to 3; this cut uses 3 for 2-pixel points at 1440p), TREE `wind` and `bark`, BULB `surface`
-(the app's SURFACE index), and IFS `detail`, `ambient` and `echoes` (the app's count index).
-GROUND needs `ground_centre` (fractal coordinates) and `ground_wpu` (world metres per
-fractal unit). `animation` accepts `[start, end]` values for `colour_cycle` and `ifs_depth`.
-The latter rebuilds the IFS at each frame. Keep it gentle.
+The default cut is 13 shots and about 55 seconds at 2560x1440, 60 fps. Output goes to
+`.spike-out/trailer/`: `FractalXR-trailer.mp4`, `contact-sheet.jpg` (the cut every two
+seconds), `filmstrips.jpg` and `filmstrips/<id>.jpg` (six frames across each clip), the clips,
+logs, `render-shots.json`, `filter-graph.txt`, `render-report.json` and `ffprobe.json`.
 
 ```bash
-# Select views quickly without encoding a movie.
-bash godot/tools/trailer.sh --stills --resolution 960x540 --output godot/.spike-out/trailer/scout
-# Lower the render cost if needed.
-bash godot/tools/trailer.sh --resolution 1920x1080 --fps 30
-# Re-render named IFS shots after its new presets land, without changing app code.
-bash godot/tools/trailer.sh --only 04-twist,09-tetra,14-star,19-frames,21-cross \
-  --output godot/.spike-out/trailer/ifs-review
+# Judge motion fast: every frame simulated, six PNGs per shot saved, no encode.
+bash godot/tools/trailer.sh --strips --resolution 960x540 --fps 30 --output godot/.spike-out/trailer/strips
+# A quick full preview of the cut.
+bash godot/tools/trailer.sh --resolution 960x540 --fps 30 --preset veryfast --output godot/.spike-out/trailer/preview
+# After editing one shot: rerender only the clips whose JSON changed, then recut.
+bash godot/tools/trailer.sh --reuse
+# Clips and filmstrips of named shots only, no cut.
+bash godot/tools/trailer.sh --only 03-bulb-push,13-finale --output godot/.spike-out/trailer/review
 ```
 
-`--shots path/to/cut.json` selects another cut. `--only` preserves its original order and
-writes a separate cut of the selected shots. Use a separate `--output` to preserve a master.
-Movie Maker reads project viewport dimensions before the script starts, so the helper creates
-an exclusive temporary `godot/override.cfg` for each run and removes it on success or failure.
-It refuses to overwrite an existing override. Run one trailer job at a time per checkout.
-No production rendering settings or saved headset state are changed.
+`--shots` selects another cut file. `--reuse` keys each clip on its JSON, resolution and fps,
+so only changed shots render again. Movie dimensions come from an exclusive temporary
+`godot/override.cfg` (the root viewport takes the project size, not the window), removed after
+each shot; run one trailer job at a time per checkout.
+
+#### `data/trailer.json`
+
+Top level: `transition` (the default, `{"type": "fade", "seconds": 0.5}`), `finish`
+(`fade_in` and `fade_out` seconds, `grade` as an ffmpeg filter string), and `title_card`
+(`text`, `line`, `hold` seconds before the end it starts fading in, `fade`, `y` as the text
+block's centre in frame heights, `size` in points at 1440p, `shade` for the dark pool behind
+it). `shots` is the cut, in order.
+
+Every shot has `id`, `mode`, a named `preset`, `duration` (seconds, including the overlap with
+its neighbours) and `camera`. Coordinates are metres, Y up. Before setup the head stands at
+(0, 1.6, 0) facing -z, so subjects land at fixed places: flame centre (0, 1.45, -2.6), BULB
+solid (0, 1.45, -0.7) about 0.35 m across, IFS (0, 1.42, -0.6) 0.32 m across or centred on the
+head at room size, tree trunk and avenue starting ahead along -z.
+
+- `camera.keys`: `{t, pos, look, fov, roll, still}` in seconds. Position, aim, FOV and roll
+  follow a cubic Hermite spline with Catmull-Rom tangents, so speed is continuous through every
+  key. `still: true` passes a key at rest (a hold inside a move). `camera.ease: [in, out]`
+  scales the end speeds: 1 starts or stops at rest, 0 enters or leaves moving, which suits a
+  shot that crossfades.
+- `camera.orbit`: `centre`, `radius`, `height`, `angle` (degrees), optional `fov`, `roll` and
+  `look_offset`, each a value or `[start, end]`, eased by `camera.ease`.
+- `transition` into this shot: `cut`, or an ffmpeg xfade name (`fade`, `fadewhite`,
+  `fadeblack`, `dissolve`, `zoomin`, `circleopen`, `radial`, `hblur` and others listed in
+  `trailer.py`) with `seconds`.
+- `tracks`: keyed values as `[[t, v], ...]` or `{"keys": ..., "ease": [in, out]}`:
+  `colour_cycle` (the palette scroll global), `sim_speed` (multiplies the app clock: EVOLVE,
+  DIVE, morphs, wind), `ground_zoom` (octaves from the start, about the point under the camera),
+  `ground_hue`, `ifs_depth`, `bulb_clock`, `subject_pos`, `subject_rot`, `subject_scale`.
+- `events`, each `{"at": seconds, "do": ...}`: `theme` (`theme`, `seconds`: the app's theme
+  cross-fade), `flame_morph` (`preset`, `seconds` rounded to the app's MORPH steps), `ifs_morph`
+  (`preset`), `dive` (IFS DIVE held from then on), `galaxy` (`seconds`: GALAXY's grow), `cycle`
+  (`rung` of COLOUR CYCLE).
+- `post`: an ffmpeg filter string run on this clip before the cut, such as the light denoise
+  on the galaxy shot. Editing `post` or `transition` reuses the rendered clip.
+- Shared options: `fov`, `theme` (index into `data/presets.json` themes, -1 for the preset's
+  own), `seed`, `msaa` (4x on the root viewport), `near`, `far`, `warmup_frames`, `warmup_dt`,
+  `hold` (unrecorded seconds after settling, default 0.6), `subject`.
+- FLAME: `point_style` (POINT index), `bright` (BRIGHT index), `particles` (PARTICLE index),
+  `flame_echoes`, `galaxy_start`. BULB: `surface` (SURFACE index; 4 to 6 are SOLID), `breath`,
+  `inside`, `march_steps`. GROUND: `ground_centre` and `ground_wpu` (required), `relief`,
+  `height`, `ground_sky` (mirrored ceiling rung), `hue`, `iterations`, `render_hq`,
+  `ground_turn`. TREE: `layout` (`hero`, `grove` or `avenue`), `count` (COUNT index), `mix`,
+  `floor`, `bark`, `wind`. IFS: `detail`, `evolve`, `echoes`, `family`, `room`, `dive`.
 
 ## History
 
