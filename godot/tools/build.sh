@@ -32,7 +32,8 @@ if [ ! -f "$PROJ/android/build/build.gradle" ]; then
 	"$GODOT" $GODOT_FLAGS --headless --install-android-build-template --quit
 fi
 # Compare against the archive, since android/build may already contain our override.
-TEMPLATE_VERSION=$("$GODOT" --version | cut -d. -f1-4)
+# Godot names the folder major.minor[.patch].status[.mono] and drops a zero patch (4.8.stable).
+TEMPLATE_VERSION=$("$GODOT" --version | sed -E 's/^([0-9]+(\.[0-9]+)+\.[a-z]+[0-9]*(\.mono)?)(\..*)?$/\1/')
 if [ "$(uname -s)" = Darwin ]; then
 	TEMPLATE_ROOT="$HOME/Library/Application Support/Godot/export_templates"
 else
