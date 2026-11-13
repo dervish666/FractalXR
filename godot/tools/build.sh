@@ -28,26 +28,64 @@ if [ ! -d "$PROJ/$VENDORS" ]; then
 	fi
 fi
 mkdir -p "$PROJ/build"
-EXTRA=""
-[ -d "$PROJ/android/build" ] || EXTRA="--install-android-build-template"
+if [ ! -f "$PROJ/android/build/build.gradle" ]; then
+	"$GODOT" $GODOT_FLAGS --headless --install-android-build-template --quit
+fi
+# The generated variant manifest merges with this tracked immersive-app manifest.
+cp "$PROJ/tools/AndroidManifest.xml" "$PROJ/android/build/src/main/AndroidManifest.xml"
 
 case "$MODE" in
 release)
+	OUT="$PROJ/build/fractalxr.apk"
+	rm -f "$OUT"
 	: "${GODOT_ANDROID_KEYSTORE_RELEASE_PATH:?set it, or run tools/keystore.sh to make one}"
 	: "${GODOT_ANDROID_KEYSTORE_RELEASE_USER:?the key alias}"
 	: "${GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD:?the key password}"
-	OUT="$PROJ/build/fractalxr.apk"
-	"$GODOT" $GODOT_FLAGS --headless $EXTRA --export-release "Quest" "$OUT"
+	if [ ! -f "$GODOT_ANDROID_KEYSTORE_RELEASE_PATH" ]; then
+		echo "[build] release keystore does not exist" >&2
+		exit 1
+	fi
+	APKSIGNER=""
+	for SIGNER in "$ANDROID_SDK_ROOT"/build-tools/*/apksigner; do
+		if [ -x "$SIGNER" ]; then APKSIGNER="$SIGNER"; fi
+	done
+	if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+		echo "[build] release requires apksigner in Android SDK build-tools" >&2
+		exit 1
+	fi
+	"$GODOT" $GODOT_FLAGS --headless --export-release "Quest" "$OUT"
 	;;
 debug)
 	OUT="$PROJ/build/fractalxr-debug.apk"
-	"$GODOT" $GODOT_FLAGS --headless $EXTRA --export-debug "Quest" "$OUT"
+	rm -f "$OUT"
+	"$GODOT" $GODOT_FLAGS --headless --export-debug "Quest" "$OUT"
 	;;
 *)
 	echo "usage: build.sh [debug|release]" >&2; exit 2 ;;
 esac
 
+[ -s "$OUT" ] || { echo "[build] export did not produce an APK" >&2; exit 1; }
 ls -lh "$OUT"
-# Prove what actually signed it. A debug-signed APK on a store listing is a bug, not a detail.
-APKSIGNER=$(ls "$ANDROID_SDK_ROOT"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)
-[ -n "$APKSIGNER" ] && "$APKSIGNER" verify --print-certs "$OUT" | grep -i "signer #1 certificate DN" || true
+# A successful export is insufficient. Verify the actual APK before calling it store-signed.
+if [ "$MODE" = release ]; then
+	if ! SIGNATURE=$("$APKSIGNER" verify -v --print-certs "$OUT" 2>&1); then
+		rm -f "$OUT"
+		echo "[build] release APK signature verification failed" >&2
+		exit 1
+	fi
+	if ! grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' <<< "$SIGNATURE"; then
+		rm -f "$OUT"
+		echo "[build] release APK requires a verified v2 signature" >&2
+		exit 1
+	fi
+	if ! grep -qi 'certificate DN:' <<< "$SIGNATURE" \
+		|| grep -qi 'certificate DN:.*Android Debug' <<< "$SIGNATURE"; then
+		rm -f "$OUT"
+		echo "[build] refusing release APK signed with Android Debug certificate" >&2
+		exit 1
+	fi
+	grep -i 'certificate DN:' <<< "$SIGNATURE"
+	echo "BUILD PASS release v2=true certificate=release"
+else
+	echo "BUILD PASS debug"
+fi
