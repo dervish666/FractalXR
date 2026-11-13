@@ -353,6 +353,8 @@ var spin := true
 var exposure_idx := 0      # measured on-device as the best-looking end of the range
 var iter_idx := 2          # 4 iterations
 
+var boot_managed := false
+var startup_first_focus_msec := -1
 var _setup_done := false
 ## Set by _fail: the HUD label is showing the failure and nothing may overwrite it.
 var _failed := false
@@ -611,8 +613,9 @@ func _ready() -> void:
 	print("[startup] ready begin ticks_msec=%d" % Time.get_ticks_msec())
 	set_process(false)
 	_init_xr()
-	# The OS splash covers engine startup. Keep a tracked loading label after its
-	# first frame, before JSON, menu/atlas uploads and compute pipelines can stall.
+	# Direct-scene harnesses keep their own loading view. Boot keeps its view alive
+	# through this scene's constructors, content setup and first content draw.
+	hud.visible = not boot_managed
 	hud.text = "Loading FractalXR..."
 	hud.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hud.position = Vector3(0.0, 0.0, -1.3)
@@ -2035,15 +2038,11 @@ func _fail(msg: String) -> void:
 func _init_xr() -> void:
 	xr = XRServer.find_interface("OpenXR") as OpenXRInterface
 	if xr != null:
-		xr.session_visible.connect(_on_session_unfocused)
-		xr.session_stopping.connect(_on_session_unfocused)
-		xr.session_loss_pending.connect(_on_session_unfocused)
-		xr.session_focussed.connect(_on_session_focussed)
+		_bind_xr_session(xr)
 	if xr == null or not xr.is_initialized():
 		_status = "OpenXR unavailable. Running flat, no stereo."
 		xr = null
 		return
-	_xr_focused = false
 	get_viewport().use_xr = true
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	if xr.is_foveation_supported():
@@ -2063,6 +2062,8 @@ func _init_xr() -> void:
 	# again on session_begun; whichever call finds the rate wins.
 	_request_refresh_rate()
 	xr.session_begun.connect(_request_refresh_rate)
+	# Boot may already have a running session. Apply its current blend immediately.
+	_set_passthrough(xr.environment_blend_mode == XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND)
 	# A system recenter moves the origin; the cloud should follow the viewer, not the
 	# spot the old origin was.
 	xr.pose_recentered.connect(_recenter)
@@ -2072,6 +2073,21 @@ func _init_xr() -> void:
 	xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
 	print("[fractal] OpenXR up. refresh=%.1f target=%s views=%d" % [
 		xr.get_display_refresh_rate(), str(xr.get_render_target_size()), xr.get_view_count()])
+
+
+## Connect before reading state so focus during boot cannot be missed. Object also
+## permits a deterministic session source in the desktop regression.
+func _bind_xr_session(interface: Object) -> void:
+	interface.session_visible.connect(_on_session_unfocused)
+	interface.session_stopping.connect(_on_session_unfocused)
+	interface.session_loss_pending.connect(_on_session_unfocused)
+	interface.session_focussed.connect(_on_session_focussed)
+	if not interface.is_initialized():
+		return  # Desktop still connects signals for the direct-scene harnesses.
+	if interface.get_session_state() == OpenXRInterface.SESSION_STATE_FOCUSED:
+		_on_session_focussed()
+	else:
+		_on_session_unfocused()
 
 
 func _on_session_unfocused() -> void:
@@ -2099,7 +2115,7 @@ func _on_session_focussed() -> void:
 	_xr_focused = true
 	_xr_focus_seen = true
 	if _first_focus_msec < 0:
-		_first_focus_msec = Time.get_ticks_msec()
+		_first_focus_msec = startup_first_focus_msec if startup_first_focus_msec >= 0 else Time.get_ticks_msec()
 		print("[startup] first session_focussed ticks_msec=%d" % _first_focus_msec)
 
 

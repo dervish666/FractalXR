@@ -25,7 +25,8 @@ below. The player-facing description is in `../README.md`.
 ## Layout
 
 ```
-main.tscn                          the one scene
+boot.tscn                          minimal tracked loading view, then threaded main resource load
+main.tscn                          content scene, also loaded directly by the harnesses
 scripts/main.gd                    XR setup, input, modes, perf guard
 scripts/menu/*_items.gd            the wrist menu, one item list per mode (+ shared_items.gd)
 scripts/core/                      the particle cloud, flame morphing and breeding, flam3 tone map,
@@ -485,7 +486,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `orbit_check.sh` | Headless maths: GROUND world and fractal mappings are inverses, the orbit trace iterates correctly, the deepest zoom stage keeps its texel bookkeeping. | `MAPCHECK`, `ORBITCHECK` and `DEEPCHECK` lines all say PASS. The script pipes through grep, so read the lines, the exit code is grep's. |
 | `tree_check.sh` | Headless geometry: every tree shape at default depth, a depth-0 control that must build nothing, forest branch cap and LOD ladder. | `TREECHECK PASS`. Same grep caveat as `orbit_check.sh`. |
 | `ifs_check.sh` | Numeric checks for `FractalIFS`, shared endpoint seals, and edit/undo/DIVE on all 13 presets. | `IFSCHECK PASS failures=0`. |
-| `startup_check.sh` | First rendered loading view, then content setup; composition-layer pose, hide/show, menu reparent and cleanup on desktop. | `STARTUPCHECK PASS failures=0 control=FAIL`. Quest OS splash, compositor handoff and launch-intent latency still need the headset. |
+| `startup_check.sh` | Boot draws before main loads, loading survives a destination-camera draw, boot frees, early/current focus and subsequent session signals; composition-layer pose and cleanup. | `STARTUPCHECK PASS failures=0 control=FAIL` and `STARTUP CONTROLS PASS eager=FAIL signals-only=FAIL`. Uses a deterministic session source on desktop. Quest compositor and launch latency still need the headset. |
 | `logic_check.sh` | `main.gd` logic through the real scene: resume parsing, the splat guard, drift stride, snap-turn re-arm and the surround snap, RESET then UNDO in IFS, glide and ground grip stopping under the help card; focus-loss signals, pointer hiding, stopped locomotion and help recovery. Windowed. Headset only, no check: a preset-load failure showing its message, and resumed passthrough showing the room. | `LOGICCHECK PASS failures=0`; its broken control must fail. |
 | `ground_check.sh` | `ground.glsl` df32 and f32 fills against a 64-bit CPU port, read back from the GPU. Windowed. | `GROUNDCHECK PASS stage=N`. |
 | `card_shot.sh` | The controls card in every mode, to `.spike-out/help_card_<mode>.png`. | `CARDSHOT PASS modes=5`: no line clips, and the clip control fails. |

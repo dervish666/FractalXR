@@ -7,8 +7,14 @@ All notable changes to FractalXR are documented here. Format based on
 
 ### Startup, 2026-11-13
 
-- Meta's OS splash is enabled in the APK. The owner currently sees no icon in sideloaded debug
-  launches. A tracked loading label renders before preset loading, menu construction and compute setup.
+- A tiny boot scene draws a world-locked loading label and rotating quad before requesting
+  the main scene in the background. It keeps the loading view through content setup and a
+  draw with the destination camera, then frees itself without restarting OpenXR.
+- Main reads the current XR focus and environment blend at handover, requests the refresh
+  rate immediately as well as on session start, and retains the first-focus timestamp.
+  Direct main-scene harnesses retain their own loading path.
+- Meta's OS splash remains enabled in the APK. The owner currently sees no icon in sideloaded
+  debug launches. Quest launch timing and compositor handover still need a fresh-install check.
 - Mobile skips an unused flam3 compute-pipeline compile before the first loading frame.
 - Wrist-menu and help composition layers attach through the XR origin to avoid Godot 4.7.2's
   global-transform reads before tree entry. Panels retain their world poses and visibility.
