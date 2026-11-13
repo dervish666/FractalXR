@@ -836,6 +836,7 @@ func setup(head: Node3D, right: XRController3D, left: XRController3D = null,
 		xri.session_visible.connect(func(): _set_focus(false))
 		xri.session_focussed.connect(func(): _set_focus(true))
 		xri.session_stopping.connect(func(): _set_focus(false))
+		xri.session_loss_pending.connect(func(): _set_focus(false))
 
 
 func set_palette(pal: Array) -> void:

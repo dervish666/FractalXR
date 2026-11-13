@@ -91,6 +91,11 @@ func set_on(v: bool) -> void:
 	on = v
 
 
+## Stop at the current pose without rewinding the step. A fresh hold eases in again.
+func pause() -> void:
+	_v = 0.0
+
+
 ## One frame. `held` is the trigger, already gated on focus, menu and help; `head` the camera.
 func tick(delta: float, held: bool, head: Transform3D) -> void:
 	if not on or _ifs == null:

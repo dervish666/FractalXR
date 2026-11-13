@@ -43,6 +43,7 @@ func _init() -> void:
 	await _surround(main)
 	await _reset_undo(main)
 	await _owners(main)
+	await _unfocused(main)
 
 	print("LOGICCHECK control=%s (a steady 72 fps run must not pass as a cut)" % (
 		"PASS" if control_cut else "FAIL"))
@@ -312,3 +313,164 @@ func _owners(main) -> void:
 	_ok("ground grip under help", main._gg_hands.is_empty(), "held hands %d" % main._gg_hands.size())
 	main.help.close()
 	main.ground.stop_glide()
+
+
+# --- session focus -------------------------------------------------------------
+
+func _focus_safe(main) -> bool:
+	return not main.plant_marker.visible and not main.orbit.visible \
+		and main.grab.suspended and not main.grab.is_grabbing() \
+		and not main._snap_armed and not main.menu.visible and not main.help.visible
+
+
+func _unfocused(main) -> void:
+	var xri := XRServer.find_interface("OpenXR") as OpenXRInterface
+	_ok("focus signals available", xri != null and xri.has_signal("session_loss_pending"),
+		"installed OpenXR interface exposes loss pending")
+	if xri == null:
+		return
+	main.help.close()
+	main.help.update(1.0)
+	main._set_mode("tree")
+	for i in 8:
+		await process_frame
+	main.menu.set_suspended(true)
+	main.right_hand.global_transform = Transform3D(Basis(Vector3.RIGHT, -PI / 4.0), Vector3(0.5, 1.0, -0.5))
+	main._menu_active = false
+	main._tick_plant_marker(1.0)
+	_ok("plant focus live control", main.plant_marker.visible, "tracked floor hit shows planting ring")
+	# This is the same predicate used after every focus-loss signal. A visible marker must fail it.
+	main.grab.suspended = true
+	main._snap_armed = false
+	var broken := _focus_safe(main)
+	_ok("focus broken control", not broken, "focus safety control=%s" % ("PASS" if broken else "FAIL"))
+	for signal_name in ["session_visible", "session_stopping", "session_loss_pending"]:
+		xri.emit_signal("session_focussed")
+		main.help.open()
+		main.help.update(1.0)
+		main.plant_marker.show_at(Vector2.ZERO)
+		main.plant_marker.update(1.0)
+		main.orbit.visible = true
+		main.grab._grabbing.assign([main.right_hand])
+		main._snap_armed = true
+		xri.emit_signal(signal_name)
+		_ok("focus immediate " + signal_name, not main._xr_focused and _focus_safe(main),
+			"pointers hidden, grab released, snap disarmed, help hidden on signal")
+		for i in 3:
+			await process_frame
+		_ok("focus frames " + signal_name, _focus_safe(main) and main.help.is_open(),
+			"main cannot reopen UI under dash; help intent retained")
+		xri.emit_signal("session_focussed")
+		for i in 3:
+			await process_frame
+		_ok("help refocus " + signal_name, main.help.visible and main.help.is_open(), "open intent restored")
+		main.help.close()
+		main.help.update(1.0)
+	# A stick held through focus recovery cannot turn the room until it has centred.
+	main._on_session_unfocused()
+	main._on_session_focussed()
+	var held: int = main._snap_step(0.9, true)
+	main._snap_step(0.0, true)
+	var fresh: int = main._snap_step(0.9, true)
+	_ok("focus snap recentre", held == 0 and fresh == 1, "held=%d fresh=%d" % [held, fresh])
+
+	main._on_session_unfocused()
+	main._on_session_focussed()
+	Input.action_press("ui_right")
+	main._menu_active = true
+	main._handle_input(1.0 / 72.0)
+	main._menu_active = false
+	var before_menu: Transform3D = main.cloud.global_transform
+	main._handle_input(1.0 / 72.0)
+	_ok("focus snap menu recentre", not main._snap_armed \
+		and main.cloud.global_transform.is_equal_approx(before_menu),
+		"a stick held over the menu must still centre before snapping")
+	Input.action_release("ui_right")
+
+	# First placement is pending while unfocused, then opens the tutorial on focus.
+	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
+	main._placed = false
+	main._help_pending = true
+	main._on_session_unfocused()
+	for i in 3:
+		await process_frame
+	_ok("help first placement pending", not main._placed and main._help_pending and not main.help.visible,
+		"unfocused placement preserves tutorial intent")
+	main._on_session_focussed()
+	for i in 3:
+		await process_frame
+	_ok("help first placement refocus", main._placed and not main._help_pending and main.help.visible,
+		"tracked placement opens tutorial after focus")
+	main.help.close()
+	main.help.update(1.0)
+
+	main._set_mode("ground")
+	for i in 8:
+		await process_frame
+	main.orbit_on = true
+	main.menu.set_suspended(true)
+	main._menu_active = false
+	main._tick_orbit()
+	main.ground.glide_to(main.ground._head_xz + Vector2(3.0, 0.0))
+	main._gg_hands.assign([1])
+	_ok("ground focus live control", main.orbit.visible and main.ground._glide.length() > 0.5,
+		"orbit and glide active before loss")
+	main._on_session_unfocused()
+	var at: Vector2 = main.ground._head_xz
+	for i in 4:
+		await process_frame
+	_ok("ground unfocused", _focus_safe(main) and main._gg_hands.is_empty() \
+		and main.ground._glide == Vector2.ZERO and main.ground._head_xz == at,
+		"orbit hidden, ground grip released, glide stopped")
+	main.orbit_on = false
+	main._on_session_focussed()
+
+	main._set_mode("tree")
+	main.forest.sow_avenue(main.xr_camera.global_transform, true, FractalTree.SHAPE_NAMES[0])
+	main.forest.walk_held = true
+	main.forest.tick(0.25, main.xr_camera.global_position)
+	_ok("walk focus live control", main.forest.walk_speed > 0.0, "walk moving before loss")
+	main._on_session_unfocused()
+	var walked: float = main.forest.walked
+	for i in 4:
+		await process_frame
+	_ok("walk unfocused", main.forest.walk_speed == 0.0 and main.forest.walked == walked,
+		"no deceleration movement under dash")
+	main._on_session_focussed()
+
+	main._set_mode("ifs")
+	for i in 8:
+		await process_frame
+	main._reset_ifs_shape()
+	main.ifs.ambient = false
+	main.ifs.build(false)
+	main.ifs_dive.set_on(true)
+	main.ifs_dive.tick(0.25, true, main.xr_camera.global_transform)
+	_ok("dive focus live control", main.ifs_dive.in_step() and main.ifs_dive.motion() > 0.0,
+		"dive moving before loss")
+	main._on_session_unfocused()
+	var pose: Transform3D = main.cloud.global_transform
+	var progress: float = main.ifs_dive.progress()
+	for i in 4:
+		await process_frame
+	_ok("dive unfocused", main.cloud.global_transform.is_equal_approx(pose) \
+		and main.ifs_dive.progress() == progress and main.ifs_dive.motion() == 0.0,
+		"step frozen at current pose")
+	main._on_session_focussed()
+	main.ifs_dive.set_on(false)
+
+	main._set_mode("flame")
+	main._enter_galaxy()
+	main._tick_flame_scale(0.25)
+	_ok("galaxy focus live control", main.galaxy.is_moving(), "ease moving before loss")
+	main._on_session_unfocused()
+	pose = main.cloud.global_transform
+	main.cycle_idx = 1
+	var cycle: float = main._cycle
+	for i in 4:
+		await process_frame
+	_ok("galaxy unfocused", not main.galaxy.is_moving() and main.cloud.global_transform.is_equal_approx(pose),
+		"world transform holds under dash")
+	_ok("ambient cycle unfocused", main._cycle != cycle, "colour clock still runs")
+	main._on_session_focussed()
+	main._leave_galaxy(false)
