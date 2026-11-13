@@ -69,37 +69,64 @@ dozen people and finding out what breaks.
 
 **Title**: FractalXR
 
-**Summary**: Grab a fractal flame with both hands, pull it open, and fly through the middle.
+**Summary**: Grab glowing fractals, walk a forest, and sculpt repeating worlds in VR.
 
-**Description** (their markdown subset: bold, italic, lists, links, no tables or HTML):
+**Description** (their markdown subset permits bold, italic, lists and links):
 
 ```
-FractalXR draws a million-point fractal flame in front of you and lets you take hold of it.
+FractalXR makes live fractals on your headset. Take hold of a cloud of light, grow it around
+you, explore a fractal floor, plant a forest, or reshape a repeating sculpture.
 
-Grip to move it around. Grip with both hands and pull them apart to open it up and fly through
-the middle. Every form is a live chaos game running on the headset's own GPU rather than a video
-or a mesh, so the detail keeps arriving as you get closer to it.
+**Five modes**
 
-**In this build**
+- FLAME has 13 fractal flames, breeding and morphing, with about a million points by default.
+  Grip to move one, use both grips to scale it, and pull a trigger to pick the next or previous
+  flame. GALAXY grows it around you; ECHOES and SKY fill the space.
+- BULB has 21 forms, including Mandelbulbs, Mandelboxes and quaternion Julia sets. They open
+  hand-sized. Grab and scale them, use the triggers to browse, and pick splats, lines, a solid
+  mesh or a marched surface under SURFACE.
+- GROUND has eight fractal families. Walk with the left stick, zoom and snap turn with the
+  right, drag with a grip, or point and pull a trigger to glide. JULIA explores the set at your
+  feet; ORBIT traces the point you aim at.
+- TREE has 13 species. The left trigger regrows the trees; the right plants at your pointer.
+  SOW fills a grove, AVENUE lays out rows at COUNT settings up to about 500 trees, and WALK
+  glides along them while you hold a trigger or push the right stick forward.
+- IFS makes repeating sculptures. Use EDIT and hold a trigger on a handle to sculpt, with UNDO
+  for the last edit. Both grips scale it. DIVE flies into a copy while you hold a trigger;
+  ROOM and ECHOES put the sculpture around you.
 
-- 13 flames and 21 Mandelbulb-style forms, each one melting into the next instead of cutting
-- A wrist menu for particle count, brightness, colour theme, drift and detail
-- Passthrough, so the fractal hangs in your actual room
-- Holds 72Hz on a Quest 3 at around 700,000 points
+Pick among 26 colour themes, let CYCLE move the colours, or turn on passthrough to see your
+room. Turn your left wrist toward your face for the menu. A controls card explains each mode
+on first launch, and HELP brings it back.
 
-**Early Access.** This is the native port of a browser project and the feature list is still
-growing. Tell me what breaks.
-
-The controls appear on a card the first time you launch it. Turn your left wrist toward your
-face for the menu.
+**Early Access.** Free, native, and computed live on the headset. Tell me what breaks.
 ```
 
 **Tags**: fractal, art, relaxing, psychedelic, passthrough, mixed reality, experience, sandbox
-**Devices**: Quest 3, Quest 3S · **Position**: seated and standing · **License**: free
+**Devices**: Quest 3 and Quest 3S (3S untested) · **Position**: seated, standing and roomscale · **License**: free
 **Comfort**: moderate. Grabbing moves the fractal rather than you, but flying through it moves
 the whole world past your eyes, which some people will feel.
 
 ## 4. Before strangers touch it
+
+Every upload requires this headset pass in each mode. Use snap turn where supported
+(GROUND, TREE outside WALK, GALAXY, room-size IFS); check the comfort tunnel during movement.
+
+- [ ] FLAME opens framed; controls card matches; snap turn and tunnel work in GALAXY; system
+      dash mid-grab hides pointers and pauses movement; relaunch resumes the selected state
+- [ ] BULB opens framed; controls card matches; grab, scale and movement tunnel work; system
+      dash mid-grab hides pointers and pauses movement; relaunch resumes the selected state
+- [ ] GROUND opens framed; controls card matches; snap turn and tunnel work; system dash
+      mid-drag or glide hides pointers and stops movement; relaunch resumes the selected state
+- [ ] TREE opens framed; controls card matches; snap turn and WALK tunnel work; system dash
+      mid-grab or WALK hides pointers and stops movement; relaunch resumes the selected state
+- [ ] IFS opens framed; controls card matches; room-size snap turn and DIVE tunnel work; system
+      dash mid-grab or DIVE hides pointers and pauses movement; relaunch resumes the selected state
+- [ ] Cold launch reaches a head-tracked frame in under 4 seconds. Record launch in logcat,
+      then the release-visible `[startup] first session_focussed ticks_msec=...` and
+      `[startup] first placement ticks_msec=... first_focus_msec=...` lines. Engine ticks start
+      at engine startup; use logcat timestamps for launch-to-frame timing and confirm in the
+      headset that the first placed frame tracks the head. Placement alone does not prove this.
 
 - [ ] Release-signed APK installs clean over nothing (`adb uninstall uk.fractalxr.app` first)
 - [ ] First-launch controls card appears, dismisses on either trigger, and does not come back

@@ -28,6 +28,7 @@ What Meta checks, and where we stand
 | `excludeFromRecents="true"` on the launch activity (VRC.Quest.Packaging.1) | `package/exclude_from_recents=true` from 0.10.0 |
 | `android:debuggable` false or unset | release export only |
 | Signature scheme v2, your own release certificate, the same one for every update | `godot/tools/build.sh release` |
+| Required head tracking | `tools/AndroidManifest.xml` overrides the generated optional feature |
 | Minimum permissions (VRC.Quest.Security.2) | OpenXR only, no INTERNET |
 
 Release-sign with the keystore from SIDEQUEST.md section 1. Meta's prep page says a lost
@@ -39,10 +40,14 @@ permission, and then the install screen asks for something.
 
 ## 3. The VRCs only the headset can answer
 
-- **Performance.1**: never under 60 fps, checked with OVR Metrics Tool over sessions of up to
-  45 minutes. GROUND and BULB are GPU-bound at about 14 ms from a cold start, so soak each of
-  them from a cold headset before submitting: `godot/tools/soak.sh 2700 > soak.csv`.
-  ([page](https://developers.meta.com/horizon/resources/vrc-quest-performance-1/))
+- **Performance.1** requires an allowed refresh rate and at least 60 fps rendering.
+  Interactive apps must use 72, 80, 90, 96, 100 or 120 Hz where supported; FractalXR requests
+  72 Hz. Meta's test rejects extended periods below 60 fps and lists exceptions for loading,
+  system overlays and recording. Measure the **release APK** with **OVR Metrics Tool for
+  45 minutes per GPU-heavy mode, GROUND and BULB**, each from a cold headset. Release builds
+  suppress `[perf]`. Use `godot/tools/soak.sh 2700 > soak.csv` on a **debug build only** for
+  the per-stage breakdown. Debug measurements do not replace the release soak.
+  ([Performance.1](https://developers.meta.com/horizon/resources/vrc-quest-performance-1/))
 - **Performance.3**: head-tracked graphics within 4 seconds of launch.
 - **Functional.2 and Input.4**: open the system menu in the middle of a grab, press the power
   button, take the headset off. The app must keep rendering, pause, draw no menu or pointer, and
@@ -52,14 +57,34 @@ permission, and then the install screen asks for something.
 
 ## 4. The listing
 
-- **Privacy policy URL**, in Additional Details: a page on fractalxr.uk that says the app
-  collects nothing. No Data Use Checkup while we stay off the Platform SDK.
+- **Privacy policy URL**, in Additional Details:
+  https://fractalxr.uk/privacy.html (served after merge and web deployment; check it before
+  submission). The policy covers the native Quest app. No Data Use Checkup while we stay off
+  the Platform SDK.
 - **Age group self-certification** and the **IARC questionnaire**, both at submission.
   ([age groups](https://developers.meta.com/horizon/resources/age-groups/))
 - **Copy**: the SideQuest title, summary and description.
 - **Art**, all 24-bit PNG unless noted
   ([asset guidelines](https://developers.meta.com/horizon/resources/asset-guidelines/)).
   `godot/tools/make_store_art.py` only writes SideQuest's sizes today.
+
+Chosen submission fields follow Meta's
+[category and genre list](https://developers.meta.com/vr/resources/publish-taxonomy-guidelines/).
+The modes follow tracked head and controller poses; they do not require a fixed play area.
+Confirm all three player modes during the headset pass.
+
+| Field | Chosen value |
+|---|---|
+| Category | Apps |
+| Primary genre | Creativity |
+| Comfort | Moderate |
+| Devices | Quest 3, Quest 3S (3S untested; keep the SideQuest section 4 gate) |
+| Player modes | Seated, standing, roomscale |
+| Supported input | Touch controllers; hand tracking off |
+| Upload tool | `ovr-platform-util upload-quest-build` |
+
+The [OVR Platform Utility guide](https://developers.meta.com/vr/resources/publish-reference-platform-command-line-utility/)
+describes APK uploads and release channels.
 
 | Asset | Size |
 |---|---|

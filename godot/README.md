@@ -483,7 +483,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `orbit_check.sh` | Headless maths: GROUND world and fractal mappings are inverses, the orbit trace iterates correctly, the deepest zoom stage keeps its texel bookkeeping. | `MAPCHECK`, `ORBITCHECK` and `DEEPCHECK` lines all say PASS. The script pipes through grep, so read the lines, the exit code is grep's. |
 | `tree_check.sh` | Headless geometry: every tree shape at default depth, a depth-0 control that must build nothing, forest branch cap and LOD ladder. | `TREECHECK PASS`. Same grep caveat as `orbit_check.sh`. |
 | `ifs_check.sh` | Numeric checks for `FractalIFS`. | `IFSCHECK PASS failures=0`. |
-| `logic_check.sh` | `main.gd` logic through the real scene: resume parsing, the splat guard, drift stride, snap-turn re-arm and the surround snap, RESET then UNDO in IFS, glide and ground grip stopping under the help card. Windowed. Headset only, no check: a preset-load failure showing its message, and resumed passthrough showing the room. | `LOGICCHECK PASS failures=0`; its broken control must fail. |
+| `logic_check.sh` | `main.gd` logic through the real scene: resume parsing, the splat guard, drift stride, snap-turn re-arm and the surround snap, RESET then UNDO in IFS, glide and ground grip stopping under the help card; focus-loss signals, pointer hiding, stopped locomotion and help recovery. Windowed. Headset only, no check: a preset-load failure showing its message, and resumed passthrough showing the room. | `LOGICCHECK PASS failures=0`; its broken control must fail. |
 | `ground_check.sh` | `ground.glsl` df32 and f32 fills against a 64-bit CPU port, read back from the GPU. Windowed. | `GROUNDCHECK PASS stage=N`. |
 | `card_shot.sh` | The controls card in every mode, to `.spike-out/help_card_<mode>.png`. | `CARDSHOT PASS modes=5`: no line clips, and the clip control fails. |
 | `menu_shot.sh` | The wrist menu in all five modes at every level, galleries, bar, float and pin, to `.spike-out/menu_*.png`. | `MENUSHOT PASS shots=51 failures=0`. A gallery tile missing from the atlas ("not baked") fails it. |
@@ -514,10 +514,13 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `morph_cost.sh` | CPU cost of a flame preset morph: `_process` milliseconds per morph frame. | `MORPHCOST` line with means under the 2.0 ms budget. |
 | `sky_bake.sh` | SKY bakes. `measure [res,...] [theme]` times the live bake; `bake <names> [res] [samples]` writes offline bakes for `sky_cube.py`; `preview` renders the imported cubemap. | Exit 0. `sky_compare.py` then prints the correlation of preset against bake. |
 | `soak.sh` | Scrapes a thermal soak of the `[perf]` log into CSV: `tools/soak.sh 900 > soak.csv`. Run 15 minutes from a cold headset. | Not a gate. It is a recording. |
-| `build.sh` | Exports the APK: `debug` (default, debug-signed, `build/fractalxr-debug.apk`) or `release` (store-signed, `build/fractalxr.apk`). | Export exits 0 and the APK exists. |
+| `build.sh` | Exports the APK: `debug` (default, debug-signed, `build/fractalxr-debug.apk`) or `release` (store-signed, `build/fractalxr.apk`). | Export exits 0 and the APK exists; release requires a verified v2 signature and rejects Android Debug certificates. |
 | `deploy.sh` | Builds, `adb install -r`, launches and streams `[perf]`. Needs a Quest attached. | It launches. Exits 1 with no device. |
 | `keystore.sh` | Makes the release keystore, once, ever, outside the repo. | Not a gate. Back the keystore up. |
 | `env.sh` | Sourced, not run. Sets `GODOT`, `PROJ`, `GODOT_FLAGS` (`--xr-mode off`) and the JDK and SDK paths. | Refuses to run if `project.godot` is missing. |
+
+`build.sh` copies the tracked `tools/AndroidManifest.xml` into the Gradle template before
+export. Its headtracking feature overrides the plugin's optional value in the merged manifest.
 
 Python helpers beside them: `flicker_metric.py`, `line_check.py`, `line_sheet.py`,
 `png_diff.py`, `png_stats.py`, `sky_cube.py`, `sky_compare.py`, `make_icons.py`
