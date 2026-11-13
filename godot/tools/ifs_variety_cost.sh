@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Compare baseline and current IFS cost on the desktop. See ifs_variety_cost.gd.
+set -uo pipefail
+source "$(dirname "$0")/env.sh"
+mkdir -p "$PROJ/.spike-out"
+LOG="$PROJ/.spike-out/ifs_variety_cost.log"
+# A --script run does not rescan; import first so it runs the scripts on disk.
+"$GODOT" $GODOT_FLAGS --headless --import >/dev/null 2>&1 || true
+"$GODOT" $GODOT_FLAGS --rendering-method mobile --resolution 1280x800 --position 0,0 \
+	--script tools/ifs_variety_cost.gd > "$LOG" 2>&1 &
+PID=$!
+# Own only this child. pkill -f on the project path would take out any other run in flight.
+( sleep 240; kill -9 "$PID" 2>/dev/null ) >/dev/null 2>&1 &
+WATCHDOG=$!
+trap 'set +e; kill "$WATCHDOG" 2>/dev/null; kill -9 "$PID" 2>/dev/null; true' EXIT
+wait "$PID"
+RC=$?
+kill "$WATCHDOG" 2>/dev/null; wait "$WATCHDOG" 2>/dev/null || true
+grep -a "IFSVARIETYCOST\|SCRIPT ERROR\|Parse Error" "$LOG" || { tail -30 "$LOG"; exit 1; }
+# A SCRIPT ERROR does not stop the run, so it would otherwise ride along under a PASS.
+if grep -aq "SCRIPT ERROR\|Parse Error" "$LOG"; then exit 1; fi
+grep -aq "^IFSVARIETYCOST DONE" "$LOG" || exit 1
+exit $RC

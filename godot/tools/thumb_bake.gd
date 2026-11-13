@@ -175,7 +175,7 @@ func _ifs(m) -> void:
 				break
 			await process_frame
 		m.ifs.finish_grow()
-		_stand_back(m, 0.3)
+		_stand_back_3q(m, 0.1, [28.0, 18.0, 1.0])
 		await _frames(8)
 		_take("ifs", FractalIFS.preset_name(i), true)
 
@@ -236,7 +236,7 @@ func _stand_back(m, back: float) -> void:
 ## the horizon, at the distance _stand_back would have used, looking at the cloud.
 func _stand_back_3q(m, back: float, pose: Array) -> void:
 	_stand_back(m, back)
-	var at: Vector3 = m.cloud.global_position
+	var at: Vector3 = (m.ifs if m.ifs_mode else m.cloud).global_position
 	var radius: float = (m.xr_camera.position - at).length() * float(pose[2])
 	var dir := Vector3(0.0, 0.0, 1.0)
 	dir = dir.rotated(Vector3.RIGHT, -deg_to_rad(float(pose[1])))
@@ -260,7 +260,14 @@ func _frame() -> Image:
 func _take(group: String, name: String, crop: bool) -> void:
 	var img := _frame()
 	img.save_png("%s/%s_%s.png" % [RAW_DIR, group, name.replace(" ", "_")])
-	var sq := _crop_light(img) if crop else _centre_square(img)
+	# IFS is framed centrally at a known hand-sized extent. Exclude distant scene pixels
+	# before luminance cropping so a tiny off-axis marker cannot shrink the gallery picture.
+	var subject := img
+	if group == "ifs":
+		var w := img.get_width()
+		var h := img.get_height()
+		subject = img.get_region(Rect2i(w / 5, h / 5, w * 3 / 5, h * 3 / 5))
+	var sq := _crop_light(subject) if crop else _centre_square(subject)
 	sq.resize(TILE, TILE, Image.INTERPOLATE_LANCZOS)
 	var lit := _lit_fraction(sq)
 	print("THUMBBAKE %s/%s lit=%.3f" % [group, name, lit])

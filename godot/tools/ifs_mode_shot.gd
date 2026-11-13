@@ -36,6 +36,8 @@ const SAMPLE_FRAMES := 20
 ## so the numbers the standalone harness reports have something to disagree with.
 const PRESET_INSTANCES := {
 	"FRAMES": 585, "TETRA": 585, "STAR": 1885, "CROSS": 585, "TWIST": 585,
+	"GASKET": 341, "PYRAMID": 781, "OCTAFLAKE": 259, "MENGER": 421,
+	"JERUSALEM": 421, "VICSEK": 400, "CANTOR": 585, "MOSELY": 343,
 }
 
 var _fails := 0
@@ -599,7 +601,7 @@ func _motion(main) -> void:
 	await _grown(main)
 	for i in 8:
 		await process_frame
-	var tile = _visible_tile(main, "MOTION", "look")
+	var tile = _visible_tile(main, "EVOLVE", "look")
 	if tile == null:
 		_ok("motion tile", false, "no MOTION tile visible in the look section while in IFS")
 		return
@@ -617,7 +619,7 @@ func _motion(main) -> void:
 	var running: bool = not await _same_over(main, 20)
 	var rung_ok: bool = main.ifs.instance_count <= PRESET_INSTANCES[
 		FractalIFS.preset_name(main.ifs_preset_idx)]
-	_ok("motion tile", main.ifs.ambient and off_reads == "off" and on_reads == "breathing"
+	_ok("motion tile", main.ifs.ambient and off_reads == "off" and on_reads == "breathing + twist"
 			and quiet and running and rung_ok,
 		"reads '%s' -> '%s', still with it off=%s moving with it on=%s, %d instances at rung %d, build %.2f ms" % [
 			off_reads, on_reads, str(quiet), str(running), main.ifs.instance_count,
