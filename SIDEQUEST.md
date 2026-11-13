@@ -12,7 +12,7 @@ Identity is permanent once published. It is already set:
 |---|---|
 | Package | `uk.fractalxr.app` |
 | Label | FractalXR |
-| Devices | `quest3\|quest3s` (Quest 2 is off: 700k points at 72Hz is a Quest 3 load and no Quest 2 has ever run it) |
+| Devices | `quest3\|quest3s` (Quest 2 is off because the default is about a million points and no Quest 2 has ever run it) |
 | Permissions | OpenXR only. `INTERNET` is off, so the install screen asks for nothing |
 | Icons | `godot/art/icon_192.png`, `icon_fg_432.png`, `icon_bg_432.png` |
 
@@ -97,9 +97,9 @@ up and pass through the middle. Turn your left wrist toward your face for the me
 
 - 26 colour themes, and CYCLE to keep them moving
 - Passthrough, so the fractal hangs in your room
-- No account, no permissions, no internet
+- No account, no permission prompts, no internet
 
-**Early Access.** Tell me what breaks.
+**Early Access.** If something breaks, tell me at https://github.com/dervish666/FractalXR/issues
 
 A controls card shows on first launch. HELP in the wrist menu brings it back.
 ```
@@ -108,18 +108,20 @@ A controls card shows on first launch. HELP in the wrist menu brings it back.
 (the first five on the Meta store)
 **Devices**: Quest 3 and Quest 3S (3S untested) · **Position**: seated, standing and roomscale · **License**: free
 **Comfort**: moderate. Grabbing moves the fractal, not you. GROUND, TREE's WALK, IFS DIVE and
-GALAXY move the world past you, with 30 degree snap turns and a tunnel vignette. FLAME and BULB
-at tabletop size are comfortable seated.
+FLAME's GALAXY move the world past you, with 30 degree snap turns and a tunnel vignette.
+FLAME and BULB at tabletop size are comfortable seated.
 
 ## 4. Before strangers touch it
 
 Every upload requires this headset pass in each mode. Use snap turn where supported
 (GROUND, TREE outside WALK, GALAXY, room-size IFS); check the comfort tunnel during movement.
 
+- [ ] Release-signed APK installs clean over nothing (`adb uninstall uk.fractalxr.app` first)
 - [ ] FLAME opens framed; controls card matches; snap turn and tunnel work in GALAXY; system
       dash mid-grab hides pointers and pauses movement; relaunch resumes the selected state
-- [ ] BULB opens framed; controls card matches; grab, scale and movement tunnel work; system
-      dash mid-grab hides pointers and pauses movement; relaunch resumes the selected state
+- [ ] BULB opens framed; controls card matches; grab, scale and stick movement turn or move the
+      object in front of you without a movement tunnel; system dash mid-grab hides pointers
+      and pauses movement; relaunch resumes the selected state
 - [ ] GROUND opens framed; controls card matches; snap turn and tunnel work; system dash
       mid-drag or glide hides pointers and stops movement; relaunch resumes the selected state
 - [ ] TREE opens framed; controls card matches; snap turn and WALK tunnel work; system dash
@@ -132,10 +134,11 @@ Every upload requires this headset pass in each mode. Use snap turn where suppor
       at engine startup; use logcat timestamps for launch-to-frame timing and confirm in the
       headset that the first placed frame tracks the head. Placement alone does not prove this.
 
-- [ ] Release-signed APK installs clean over nothing (`adb uninstall uk.fractalxr.app` first)
 - [ ] First-launch controls card appears, dismisses on either trigger, and does not come back
 - [ ] `HELP` in the wrist menu brings it back
-- [ ] 15-minute thermal soak (`godot/tools/soak.sh 900`), because every number so far is a
-      cold-start number and Quest throttling after 5 to 15 minutes is guaranteed
+- [ ] Measure the release APK for a 15-minute thermal soak with OVR Metrics Tool, because every
+      number so far is a cold-start number. Release builds suppress `[perf]`. Use
+      `bash godot/tools/soak.sh 900 > soak.csv` on a debug build only for the per-stage breakdown.
+      Debug measurements do not replace the release soak.
 - [ ] Passthrough toggles both ways without a black frame
 - [ ] Quest 3S check, or drop it from the supported devices list

@@ -67,6 +67,9 @@ permission, and then the install screen asks for something.
 - **Art**, all 24-bit PNG unless noted
   ([asset guidelines](https://developers.meta.com/horizon/resources/asset-guidelines/)).
   `godot/tools/make_store_art.py` only writes SideQuest's sizes today.
+  For now, make the Meta-sized art by hand in an image editor using the engine renders in
+  `godot/art/candidates/` (`npm run art` regenerates them). Compose or crop each image to the
+  dimensions below and export as a 24-bit RGB PNG. Capture the five screenshots on the headset.
 
 Chosen submission fields follow Meta's
 [category and genre list](https://developers.meta.com/vr/resources/publish-taxonomy-guidelines/).
@@ -85,6 +88,19 @@ Confirm all three player modes during the headset pass.
 
 The [OVR Platform Utility guide](https://developers.meta.com/vr/resources/publish-reference-platform-command-line-utility/)
 describes APK uploads and release channels.
+Run this from the repo root after building the release APK:
+
+```bash
+ovr-platform-util upload-quest-build \
+  --app-id '<APP_ID>' --app-secret '<APP_SECRET>' \
+  --apk godot/build/fractalxr.apk --channel ALPHA \
+  --age-group '<AGE_GROUP>'
+```
+
+In the Meta Horizon Developer Dashboard, select the app, then Development, API. Copy App ID
+and App Credentials (the app secret) there. Keep the secret outside the repo. Replace
+`<AGE_GROUP>` with the self-certified value, one of `TEENS_AND_ADULTS`, `MIXED_AGES` or `CHILDREN`.
+Meta leaves uploads without an age group in draft status.
 
 | Asset | Size |
 |---|---|
