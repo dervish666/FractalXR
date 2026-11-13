@@ -521,6 +521,10 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 
 `build.sh` copies the tracked `tools/AndroidManifest.xml` into the Gradle template before
 export. Its headtracking feature overrides the plugin's optional value in the merged manifest.
+Before copying, `manifest_check.py` compares it with the installed export template's
+`android_source.zip` and rejects changes beyond the headtracking block. After every export,
+`aapt2` dumps the APK manifest. The check requires headtracking and excludes the launch activity
+from Recents. Both `aapt2` and release signing use the newest installed SDK build-tools version.
 
 Python helpers beside them: `flicker_metric.py`, `line_check.py`, `line_sheet.py`,
 `png_diff.py`, `png_stats.py`, `sky_cube.py`, `sky_compare.py`, `make_icons.py`

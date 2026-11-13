@@ -31,8 +31,22 @@ mkdir -p "$PROJ/build"
 if [ ! -f "$PROJ/android/build/build.gradle" ]; then
 	"$GODOT" $GODOT_FLAGS --headless --install-android-build-template --quit
 fi
-# The generated variant manifest merges with this tracked immersive-app manifest.
+# Compare against the archive, since android/build may already contain our override.
+TEMPLATE_VERSION=$("$GODOT" --version | cut -d. -f1-4)
+if [ "$(uname -s)" = Darwin ]; then
+	TEMPLATE_ROOT="$HOME/Library/Application Support/Godot/export_templates"
+else
+	TEMPLATE_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/godot/export_templates"
+fi
+python3 "$PROJ/tools/manifest_check.py" template \
+	"$TEMPLATE_ROOT/$TEMPLATE_VERSION/android_source.zip" "$PROJ/tools/AndroidManifest.xml"
+# The generated variant manifest merges with this checked immersive-app manifest.
 cp "$PROJ/tools/AndroidManifest.xml" "$PROJ/android/build/src/main/AndroidManifest.xml"
+AAPT2=$(find "$ANDROID_SDK_ROOT/build-tools" -name aapt2 -type f | sort -V | tail -n 1)
+if [ -z "$AAPT2" ] || [ ! -x "$AAPT2" ]; then
+	echo "[build] export requires aapt2 in Android SDK build-tools" >&2
+	exit 1
+fi
 
 case "$MODE" in
 release)
@@ -45,10 +59,7 @@ release)
 		echo "[build] release keystore does not exist" >&2
 		exit 1
 	fi
-	APKSIGNER=""
-	for SIGNER in "$ANDROID_SDK_ROOT"/build-tools/*/apksigner; do
-		if [ -x "$SIGNER" ]; then APKSIGNER="$SIGNER"; fi
-	done
+	APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -n 1)
 	if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
 		echo "[build] release requires apksigner in Android SDK build-tools" >&2
 		exit 1
@@ -66,6 +77,14 @@ esac
 
 [ -s "$OUT" ] || { echo "[build] export did not produce an APK" >&2; exit 1; }
 ls -lh "$OUT"
+MANIFEST_DUMP=$(mktemp)
+trap 'rm -f "$MANIFEST_DUMP"' EXIT
+if ! "$AAPT2" dump xmltree "$OUT" --file AndroidManifest.xml > "$MANIFEST_DUMP" \
+	|| ! python3 "$PROJ/tools/manifest_check.py" apk "$MANIFEST_DUMP"; then
+	rm -f "$OUT"
+	echo "[build] refusing APK with an unchecked manifest" >&2
+	exit 1
+fi
 # A successful export is insufficient. Verify the actual APK before calling it store-signed.
 if [ "$MODE" = release ]; then
 	if ! SIGNATURE=$("$APKSIGNER" verify -v --print-certs "$OUT" 2>&1); then
