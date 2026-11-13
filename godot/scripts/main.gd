@@ -2061,6 +2061,7 @@ func _init_xr() -> void:
 func _on_session_unfocused() -> void:
 	_xr_focused = false
 	_snap_armed = false
+	ifs_edit.cancel()
 	_gg_hands.clear()
 	_walk_stick = false
 	plant_marker.hide_marker()
@@ -2724,6 +2725,10 @@ func _handle_input(delta: float) -> void:
 ## re-arms even while `can_fire` is false (a grip held), so letting go of a grip with the stick
 ## centred is a clean start.
 func _snap_step(x: float, can_fire: bool) -> int:
+	if xr != null and not _tracked_hand(right_hand):
+		# A missing tracker supplies zero input, which cannot prove the stick centred.
+		_snap_armed = false
+		return 0
 	if absf(x) < SNAP_REARM:
 		_snap_armed = true
 	elif not can_fire and absf(x) > SNAP_FIRE:

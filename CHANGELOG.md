@@ -8,7 +8,8 @@ All notable changes to FractalXR are documented here. Format based on
 ### Store readiness, 2026-11-13
 
 - System dash and session shutdown hide pointers, release grabs and stop locomotion. Snap turn
-  waits for a centred stick after focus returns. Colour cycling continues.
+  waits for a tracked controller to report a centred stick after focus or tracking returns.
+  Focus loss cancels an IFS handle drag immediately. Colour cycling continues.
 - The first-launch controls card waits for focus and returns if the system dash interrupted it.
 - APK exports require head tracking. Release exports reject debug certificates and require a
   verified v2 signature. Startup focus and placement timings appear in release logs.

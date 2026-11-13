@@ -41,7 +41,9 @@ func _init() -> void:
 	_stride()
 	_snap(main)
 	await _surround(main)
+	await _tracking_snap(main)
 	await _reset_undo(main)
+	await _edit_focus(main)
 	await _owners(main)
 	await _unfocused(main)
 
@@ -256,6 +258,83 @@ func _surround(main) -> void:
 	Input.action_release("ui_right")
 	yaw = absf(wrapf(main.cloud.global_transform.basis.get_euler().y - before.basis.get_euler().y, -PI, PI))
 	_ok("flame smooth turn", yaw > 0.0 and yaw < 0.1, "one frame turned %.2f deg" % rad_to_deg(yaw))
+
+
+## Missing tracking must not stand in for a centred stick, even across focus recovery.
+func _tracking_snap(main) -> void:
+	main._set_mode("tree")
+	for i in 8:
+		await process_frame
+	main.help.close()
+	main._menu_active = false
+	var saved_xr = main.xr
+	main.xr = XRServer.find_interface("OpenXR")
+	var tracker := XRControllerTracker.new()
+	tracker.name = main.right_hand.tracker
+	tracker.type = XRServer.TRACKER_CONTROLLER
+	var saved_tracker = XRServer.get_tracker(tracker.name)
+	for focus_loss in [false, true]:
+		XRServer.add_tracker(tracker)
+		tracker.set_pose(main.right_hand.pose, Transform3D.IDENTITY, Vector3.ZERO,
+			Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+		tracker.set_input(&"primary", Vector2(0.9, 0.0))
+		main._snap_armed = true
+		if focus_loss:
+			main._on_session_unfocused()
+		XRServer.remove_tracker(tracker)
+		if focus_loss:
+			main._on_session_focussed()
+		var before: Transform3D = main.cloud.global_transform
+		main._handle_input(1.0 / 72.0)
+		var disarmed: bool = not main._snap_armed and not main.right_hand.get_has_tracking_data()
+		XRServer.add_tracker(tracker)
+		main._handle_input(1.0 / 72.0)
+		var held_still: bool = main.cloud.global_transform.is_equal_approx(before)
+		var tracked: bool = main.right_hand.get_has_tracking_data()
+		tracker.set_input(&"primary", Vector2.ZERO)
+		main._handle_input(1.0 / 72.0)
+		tracker.set_input(&"primary", Vector2(0.9, 0.0))
+		for i in 3:
+			main._handle_input(1.0 / 72.0)
+		var yaw := wrapf(main.cloud.basis.get_euler().y - before.basis.get_euler().y, -PI, PI)
+		_ok("snap tracking " + ("focus" if focus_loss else "loss"),
+			disarmed and tracked and held_still and is_equal_approx(yaw, main.SNAP_TURN_RAD),
+			"disarmed=%s tracked=%s held_still=%s fresh=%.1f deg" % [
+				disarmed, tracked, held_still, rad_to_deg(yaw)])
+		XRServer.remove_tracker(tracker)
+	if saved_tracker != null:
+		XRServer.add_tracker(saved_tracker)
+	main.xr = saved_xr
+
+
+func _edit_focus(main) -> void:
+	main._set_mode("ifs")
+	for i in 8:
+		await process_frame
+	main._reset_ifs()
+	main.ifs_edit.set_guides(true)
+	main.help.close()
+	main._menu_active = false
+	var hand_before: Transform3D = main.right_hand.global_transform
+	main.right_hand.global_position = main.ifs.global_transform * Vector3(0.0, IfsEditor.KNOB_OUT, 0.0)
+	main._trig = [false, true]
+	main._trig_held = [false, true]
+	main._ifs_edit_pass()
+	_ok("edit focus captured", main.ifs_edit.held_handle() == IfsEditor.PLANE_A,
+		"real editor picked PLANE A")
+	var before: Dictionary = main.ifs_edit._params()
+	# No frame may cancel the edit between these signals.
+	main._on_session_unfocused()
+	main._on_session_focussed()
+	main.right_hand.global_position += main.ifs.global_basis * (main.ifs.plane1_normal * 0.2)
+	main._trig = [false, false]
+	main._ifs_edit_pass()
+	_ok("edit focus no frame", not main.ifs_edit.is_editing() and main.ifs_edit._params() == before,
+		"plane offset %.2f -> %.2f" % [before["plane1_offset"], main.ifs.plane1_offset])
+	main.ifs_edit.cancel()
+	main.ifs_edit.set_guides(false)
+	main._trig_held = [false, false]
+	main.right_hand.global_transform = hand_before
 
 
 # --- IFS RESET then UNDO ----------------------------------------------------
