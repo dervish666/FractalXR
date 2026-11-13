@@ -483,6 +483,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 | `orbit_check.sh` | Headless maths: GROUND world and fractal mappings are inverses, the orbit trace iterates correctly, the deepest zoom stage keeps its texel bookkeeping. | `MAPCHECK`, `ORBITCHECK` and `DEEPCHECK` lines all say PASS. The script pipes through grep, so read the lines, the exit code is grep's. |
 | `tree_check.sh` | Headless geometry: every tree shape at default depth, a depth-0 control that must build nothing, forest branch cap and LOD ladder. | `TREECHECK PASS`. Same grep caveat as `orbit_check.sh`. |
 | `ifs_check.sh` | Numeric checks for `FractalIFS`. | `IFSCHECK PASS failures=0`. |
+| `startup_check.sh` | First rendered loading view, then content setup; composition-layer pose, hide/show, menu reparent and cleanup on desktop. | `STARTUPCHECK PASS failures=0 control=FAIL`. Quest OS splash, compositor handoff and launch-intent latency still need the headset. |
 | `logic_check.sh` | `main.gd` logic through the real scene: resume parsing, the splat guard, drift stride, snap-turn re-arm and the surround snap, RESET then UNDO in IFS, glide and ground grip stopping under the help card; focus-loss signals, pointer hiding, stopped locomotion and help recovery. Windowed. Headset only, no check: a preset-load failure showing its message, and resumed passthrough showing the room. | `LOGICCHECK PASS failures=0`; its broken control must fail. |
 | `ground_check.sh` | `ground.glsl` df32 and f32 fills against a 64-bit CPU port, read back from the GPU. Windowed. | `GROUNDCHECK PASS stage=N`. |
 | `card_shot.sh` | The controls card in every mode, to `.spike-out/help_card_<mode>.png`. | `CARDSHOT PASS modes=5`: no line clips, and the clip control fails. |
@@ -524,7 +525,9 @@ export. Its headtracking feature overrides the plugin's optional value in the me
 Before copying, `manifest_check.py` compares it with the installed export template's
 `android_source.zip` and rejects changes beyond the headtracking block. After every export,
 `aapt2` dumps the APK manifest. The check requires headtracking and excludes the launch activity
-from Recents. Both `aapt2` and release signing use the newest installed SDK build-tools version.
+from Recents. It also requires Meta OS splash metadata and `assets/vr_splash.png` matching
+`art/icon_512.png`. The vendor plugin exports that image from `application/boot_splash/image`
+when `meta_xr_features/instant_splash_screen` is enabled. Both `aapt2` and release signing use the newest installed SDK build-tools version.
 
 Python helpers beside them: `flicker_metric.py`, `line_check.py`, `line_sheet.py`,
 `png_diff.py`, `png_stats.py`, `sky_cube.py`, `sky_compare.py`, `make_icons.py`

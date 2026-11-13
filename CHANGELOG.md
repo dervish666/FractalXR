@@ -5,6 +5,14 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Startup, 2026-11-13
+
+- Meta's OS splash displays the app icon during engine startup. A tracked loading label then
+  renders before preset loading, menu construction and compute setup.
+- Wrist-menu and help composition layers attach through the XR origin to avoid Godot 4.7.2's
+  global-transform reads before tree entry. Panels retain their world poses and visibility.
+- Debug and release exports require the OS splash metadata and the exact PNG asset in the APK.
+
 ### Store readiness, 2026-11-13
 
 - System dash and session shutdown hide pointers, release grabs and stop locomotion. Snap turn

@@ -81,7 +81,7 @@ ls -lh "$OUT"
 MANIFEST_DUMP=$(mktemp)
 trap 'rm -f "$MANIFEST_DUMP"' EXIT
 if ! "$AAPT2" dump xmltree "$OUT" --file AndroidManifest.xml > "$MANIFEST_DUMP" \
-	|| ! python3 "$PROJ/tools/manifest_check.py" apk "$MANIFEST_DUMP"; then
+	|| ! python3 "$PROJ/tools/manifest_check.py" apk "$MANIFEST_DUMP" "$OUT"; then
 	rm -f "$OUT"
 	echo "[build] refusing APK with an unchecked manifest" >&2
 	exit 1

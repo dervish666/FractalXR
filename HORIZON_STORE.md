@@ -48,7 +48,28 @@ permission, and then the install screen asks for something.
   suppress `[perf]`. Use `godot/tools/soak.sh 2700 > soak.csv` on a **debug build only** for
   the per-stage breakdown. Debug measurements do not replace the release soak.
   ([Performance.1](https://developers.meta.com/horizon/resources/vrc-quest-performance-1/))
-- **Performance.3**: head-tracked graphics within 4 seconds of launch.
+- **Performance.3** allows head-tracked graphics within 4 seconds **or a loading indicator in
+  VR** ([Performance.3](https://developers.meta.com/vr/resources/vrc-quest-performance-3/)).
+  The installed OpenXR Vendors 5.1.0 plugin exports Meta's OS splash through
+  `meta_xr_features/instant_splash_screen=true`. It copies `application/boot_splash/image`
+  (`godot/art/icon_512.png`, existing 512x512 mono PNG) into `assets/vr_splash.png` and adds
+  application metadata `com.oculus.ossplash=true` and type `mono`. No manifest-template
+  override is needed. Every export checks both the manifest and the exact packaged image.
+  Meta's [native splash guide](https://developers.meta.com/vr/documentation/native/android/mobile-splash/)
+  (updated 2026-10-09) requires PNG and the case-sensitive asset name, with no fixed mono
+  resolution. Aspect ratio determines displayed size; resolution determines sharpness.
+  For stereo, each half must be no more than 2.3 times as wide as tall.
+  The system splash stays in front of the initial view rather than following head movement.
+  The app then draws a tracked loading label before loading JSON, the menu/atlas and compute
+  pipelines. Startup phase timestamps remain in release logs.
+  **Headset gate remains open.** On a fresh install of the next release-signed APK, with the
+  headset worn, measure launch-intent wall time to the first visible OS splash/loading view.
+  Require under 4 seconds with margin, head tracking during loading, no black handoff, then
+  focus, placement and the first-launch controls card. Repeat warm launches and system-menu
+  interruption during loading. Engine `ticks_msec` and Mac renders do not measure launch-intent
+  latency or prove what the Quest compositor displayed. v0.10.0/code 3 measured 8955 ms engine
+  time to first focus on a fresh install and 2224/2479 ms warm, plus about 2.5 to 3 s before
+  engine start. Do not claim compliance until the device pass.
 - **Functional.2 and Input.4**: open the system menu in the middle of a grab, press the power
   button, take the headset off. The app must keep rendering, pause, draw no menu or pointer, and
   ignore input until focus comes back.

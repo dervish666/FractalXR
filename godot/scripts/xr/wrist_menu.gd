@@ -1618,18 +1618,8 @@ func _build_layers() -> bool:
 	var xri := XRServer.find_interface("OpenXR")
 	if xri == null or not xri.is_initialized():
 		return false
-	_blayer = OpenXRCompositionLayerQuad.new()
-	_blayer.quad_size = PANEL_METRES
-	_blayer.layer_viewport = _bvp
-	_blayer.alpha_blend = true
-	_blayer.sort_order = 1
-	add_child(_blayer)
-	_layer = OpenXRCompositionLayerQuad.new()
-	_layer.quad_size = PANEL_METRES
-	_layer.layer_viewport = _vp
-	_layer.alpha_blend = true
-	_layer.sort_order = 2
-	_front.add_child(_layer)
+	_blayer = WorldQuad.attach(self, _origin as XROrigin3D, _bvp, PANEL_METRES, 1)
+	_layer = WorldQuad.attach(_front, _origin as XROrigin3D, _vp, PANEL_METRES, 2)
 	return true
 
 

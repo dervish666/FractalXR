@@ -140,12 +140,8 @@ func _build_layer() -> bool:
 	var xri := XRServer.find_interface("OpenXR")
 	if xri == null or not xri.is_initialized():
 		return false
-	_layer = OpenXRCompositionLayerQuad.new()
-	_layer.quad_size = PANEL_METRES
-	_layer.layer_viewport = _vp
-	_layer.alpha_blend = true
-	_layer.sort_order = 3        # above both wrist menu planes, which sit at 1 and 2
-	add_child(_layer)
+	# World-locked even though the camera supplies the placement pose.
+	_layer = WorldQuad.attach(self, _head.get_parent() as XROrigin3D, _vp, PANEL_METRES, 3)
 	return true
 
 

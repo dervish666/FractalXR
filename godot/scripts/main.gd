@@ -610,6 +610,24 @@ const BULB_EXPOSURE_IDX := 0      # points are already bright, so do not push th
 
 
 func _ready() -> void:
+	print("[startup] ready begin ticks_msec=%d" % Time.get_ticks_msec())
+	set_process(false)
+	_init_xr()
+	# The OS splash covers engine startup. Keep a tracked loading label after its
+	# first frame, before JSON, menu/atlas uploads and compute pipelines can stall.
+	hud.text = "Loading FractalXR..."
+	hud.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hud.position = Vector3(0.0, 0.0, -1.3)
+	RenderingServer.frame_post_draw.connect(_on_loading_frame, CONNECT_ONE_SHOT)
+
+
+func _on_loading_frame() -> void:
+	print("[startup] first loading frame ticks_msec=%d" % Time.get_ticks_msec())
+	# frame_post_draw can run on the render thread. Build nodes on the main thread.
+	call_deferred("_start_content")
+
+
+func _start_content() -> void:
 	add_child(cloud)
 	cloud.add_child(march)
 	cloud.add_child(solid)
@@ -630,14 +648,13 @@ func _ready() -> void:
 	flame_echoes.setup(cloud)
 	flame_sky.setup(_env())
 
+	print("[startup] nodes attached ticks_msec=%d" % Time.get_ticks_msec())
 	if not library.load_all():
-		# XR first: without it the headset stays on the loading screen and the message on the
-		# camera never shows. Then stop, because nothing past this point was built.
-		_init_xr()
 		_fail("presets: %s" % library.load_error)
 		set_process(false)
 		return
 
+	print("[startup] presets loaded ticks_msec=%d" % Time.get_ticks_msec())
 	# flam3 can only run on an HDR colour buffer with the STORAGE bit, which Forward
 	# Mobile does not have (README, phase 3), so on the Quest the effect self-disables
 	# and the Environment's own ACES curve plus glow (main.tscn) is the look that ships.
@@ -647,7 +664,6 @@ func _ready() -> void:
 		comp.compositor_effects = [tonemap]
 		$WorldEnvironment.compositor = comp
 
-	_init_xr()
 	if xr != null:
 		resume_on = true
 	_eye_res = _current_eye_res()
@@ -660,13 +676,16 @@ func _ready() -> void:
 	help.setup(xr_camera)
 	_help_pending = not _help_seen()
 
+	print("[startup] menu built ticks_msec=%d" % Time.get_ticks_msec())
 	RenderingServer.call_on_render_thread(_setup_gpu)
 
 
 func _setup_gpu() -> void:
+	print("[startup] gpu begin ticks_msec=%d" % Time.get_ticks_msec())
 	var ok := cloud.setup(TEX_SIZE)
 	if ok and not ground.setup():
 		push_error("[ground] %s" % ground.get_error())
+	print("[startup] gpu end ticks_msec=%d" % Time.get_ticks_msec())
 	call_deferred("_on_gpu_ready", ok)
 
 
@@ -682,6 +701,10 @@ func _on_gpu_ready(ok: bool) -> void:
 	_setup_done = true
 	print("[fractal] ready: %d presets, %d particles" % [library.count(), cloud.get_count()])
 	_apply_resume(r)
+	if not _failed:
+		hud.visible = false
+	set_process(true)
+	print("[startup] content ready ticks_msec=%d" % Time.get_ticks_msec())
 
 
 func _load_preset(i: int) -> bool:
@@ -715,9 +738,6 @@ func _build_menu() -> void:
 	menu.rotation_degrees = Vector3(-62.0, 0.0, 0.0)
 	left_hand.add_child(menu)
 	menu.setup(xr_camera, right_hand, left_hand, xr_origin)
-	# The floating readout is retired: it was a debug tool that sat in the view whether
-	# or not it was wanted. Status now lives on the wrist with everything else.
-	hud.visible = false
 
 
 func _apply_tone(preset: Dictionary) -> void:
@@ -2234,6 +2254,8 @@ func _set_passthrough(on: bool) -> void:
 
 
 func _recenter() -> void:
+	if not cloud.is_inside_tree():
+		return  # The runtime can recenter while the loading view is still up.
 	_leave_galaxy(false)
 	var t := _home_transform()
 	if tree_mode:
