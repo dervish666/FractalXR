@@ -12,7 +12,7 @@ Identity is permanent once published. It is already set:
 |---|---|
 | Package | `uk.fractalxr.app` |
 | Label | FractalXR |
-| Devices | `quest3\|quest3s` (Quest 2 is off: 700k points at 72Hz is a Quest 3 load and no Quest 2 has ever run it) |
+| Devices | `quest3\|quest3s` (Quest 2 is off because the default is about a million points and no Quest 2 has ever run it) |
 | Permissions | OpenXR only. `INTERNET` is off, so the install screen asks for nothing |
 | Icons | `godot/art/icon_192.png`, `icon_fg_432.png`, `icon_bg_432.png` |
 
@@ -47,9 +47,9 @@ godot/tools/make_store_art.py godot/art/candidates/vortex.png godot/art/candidat
 
 - Launcher icon: currently **Glacier**, the blue spiral. Swap it by re-running `make_icons.py`
   against a different candidate; `--keep` and `--air` control how tightly it crops to the core.
-- `godot/art/store/card_1024x576.png` — the listing artwork, the card shown in the library and on
+- `godot/art/store/card_1024x576.png`: the listing artwork, the card shown in the library and on
   the homepage. This is the one that decides whether anyone clicks.
-- `godot/art/store/background_1920x1080.png` — the listing background. Their guide is explicit:
+- `godot/art/store/background_1920x1080.png`: the listing background. Their guide is explicit:
   no text, no logos.
 
 **Screenshots and the trailer have to come out of the headset.** 3 to 6 of them, 16:9, and a
@@ -69,42 +69,78 @@ dozen people and finding out what breaks.
 
 **Title**: FractalXR
 
-**Summary**: Grab a fractal flame with both hands, pull it open, and fly through the middle.
+**Summary**: Hold a fractal in your hands, pull it open and walk through it.
 
 **Description** (their markdown subset: bold, italic, lists, links, no tables or HTML):
 
 ```
-FractalXR draws a million-point fractal flame in front of you and lets you take hold of it.
+FractalXR puts a fractal within arm's reach and lets you take hold of it. Every form is
+computed live on the headset, not played back from a video, so more detail appears as you
+bring it closer.
 
-Grip to move it around. Grip with both hands and pull them apart to open it up and fly through
-the middle. Every form is a live chaos game running on the headset's own GPU rather than a video
-or a mesh, so the detail keeps arriving as you get closer to it.
+Squeeze a grip to move and turn it. Squeeze both grips and pull your hands apart to scale it
+up and pass through the middle. Turn your left wrist toward your face for the menu.
 
-**In this build**
+**Five modes**
 
-- 13 flames and 21 Mandelbulb-style forms, each one melting into the next instead of cutting
-- A wrist menu for particle count, brightness, colour theme, drift and detail
-- Passthrough, so the fractal hangs in your actual room
-- Holds 72Hz on a Quest 3 at around 700,000 points
+- **FLAME.** A cloud of about a million glowing points. 13 flames, each morphing into the next.
+- **BULB.** 21 forms (Mandelbulbs, Mandelboxes, quaternion Julia sets) that open hand-sized,
+  drawn as soft splats, contour lines, a solid sculpture or a marched surface.
+- **GROUND.** A fractal floor that runs to the horizon. Eight families, each with its Julia
+  twin. Walk with the left stick, or point and pull a trigger to glide there.
+- **TREE.** 13 species that grow from the base and sway. Point at the floor and pull the right
+  trigger to plant one, or lay out an avenue of about 500.
+- **IFS.** A sculpture of mirrored frames. Turn on EDIT, hold a trigger on a handle and drag to
+  reshape it.
 
-**Early Access.** This is the native port of a browser project and the feature list is still
-growing. Tell me what breaks.
+**Also**
 
-The controls appear on a card the first time you launch it. Turn your left wrist toward your
-face for the menu.
+- 26 colour themes, and CYCLE to keep them moving
+- Passthrough, so the fractal hangs in your room
+- No account, no permission prompts, no internet
+
+**Early Access.** If something breaks, tell me at https://github.com/dervish666/FractalXR/issues
+
+A controls card shows on first launch. HELP in the wrist menu brings it back.
 ```
 
-**Tags**: fractal, art, relaxing, psychedelic, passthrough, mixed reality, experience, sandbox
-**Devices**: Quest 3, Quest 3S · **Position**: seated and standing · **License**: free
-**Comfort**: moderate. Grabbing moves the fractal rather than you, but flying through it moves
-the whole world past your eyes, which some people will feel.
+**Tags**: fractal, art, relaxing, mixed reality, passthrough, sandbox, creative, psychedelic
+(the first five on the Meta store)
+**Devices**: Quest 3 and Quest 3S (3S untested) · **Position**: seated, standing and roomscale · **License**: free
+**Comfort**: moderate. Grabbing moves the fractal, not you. GROUND, TREE's WALK, IFS DIVE and
+FLAME's GALAXY move the world past you behind a tunnel vignette. Snap turns are 30 degrees
+where a mode has them.
+FLAME and BULB at tabletop size are comfortable seated.
 
 ## 4. Before strangers touch it
 
+Every upload requires this headset pass in each mode. Use snap turn where supported
+(GROUND, TREE outside WALK, GALAXY, room-size IFS); check the comfort tunnel during movement.
+
 - [ ] Release-signed APK installs clean over nothing (`adb uninstall uk.fractalxr.app` first)
+- [ ] FLAME opens framed; controls card matches; snap turn and tunnel work in GALAXY; system
+      dash mid-grab hides pointers and pauses movement; relaunch resumes the selected state
+- [ ] BULB opens framed; controls card matches; grab, scale and stick movement turn or move the
+      object in front of you without a movement tunnel; system dash mid-grab hides pointers
+      and pauses movement; relaunch resumes the selected state
+- [ ] GROUND opens framed; controls card matches; snap turn and tunnel work; system dash
+      mid-drag or glide hides pointers and stops movement; relaunch resumes the selected state
+- [ ] TREE opens framed; controls card matches; snap turn and WALK tunnel work; system dash
+      mid-grab or WALK hides pointers and stops movement; relaunch resumes the selected state
+- [ ] IFS opens framed; controls card matches; room-size snap turn and DIVE tunnel work; system
+      dash mid-grab or DIVE hides pointers and pauses movement; relaunch resumes the selected state
+- [ ] Cold launch reaches a head-tracked frame in under 4 seconds. Record launch in logcat,
+      then the release-visible `[startup] first session_focussed ticks_msec=...` and
+      `[startup] first placement ticks_msec=... first_focus_msec=...` lines. Engine ticks start
+      at engine startup; use logcat timestamps for launch-to-frame timing and confirm in the
+      headset that the first placed frame tracks the head. Placement alone does not prove this.
+
 - [ ] First-launch controls card appears, dismisses on either trigger, and does not come back
 - [ ] `HELP` in the wrist menu brings it back
-- [ ] 15-minute thermal soak (`godot/tools/soak.sh 900`), because every number so far is a
-      cold-start number and Quest throttling after 5 to 15 minutes is guaranteed
+- [ ] Run a 15-minute thermal soak on the release APK and watch the frame rate in OVR Metrics
+      Tool. Every number so far is a cold-start number and the Quest throttles after 5 to 15
+      minutes. Release builds suppress `[perf]`. Use
+      `bash godot/tools/soak.sh 900 > soak.csv` on a debug build only for the per-stage breakdown.
+      Debug measurements do not replace the release soak.
 - [ ] Passthrough toggles both ways without a black frame
 - [ ] Quest 3S check, or drop it from the supported devices list

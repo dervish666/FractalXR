@@ -24,6 +24,7 @@ var _quad: MeshInstance3D
 var _head: Node3D
 var _shown := 0.0
 var _target := 0.0
+var _suspended := false
 var _mode := "flame"
 
 
@@ -37,14 +38,23 @@ func setup(head: Node3D) -> void:
 	# moment the session is merely visible rather than focused.
 	var xri := XRServer.find_interface("OpenXR") as OpenXRInterface
 	if xri != null:
-		xri.session_visible.connect(_hide_now)
-		xri.session_stopping.connect(_hide_now)
+		xri.session_visible.connect(func(): set_suspended(true))
+		xri.session_stopping.connect(func(): set_suspended(true))
+		xri.session_loss_pending.connect(func(): set_suspended(true))
+		xri.session_focussed.connect(func(): set_suspended(false))
+		set_suspended(xri.is_initialized())
 
 
-## Drop the card in one frame, with no fade: the system UI is already up by the time
-## this runs, and anything still composited sits on top of it.
+## Hide immediately under the system UI. Keep the open intent for refocus.
+func set_suspended(on: bool) -> void:
+	if on == _suspended:
+		return
+	_suspended = on
+	if on:
+		_hide_now()
+
+
 func _hide_now() -> void:
-	_target = 0.0
 	_shown = 0.0
 	visible = false
 	if _card != null:
@@ -82,7 +92,7 @@ func open() -> void:
 		# A QuadMesh and an OpenXR quad layer both face +Z, so -Z points away from the viewer.
 		global_transform = Transform3D(Basis.looking_at(fwd, Vector3.UP), pos)
 	_target = 1.0
-	visible = true
+	visible = not _suspended
 
 
 func close() -> void:
@@ -90,6 +100,8 @@ func close() -> void:
 
 
 func update(delta: float) -> void:
+	if _suspended:
+		return
 	if is_equal_approx(_shown, _target):
 		if _shown <= 0.001 and visible:
 			visible = false

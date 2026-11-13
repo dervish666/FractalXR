@@ -5,6 +5,16 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Store readiness, 2026-11-13
+
+- System dash and session shutdown hide pointers, release grabs and stop locomotion. Snap turn
+  waits for a tracked controller to report a centred stick after focus or tracking returns.
+  Focus loss cancels an IFS handle drag immediately. Colour cycling continues.
+- The first-launch controls card waits for focus and returns if the system dash interrupted it.
+- APK exports require head tracking. Release exports reject debug certificates and require a
+  verified v2 signature. Startup focus and placement timings appear in release logs.
+- Store upload checklists cover every mode. The Quest privacy policy lives at `/privacy.html`.
+
 ### Council review, 2026-11-05/06
 A three-model review (Claude Opus 5.5, GPT-6.1 Sol, Claude Fable 5.1) scored the native app on
 eight categories and fixed what held each one under 8.5. Nothing here has been on the headset yet.

@@ -28,26 +28,84 @@ if [ ! -d "$PROJ/$VENDORS" ]; then
 	fi
 fi
 mkdir -p "$PROJ/build"
-EXTRA=""
-[ -d "$PROJ/android/build" ] || EXTRA="--install-android-build-template"
+if [ ! -f "$PROJ/android/build/build.gradle" ]; then
+	"$GODOT" $GODOT_FLAGS --headless --install-android-build-template --quit
+fi
+# Compare against the archive, since android/build may already contain our override.
+# Godot names the folder major.minor[.patch].status[.mono] and drops a zero patch (4.8.stable).
+TEMPLATE_VERSION=$("$GODOT" --version | sed -E 's/^([0-9]+(\.[0-9]+)+\.[a-z]+[0-9]*(\.mono)?)(\..*)?$/\1/')
+if [ "$(uname -s)" = Darwin ]; then
+	TEMPLATE_ROOT="$HOME/Library/Application Support/Godot/export_templates"
+else
+	TEMPLATE_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/godot/export_templates"
+fi
+python3 "$PROJ/tools/manifest_check.py" template \
+	"$TEMPLATE_ROOT/$TEMPLATE_VERSION/android_source.zip" "$PROJ/tools/AndroidManifest.xml"
+# The generated variant manifest merges with this checked immersive-app manifest.
+cp "$PROJ/tools/AndroidManifest.xml" "$PROJ/android/build/src/main/AndroidManifest.xml"
+AAPT2=$(find "$ANDROID_SDK_ROOT/build-tools" -name aapt2 -type f | sort -V | tail -n 1)
+if [ -z "$AAPT2" ] || [ ! -x "$AAPT2" ]; then
+	echo "[build] export requires aapt2 in Android SDK build-tools" >&2
+	exit 1
+fi
 
 case "$MODE" in
 release)
+	OUT="$PROJ/build/fractalxr.apk"
+	rm -f "$OUT"
 	: "${GODOT_ANDROID_KEYSTORE_RELEASE_PATH:?set it, or run tools/keystore.sh to make one}"
 	: "${GODOT_ANDROID_KEYSTORE_RELEASE_USER:?the key alias}"
 	: "${GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD:?the key password}"
-	OUT="$PROJ/build/fractalxr.apk"
-	"$GODOT" $GODOT_FLAGS --headless $EXTRA --export-release "Quest" "$OUT"
+	if [ ! -f "$GODOT_ANDROID_KEYSTORE_RELEASE_PATH" ]; then
+		echo "[build] release keystore does not exist" >&2
+		exit 1
+	fi
+	APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+	if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+		echo "[build] release requires apksigner in Android SDK build-tools" >&2
+		exit 1
+	fi
+	"$GODOT" $GODOT_FLAGS --headless --export-release "Quest" "$OUT"
 	;;
 debug)
 	OUT="$PROJ/build/fractalxr-debug.apk"
-	"$GODOT" $GODOT_FLAGS --headless $EXTRA --export-debug "Quest" "$OUT"
+	rm -f "$OUT"
+	"$GODOT" $GODOT_FLAGS --headless --export-debug "Quest" "$OUT"
 	;;
 *)
 	echo "usage: build.sh [debug|release]" >&2; exit 2 ;;
 esac
 
+[ -s "$OUT" ] || { echo "[build] export did not produce an APK" >&2; exit 1; }
 ls -lh "$OUT"
-# Prove what actually signed it. A debug-signed APK on a store listing is a bug, not a detail.
-APKSIGNER=$(ls "$ANDROID_SDK_ROOT"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)
-[ -n "$APKSIGNER" ] && "$APKSIGNER" verify --print-certs "$OUT" | grep -i "signer #1 certificate DN" || true
+MANIFEST_DUMP=$(mktemp)
+trap 'rm -f "$MANIFEST_DUMP"' EXIT
+if ! "$AAPT2" dump xmltree "$OUT" --file AndroidManifest.xml > "$MANIFEST_DUMP" \
+	|| ! python3 "$PROJ/tools/manifest_check.py" apk "$MANIFEST_DUMP"; then
+	rm -f "$OUT"
+	echo "[build] refusing APK with an unchecked manifest" >&2
+	exit 1
+fi
+# A successful export is insufficient. Verify the actual APK before calling it store-signed.
+if [ "$MODE" = release ]; then
+	if ! SIGNATURE=$("$APKSIGNER" verify -v --print-certs "$OUT" 2>&1); then
+		rm -f "$OUT"
+		echo "[build] release APK signature verification failed" >&2
+		exit 1
+	fi
+	if ! grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' <<< "$SIGNATURE"; then
+		rm -f "$OUT"
+		echo "[build] release APK requires a verified v2 signature" >&2
+		exit 1
+	fi
+	if ! grep -qi 'certificate DN:' <<< "$SIGNATURE" \
+		|| grep -qi 'certificate DN:.*Android Debug' <<< "$SIGNATURE"; then
+		rm -f "$OUT"
+		echo "[build] refusing release APK signed with Android Debug certificate" >&2
+		exit 1
+	fi
+	grep -i 'certificate DN:' <<< "$SIGNATURE"
+	echo "BUILD PASS release v2=true certificate=release"
+else
+	echo "BUILD PASS debug"
+fi

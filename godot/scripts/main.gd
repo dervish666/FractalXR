@@ -475,6 +475,7 @@ var _xr_focused := true
 ## True once the session has reported focus. _xr_focused starts true for the desktop, so it
 ## cannot say whether a headset session has got there yet.
 var _xr_focus_seen := false
+var _first_focus_msec := -1
 ## EXIT is armed for this long after its first press.
 const EXIT_ARM_S := 4.0
 var _exit_armed_until := -1.0
@@ -1309,6 +1310,10 @@ func _hand_floor_hit(hand: XRController3D) -> Variant:
 ## conditions that let the trigger plant: tree mode, a valid floor hit, the menu and
 ## help not eating the trigger, and room left in the forest.
 func _tick_plant_marker(delta: float) -> void:
+	if not _xr_focused:
+		plant_marker.hide_marker()
+		plant_marker.update(1.0)
+		return
 	# Exactly the conditions _handle_input plants under, and no stricter. A visible menu
 	# is not one of them: the trigger only goes to the menu when the ray is actually ON
 	# it (_menu_active), so a ring that vanished whenever the wrist panel was up would
@@ -1328,7 +1333,7 @@ func _tick_plant_marker(delta: float) -> void:
 
 
 func _tick_orbit() -> void:
-	if not orbit_on or _menu_active or menu.visible:
+	if not _xr_focused or not orbit_on or _menu_active or menu.visible:
 		orbit.visible = false
 		return
 	var hit = _hand_floor_hit(right_hand)
@@ -1860,7 +1865,7 @@ static func _gcd(a: int, b: int) -> int:
 func _tick_flame_scale(delta: float) -> void:
 	if galaxy.is_moving():
 		# A grip takes over from the ease where it stands, and a mode change ends it.
-		if (grab != null and grab.is_grabbing()) or bulb_mode or ground_mode or tree_mode or ifs_mode:
+		if not _xr_focused or (grab != null and grab.is_grabbing()) or bulb_mode or ground_mode or tree_mode or ifs_mode:
 			galaxy.stop()
 		else:
 			cloud.global_transform = galaxy.step(delta)
@@ -2013,10 +2018,16 @@ func _fail(msg: String) -> void:
 
 func _init_xr() -> void:
 	xr = XRServer.find_interface("OpenXR") as OpenXRInterface
+	if xr != null:
+		xr.session_visible.connect(_on_session_unfocused)
+		xr.session_stopping.connect(_on_session_unfocused)
+		xr.session_loss_pending.connect(_on_session_unfocused)
+		xr.session_focussed.connect(_on_session_focussed)
 	if xr == null or not xr.is_initialized():
 		_status = "OpenXR unavailable. Running flat, no stereo."
 		xr = null
 		return
+	_xr_focused = false
 	get_viewport().use_xr = true
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	if xr.is_foveation_supported():
@@ -2039,10 +2050,6 @@ func _init_xr() -> void:
 	# A system recenter moves the origin; the cloud should follow the viewer, not the
 	# spot the old origin was.
 	xr.pose_recentered.connect(_recenter)
-	# session_visible is "visible but not focused": the Quest dash is up. Drift, spin
-	# and the guard all measure or animate against frames the runtime is throttling.
-	xr.session_visible.connect(func(): _xr_focused = false)
-	xr.session_focussed.connect(_on_session_focussed)
 	# Phase 2 measured the point rendering as vertex-bound, not fill-bound: cutting the
 	# eye buffer 2.8x saved only 1ms. 0.75 lands near the Quest 3's native ~2064x2208
 	# and costs nothing visually, so take the free ~1ms and move on.
@@ -2051,9 +2058,33 @@ func _init_xr() -> void:
 		xr.get_display_refresh_rate(), str(xr.get_render_target_size()), xr.get_view_count()])
 
 
+func _on_session_unfocused() -> void:
+	_xr_focused = false
+	_snap_armed = false
+	ifs_edit.cancel()
+	_gg_hands.clear()
+	_walk_stick = false
+	plant_marker.hide_marker()
+	plant_marker.update(1.0)
+	orbit.visible = false
+	menu.set_suspended(true)
+	help.set_suspended(true)
+	if grab != null:
+		grab.suspended = true
+		grab.update(0.0)
+	ground.stop_glide()
+	galaxy.stop()
+	forest.walk_held = false
+	forest.walk_speed = 0.0
+	ifs_dive.pause()
+
+
 func _on_session_focussed() -> void:
 	_xr_focused = true
 	_xr_focus_seen = true
+	if _first_focus_msec < 0:
+		_first_focus_msec = Time.get_ticks_msec()
+		print("[startup] first session_focussed ticks_msec=%d" % _first_focus_msec)
 
 
 func _env() -> Environment:
@@ -2297,9 +2328,11 @@ func _process_frame(delta: float) -> void:
 		# channel by about one code value at most, which nobody sees, for a quarter of the script.
 		if _theme_blend_s <= 0.0 or _theme_blend >= 1.0 or Engine.get_process_frames() % 4 == 0:
 			_palette_dirty = true
-	if not _placed and _setup_done and xr_camera.global_transform.origin.length_squared() > 1e-6:
+	if not _placed and _setup_done and _xr_focused and xr_camera.global_transform.origin.length_squared() > 1e-6:
 		_placed = true
 		_recenter()
+		print("[startup] first placement ticks_msec=%d first_focus_msec=%d" % [
+			Time.get_ticks_msec(), _first_focus_msec])
 		# Pinned floats the panel in front of the head, so it waits for a tracked head as the
 		# recentre does: restored at startup it would float in front of wherever the origin is.
 		if _resume_pin:
@@ -2311,16 +2344,14 @@ func _process_frame(delta: float) -> void:
 	if _resume_passthrough and _xr_focused and (xr == null or _xr_focus_seen):
 		_resume_passthrough = false
 		_set_passthrough(true)
+	help.set_suspended(not _xr_focused)
 	help.update(delta)
 	_tick_resume(delta)
 	# Input has one owner a frame, highest first: an unfocused session (the system dash is
 	# up), then the help card, then the wrist menu when a ray is on it, then the world. The
 	# menu is put to sleep under the card the way it sleeps under the dash, or its scrub and
 	# hold ran on the same sticks and trigger the card was waiting on.
-	if help.is_open():
-		menu.set_suspended(true)
-	elif _xr_focused:
-		menu.set_suspended(false)
+	menu.set_suspended(not _xr_focused or help.is_open())
 	_menu_active = menu.update(delta)
 	if _xr_focused:
 		_run_guard(delta)
@@ -2416,6 +2447,8 @@ func _process_frame(delta: float) -> void:
 		forest.walk_held = forest.walking() and _xr_focused and not _menu_active \
 			and not help.is_open() \
 			and (_trig_held[0] or _trig_held[1] or _walk_stick or Input.is_key_pressed(KEY_G))
+		if not _xr_focused:
+			forest.walk_speed = 0.0
 		forest.tick(delta, xr_camera.global_transform.origin)
 		# The walk's tunnel: tighter than the dive's, shut early, with the rest frame in it.
 		_want_vignette(ComfortVignette.WALK, forest.walk_motion())
@@ -2429,14 +2462,17 @@ func _process_frame(delta: float) -> void:
 		var dive_held: bool = ifs_dive.on and _xr_focused and not help.is_open() \
 			and not _menu_active and not ifs_edit.is_editing() \
 			and (grab == null or not grab.is_grabbing()) and (_trig_held[0] or _trig_held[1])
-		ifs_dive.tick(delta, dive_held, xr_camera.global_transform)
+		if _xr_focused:
+			ifs_dive.tick(delta, dive_held, xr_camera.global_transform)
+		else:
+			ifs_dive.pause()
 		# Room size flies the beams past your face, so the periphery dims while a step moves,
 		# eased with the step as the walk's is. At table size the sculpture moves in front of
 		# you and the view is left alone.
 		_want_vignette(ComfortVignette.DIVE, ifs_dive.motion() if ifs_room else 0.0)
 		# A captured handle owns the shape, so the ambient clock stops while it is held. So does
 		# a dive step: it re-roots by the maps it started with, and a breath would move them.
-		ifs.ambient_hold = ifs_edit.is_editing() or not _xr_focused or ifs_dive.in_step()
+		ifs.ambient_hold = ifs_edit.is_editing() or ifs_dive.in_step()
 		if ifs.tick(delta):
 			# A morph landed, bringing its preset's own opening rung with it.
 			ifs_detail_idx = _ifs_detail_idx(ifs.detail)
@@ -2489,6 +2525,7 @@ func _handle_input(delta: float) -> void:
 	# Unfocused, nothing acts: the edges above are spent so a press made under the dash does
 	# not land when it closes.
 	if not _xr_focused:
+		_snap_armed = false
 		return
 	# While the card is up the triggers only dismiss it. The edges were read in _process, for
 	# both hands, so nothing here can leave one hand's edge state stale. Seen is written here,
@@ -2516,7 +2553,10 @@ func _handle_input(delta: float) -> void:
 	# and a floated panel can make the left hand the pointer. Zeroed here, every mode below
 	# is gated at once.
 	# Any ray on the panel owns them too: a stick nudge meant for a tile must not move the world.
-	if menu.wants_stick() or _menu_active:
+	# Snap rearming needs the real stick position, even while the menu owns its input.
+	var snap_x := rs.x
+	var stick_owned := menu.wants_stick() or _menu_active
+	if stick_owned:
 		rs = Vector2.ZERO
 		ls = Vector2.ZERO
 
@@ -2531,7 +2571,7 @@ func _handle_input(delta: float) -> void:
 		if right.length_squared() > 1e-6:
 			right = right.normalized()
 		var grabbing := _ground_grab()
-		var snap := _snap_step(rs.x, not grabbing)
+		var snap := _snap_step(snap_x, not grabbing and not stick_owned)
 		if not grabbing:
 			# Walk and zoom move the floor past you with no hand in it, so both close the tunnel.
 			var moving := 0.0
@@ -2561,7 +2601,7 @@ func _handle_input(delta: float) -> void:
 		# turning that smoothly is turning an object, not the room.
 		var surround: bool = tree_mode or galaxy.active or (ifs_mode and ifs_room)
 		if surround:
-			var snap := _snap_step(rs.x, true)
+			var snap := _snap_step(snap_x, not stick_owned)
 			if snap != 0:
 				# About a vertical line through the head, so the view turns and nothing swings
 				# past you; same sense as the smooth turn it replaces.
@@ -2591,7 +2631,7 @@ func _handle_input(delta: float) -> void:
 	# Mid-grab or mid-drag of an IFS handle the surround branch above is skipped; keep the
 	# snap's arm honest anyway, or letting go with the stick still over snaps the room.
 	if ((grab != null and grab.is_grabbing()) or ifs_edit.is_editing()) and not ground_mode:
-		_snap_step(rs.x, false)
+		_snap_step(snap_x, false)
 
 	# Read every button every frame, even when this mode maps it differently. Otherwise a
 	# held button becomes a phantom new press after a hand regains tracking or a mode flips.
@@ -2685,6 +2725,10 @@ func _handle_input(delta: float) -> void:
 ## re-arms even while `can_fire` is false (a grip held), so letting go of a grip with the stick
 ## centred is a clean start.
 func _snap_step(x: float, can_fire: bool) -> int:
+	if xr != null and not _tracked_hand(right_hand):
+		# A missing tracker supplies zero input, which cannot prove the stick centred.
+		_snap_armed = false
+		return 0
 	if absf(x) < SNAP_REARM:
 		_snap_armed = true
 	elif not can_fire and absf(x) > SNAP_FIRE:
