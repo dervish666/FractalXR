@@ -108,7 +108,8 @@ A controls card shows on first launch. HELP in the wrist menu brings it back.
 (the first five on the Meta store)
 **Devices**: Quest 3 and Quest 3S (3S untested) · **Position**: seated, standing and roomscale · **License**: free
 **Comfort**: moderate. Grabbing moves the fractal, not you. GROUND, TREE's WALK, IFS DIVE and
-FLAME's GALAXY move the world past you, with 30 degree snap turns and a tunnel vignette.
+FLAME's GALAXY move the world past you behind a tunnel vignette. Snap turns are 30 degrees
+where a mode has them.
 FLAME and BULB at tabletop size are comfortable seated.
 
 ## 4. Before strangers touch it
@@ -136,8 +137,9 @@ Every upload requires this headset pass in each mode. Use snap turn where suppor
 
 - [ ] First-launch controls card appears, dismisses on either trigger, and does not come back
 - [ ] `HELP` in the wrist menu brings it back
-- [ ] Measure the release APK for a 15-minute thermal soak with OVR Metrics Tool, because every
-      number so far is a cold-start number. Release builds suppress `[perf]`. Use
+- [ ] Run a 15-minute thermal soak on the release APK and watch the frame rate in OVR Metrics
+      Tool. Every number so far is a cold-start number and the Quest throttles after 5 to 15
+      minutes. Release builds suppress `[perf]`. Use
       `bash godot/tools/soak.sh 900 > soak.csv` on a debug build only for the per-stage breakdown.
       Debug measurements do not replace the release soak.
 - [ ] Passthrough toggles both ways without a black frame
