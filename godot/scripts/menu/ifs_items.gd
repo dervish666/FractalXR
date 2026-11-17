@@ -60,6 +60,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
+		MenuShared.turn(m, vis),
+		MenuShared.vignette(m, vis),
 		# Copies of the sculpture through the room, on SCENE as FLAME's are. The count is what the
 		# tile prints, because the count is what the GPU pays for; the headset's frame time
 		# decides whether MANY stays.

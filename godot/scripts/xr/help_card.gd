@@ -255,7 +255,7 @@ class ControlsCard extends Control:
 			right_trigger = PackedStringArray(["Plant a tree", "at the point", "· WALK: hold to glide"])
 			face = PackedStringArray(["A · B: previous,", "next species"])
 			# WALK takes the right stick too: forward glides, the turn and push are off.
-			right_stick = PackedStringArray(["Snap turn", "· click: spin on, off", "· WALK: push to glide"])
+			right_stick = PackedStringArray(["Turn", "· click: spin on, off", "· WALK: push to glide"])
 			# The grips move the whole grove, hero and planted alike: they are one cloud.
 			left_grip = PackedStringArray(["Hold to grab", "the whole grove"])
 			right_grip = PackedStringArray(["Both grips:", "scale the grove"])
@@ -264,7 +264,7 @@ class ControlsCard extends Control:
 			left_trigger = PackedStringArray(["Glide to", "the point"])
 			right_trigger = PackedStringArray(["Glide to", "the point"])
 			left_stick = PackedStringArray(["Walk the ground", "· click: passthrough"])
-			right_stick = PackedStringArray(["Snap turn, zoom", "· click: orbit on, off"])
+			right_stick = PackedStringArray(["Turn, zoom", "· click: orbit on, off"])
 			face = PackedStringArray(["A · B: previous,", "next family"])
 			# Ground has no object to hold. The grips drag and scale the field under you.
 			left_grip = PackedStringArray(["Hold to drag", "the ground"])

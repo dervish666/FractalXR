@@ -20,6 +20,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).hinted("Back to where this family opened"),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
+		MenuShared.turn(m, vis),
+		MenuShared.vignette(m, vis),
 
 		WristMenu.Item.new("look", "JULIA",
 			func(): return "from here" if m.ground.julia else "off",

@@ -52,6 +52,26 @@ static func art(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		"How the world is drawn")
 
 
+## TURN: right stick X turns you smoothly (the default) or in 30 degree snaps.
+static func turn(m: FractalMain, vis: Callable) -> WristMenu.Item:
+	return WristMenu.Item.new("scene", "TURN",
+		func(): return FractalMain.TURN_NAMES[m.turn_idx],
+		func(): m.turn_idx = (m.turn_idx + 1) % FractalMain.TURN_NAMES.size(),
+		false, vis).stepping(
+		func(d: int): m.turn_idx = wrapi(m.turn_idx + d, 0, FractalMain.TURN_NAMES.size())).minor().hinted(
+		"Smooth turning or snaps")
+
+
+## VIGNETTE: how hard the comfort tunnel closes while the world moves past you.
+static func vignette(m: FractalMain, vis: Callable) -> WristMenu.Item:
+	return WristMenu.Item.new("scene", "VIGNETTE",
+		func(): return FractalMain.VIGNETTE_NAMES[m.vignette_idx],
+		func(): m.vignette_idx = (m.vignette_idx + 1) % FractalMain.VIGNETTE_NAMES.size(),
+		false, vis).stepping(
+		func(d: int): m.vignette_idx = wrapi(m.vignette_idx + d, 0, FractalMain.VIGNETTE_NAMES.size())).minor().hinted(
+		"Darkens the edges while you move")
+
+
 ## SKY hangs or hides the baked sky in every mode (BULB keeps its own switch as well).
 static func sky(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("scene", "SKY",

@@ -75,6 +75,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		MenuShared.home(m, vis),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
+		MenuShared.turn(m, vis),
+		MenuShared.vignette(m, vis),
 
 		WristMenu.Item.new("look", "LEVELS",
 			func(): return "%d levels · %s branches" % [m.tree.effective_depth(),

@@ -179,14 +179,19 @@ var fly_world := BulbFly.World.BULB
 ## global shader parameter art_style carries it to every shader but FLY's, which BulbFly.art sets.
 const ART_NAMES := ["natural", "neon", "toon", "pencil", "circuit"]
 var art := 0
-## Fastest apparent flight, and the share of the clearance covered a second below it.
-const FLY_MAX_MPS := 1.0
-const FLY_CLEARANCE_PER_S := 0.8
+## Fastest apparent flight, and the share of the clearance covered a second below it. A step
+## stays a small share of the clearance (2.5 / 72 Hz, times FLY SPEED), so it cannot skip a wall.
+const FLY_MAX_MPS := 6.0
+const FLY_CLEARANCE_PER_S := 2.5
+## FLY SPEED: a multiple of both, at full stick.
+const FLY_SPEEDS := [0.5, 1.0, 2.0, 4.0]
+const FLY_SPEED_NAMES := ["gentle", "normal", "fast", "rocket"]
+var fly_speed_idx := 1
 ## Never closer to a wall than this, in metres: inside the camera's 5 cm near plane the
 ## wall would cut open.
 const FLY_MIN_CLEAR_M := 0.12
 ## Octaves of shrink a second at full stick.
-const FLY_OCTAVES_PER_S := 0.7
+const FLY_OCTAVES_PER_S := 1.5
 ## World scale bounds while flying, as a multiple of the cloud's own: 2^14 is past where
 ## the state-space floats run out of mantissa for the finest level.
 const FLY_MAX_SCALE := 16384.0
@@ -350,10 +355,17 @@ const GROUND_RENDER_IDX := 2       # RENDER_STEPS[2] = 1.0
 var _render_idx_saved := 0
 const GROUND_PAN_MPS := 1.4       # metres per second at full stick
 const GROUND_ZOOM_PER_S := 0.9    # e-folds per second at full stick
-## Right stick X on the ground turns in snaps, not smoothly: a smooth yaw with a still body is
-## the strongest vection there is, and Meta's guidance makes smooth turning opt-in at most.
-## The stick has to come back inside SNAP_REARM before it can snap again, so a held stick is
-## one snap and a stick resting near the threshold cannot chatter.
+## TURN: right stick X turns the world around you smoothly (Sam found the snaps broke the
+## immersion) or, picked on the menu, in snaps. A snap needs the stick back inside SNAP_REARM
+## before it can fire again, so a held stick is one snap and a resting one cannot chatter.
+const TURN_NAMES := ["smooth", "snap"]
+var turn_idx := 0
+## Smooth turn rate at full stick, past a 0.15 deadzone.
+const SMOOTH_TURN_RAD_S := PI / 2.0
+## VIGNETTE: the comfort tunnel's strength, as a multiple of what the mover asks for.
+const VIGNETTE_NAMES := ["full", "light", "off"]
+const VIGNETTE_SCALE := [1.0, 0.45, 0.0]
+var vignette_idx := 0
 const SNAP_TURN_RAD := PI / 6.0
 const SNAP_FIRE := 0.7
 const SNAP_REARM := 0.35
@@ -2346,7 +2358,7 @@ func _process(delta: float) -> void:
 	_tick_cycle(delta)
 	_process_frame(delta)
 	vignette.set_profile(_vig_profile)
-	vignette.set_motion(_vig_motion)
+	vignette.set_motion(_vig_motion * VIGNETTE_SCALE[vignette_idx])
 	# After every early return in _process_frame, so whatever recoloured this frame lands.
 	if _palette_dirty:
 		_palette_dirty = false
@@ -2548,7 +2560,7 @@ func _process_frame(delta: float) -> void:
 # Left stick click       passthrough on / off
 # Right stick click      the mode's ambient motion on / off
 # Right stick            turn, push away and pull back. Around you (ground, tree, galaxy,
-#                        room-size IFS) the turn is a 30 degree snap; ground zooms instead
+#                        room-size IFS) the turn is smooth, or 30 degree snaps (TURN); ground zooms instead
 #                        of pushing; tree pushes level; tree WALK: forward glides like the
 #                        trigger, and nothing else
 # Left stick             grow and shrink (ground: walk; off during tree WALK)
@@ -2624,7 +2636,7 @@ func _handle_input(delta: float) -> void:
 		var grabbing := _ground_grab()
 		if grabbing:
 			guide.set_tour(false)
-		var snap := _snap_step(snap_x, not grabbing and not stick_owned)
+		var turn_a := _turn_step(snap_x, not grabbing and not stick_owned, delta)
 		if not grabbing:
 			# Walk and zoom move the floor past you with no hand in it, so both close the tunnel.
 			var moving := 0.0
@@ -2637,9 +2649,11 @@ func _handle_input(delta: float) -> void:
 			if absf(rs.y) > 0.15:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
 				moving = maxf(moving, minf(1.0, absf(rs.y)))
+			if turn_idx == 0:
+				moving = maxf(moving, absf(turn_a) / maxf(SMOOTH_TURN_RAD_S * delta, 1e-6))
 			_want_vignette(ComfortVignette.WALK, moving)
-			if snap != 0:
-				ground.rotate_about_head(-snap * SNAP_TURN_RAD)
+			if turn_a != 0.0:
+				ground.rotate_about_head(-turn_a)
 	# WALK owns the sticks. The right stick pushed forward glides like a held trigger, under
 	# the same pace, ease and tunnel; it used to shove the whole avenue at 1.5 m/s with no
 	# vignette. Turning and scaling the avenue mid-walk are off: a smooth turn swung the rows
@@ -2654,19 +2668,21 @@ func _handle_input(delta: float) -> void:
 		_fly_sticks(rs, ls, snap_x, stick_owned, delta)
 	elif (grab == null or not grab.is_grabbing()) and not ifs_edit.is_editing():
 		# Around you (the grove, inside the galaxy, a room-size sculpture) the stick turns and
-		# moves the world, so it follows the ground's rules: snap turns, and the walk's tunnel
+		# moves the world, so it follows the ground's rules: TURN's turn, and the walk's tunnel
 		# while it pushes or scales. A hand-sized flame or bulb is a thing in front of you, and
 		# turning that smoothly is turning an object, not the room.
 		var surround: bool = tree_mode or galaxy.active or (ifs_mode and ifs_room)
 		if surround:
-			var snap := _snap_step(snap_x, not stick_owned)
-			if snap != 0:
+			var turn_a := _turn_step(snap_x, not stick_owned, delta)
+			if turn_a != 0.0:
 				# About a vertical line through the head, so the view turns and nothing swings
-				# past you; same sense as the smooth turn it replaces.
+				# past you.
 				var head := xr_camera.global_transform.origin
-				var turn := Basis(Vector3.UP, snap * SNAP_TURN_RAD)
+				var turn := Basis(Vector3.UP, turn_a)
 				cloud.global_transform = Transform3D(turn, head - turn * head) * cloud.global_transform
 			var moving := 0.0
+			if turn_idx == 0:
+				moving = absf(turn_a) / maxf(SMOOTH_TURN_RAD_S * delta, 1e-6)
 			if absf(rs.y) > 0.15:
 				moving = absf(rs.y)
 			if absf(ls.y) > 0.15:
@@ -2778,7 +2794,7 @@ func _handle_input(delta: float) -> void:
 		_step_detail(1)
 
 
-## Right stick X as snap turns, shared by every mode that turns the world around you. Returns
+## Right stick X as snap turns (TURN snap), shared by every mode that turns the world around you. Returns
 ## -1, 0 or 1. The stick has to come back inside SNAP_REARM before it can fire again, and it
 ## re-arms even while `can_fire` is false (a grip held), so letting go of a grip with the stick
 ## centred is a clean start.
@@ -2797,6 +2813,18 @@ func _snap_step(x: float, can_fire: bool) -> int:
 		_snap_armed = false
 		return 1 if x > 0.0 else -1
 	return 0
+
+
+## This frame's turn about the head, in radians, by TURN: a smooth rate past the deadzone, or
+## a snap. Smooth still runs the snap's arming, so switching to snaps with the stick held over
+## does not fire one.
+func _turn_step(x: float, can_turn: bool, delta: float) -> float:
+	if turn_idx == 1:
+		return _snap_step(x, can_turn) * SNAP_TURN_RAD
+	_snap_step(x, false)
+	if not can_turn or absf(x) <= 0.15 or (xr != null and not _tracked_hand(right_hand)):
+		return 0.0
+	return signf(x) * (absf(x) - 0.15) / 0.85 * SMOOTH_TURN_RAD_S * delta
 
 
 ## Ask for the tunnel this frame: 0 still, 1 full speed, in a ComfortVignette profile. The
@@ -3200,19 +3228,20 @@ func _fly_s2w() -> float:
 
 
 ## FLY's sticks. Right forward flies along the right hand's ray (the head on the desktop),
-## right sideways snap-turns about the head, left forward shrinks you about your head.
+## right sideways turns about the head (TURN), left forward shrinks you about your head.
 ## Speed follows the distance to the nearest wall, so you slow in a crevice for free, and
 ## a move that would bring a wall inside FLY_MIN_CLEAR_M is refused.
 func _fly_sticks(rs: Vector2, ls: Vector2, snap_x: float, stick_owned: bool, delta: float) -> void:
 	var head := xr_camera.global_transform.origin
-	var snap := _snap_step(snap_x, not stick_owned)
-	if snap != 0:
-		var turn := Basis(Vector3.UP, snap * SNAP_TURN_RAD)
+	var turn_a := _turn_step(snap_x, not stick_owned, delta)
+	if turn_a != 0.0:
+		var turn := Basis(Vector3.UP, turn_a)
 		cloud.global_transform = Transform3D(turn, head - turn * head) * cloud.global_transform
-	var moving := 0.0
+	var moving := absf(turn_a) / maxf(SMOOTH_TURN_RAD_S * delta, 1e-6) if turn_idx == 0 else 0.0
+	var fs: float = FLY_SPEEDS[fly_speed_idx]
 	if absf(ls.y) > 0.15:
 		var s := cloud.global_transform.basis.get_scale().x
-		var k := pow(2.0, ls.y * FLY_OCTAVES_PER_S * delta)
+		var k := pow(2.0, ls.y * FLY_OCTAVES_PER_S * fs * delta)
 		k = clampf(s * k, 0.05, FLY_MAX_SCALE) / s
 		# About the head: the point under your eyes stays put while the world grows.
 		cloud.global_transform = Transform3D(Basis().scaled(Vector3.ONE * k), head - head * k) \
@@ -3225,7 +3254,7 @@ func _fly_sticks(rs: Vector2, ls: Vector2, snap_x: float, stick_owned: bool, del
 		var s2w := _fly_s2w()
 		var st := _fly_head_state()
 		var clear_m := fly.de(st) * s2w
-		var v := minf(FLY_MAX_MPS, maxf(0.05, clear_m * FLY_CLEARANCE_PER_S)) * rs.y
+		var v := minf(FLY_MAX_MPS * fs, maxf(0.1, clear_m * FLY_CLEARANCE_PER_S * fs)) * rs.y
 		# The world moves, not you: a step of the head along dir is the cloud along -dir.
 		var step := dir * v * delta
 		var st2 := _fly_state_of(head + step)
@@ -3505,13 +3534,14 @@ func _mode_name() -> String:
 
 
 ## What [resume] holds: the mode, the specimen on show in each mode, the theme, CYCLE,
-## passthrough, the walk's PACE (the only comfort setting there is), and the menu pin.
+## passthrough, the comfort settings (the walk's PACE, TURN, VIGNETTE, FLY SPEED), and the menu pin.
 func _resume_state() -> Dictionary:
 	return {
 		"mode": _mode_name(), "flame": preset_idx, "bulb": bulb_idx, "tree": tree_shape_idx,
 		"ifs": ifs_preset_idx, "ground_set": ground.formula, "ground_relief": ground_relief_idx,
 		"theme": theme_idx, "cycle": cycle_idx, "passthrough": passthrough,
 		"pace": forest.pace_idx, "pinned": menu.is_pinned(),
+		"turn": turn_idx, "vignette": vignette_idx, "fly_speed": fly_speed_idx,
 	}
 
 
@@ -3539,6 +3569,7 @@ func _read_resume() -> Dictionary:
 		"tree": FractalTree.SHAPE_NAMES.size(), "ifs": FractalIFS.PRESETS.size(),
 		"ground_set": FractalGround.FORMULA_NAMES.size(), "ground_relief": GROUND_RELIEF.size(),
 		"cycle": CYCLE_STEPS.size(), "pace": Forest.WALK_PACES.size(),
+		"turn": TURN_NAMES.size(), "vignette": VIGNETTE_NAMES.size(), "fly_speed": FLY_SPEEDS.size(),
 	}
 	for k in cfg.get_section_keys("resume"):
 		if not r.has(k):
@@ -3572,6 +3603,9 @@ func _apply_resume(r: Dictionary) -> void:
 		theme_idx = int(r["theme"])
 		_step_cycle(int(r["cycle"]) - cycle_idx)
 		forest.set_pace(int(r["pace"]))
+		turn_idx = int(r["turn"])
+		vignette_idx = int(r["vignette"])
+		fly_speed_idx = int(r["fly_speed"])
 		# Applied on the first focused frame (_process_frame): a blend mode set before the session
 		# is focused is not one the runtime has to honour.
 		_resume_passthrough = bool(r["passthrough"])

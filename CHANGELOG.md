@@ -7,6 +7,12 @@ All notable changes to FractalXR are documented here. Format based on
 
 ### FLY spike, 2026-11-17
 
+- Turning is smooth again by default: right stick X turns about your head at up to 90° a
+  second. The scene card's TURN tile (behind MORE, every mode) brings back the 30° snaps.
+- VIGNETTE (scene card, behind MORE): full, light or off for the comfort tunnel.
+- FLY is far faster: up to 6 m/s and 2.5 clearances a second (was 1 m/s and 0.8), shrink
+  at 1.5 octaves a second (was 0.7). A FLY SPEED tile scales both: gentle, normal, fast,
+  rocket. TURN, VIGNETTE and FLY SPEED persist across launches.
 - SURFACE gains "fly" in BULB: the SOLID 192 mesh plus finer meshes stacked round the head
   as you shrink into the shape, up to ten levels, each half the size and twice the detail.
   Right stick flies along the right hand's ray, slower near walls, never closer than 12 cm;

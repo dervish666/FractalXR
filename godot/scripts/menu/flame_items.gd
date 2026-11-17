@@ -61,6 +61,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).hinted("Paints this flame onto the sky"),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
+		MenuShared.turn(m, vis),
+		MenuShared.vignette(m, vis),
 		# The live bake's resolution. Each step re-bakes the flame on show; a bake is a frame
 		# count, 2.8 s, 6.9 s and 15.4 s at 72 Hz (tools/sky_bake.sh measure).
 		WristMenu.Item.new("scene", "SKY RES",

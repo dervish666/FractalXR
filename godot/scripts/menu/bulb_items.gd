@@ -25,6 +25,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		MenuShared.home(m, vis),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
+		MenuShared.turn(m, vis),
+		MenuShared.vignette(m, vis),
 
 		# How the bulb is drawn, first on the card because it changes everything below it.
 		# Splats and lines are the particle cloud (lines snap it onto parallel planes);
@@ -49,6 +51,13 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, func(): return vis.call() and style(m) == FLY).stepping(
 			func(d: int): m._set_fly_world(wrapi(m.fly_world + d, 0, FractalMain.FLY_WORLD_NAMES.size()))).hinted(
 			"Where you fly"),
+		# How fast FLY flies, a multiple of a pace that already follows the clearance.
+		WristMenu.Item.new("look", "FLY SPEED",
+			func(): return FractalMain.FLY_SPEED_NAMES[m.fly_speed_idx],
+			func(): m.fly_speed_idx = (m.fly_speed_idx + 1) % FractalMain.FLY_SPEEDS.size(),
+			false, func(): return vis.call() and style(m) == FLY).stepping(
+			func(d: int): m.fly_speed_idx = wrapi(m.fly_speed_idx + d, 0, FractalMain.FLY_SPEEDS.size())).hinted(
+			"How fast you fly"),
 		# How FLY's own worlds are drawn (shared with GROUND, IFS and TREES).
 		MenuShared.art(m, func(): return vis.call() and style(m) == FLY and m.fly_world != BulbFly.World.BULB),
 		# How fine the chosen surface is: planes for lines, trace steps for marched, grid cells
