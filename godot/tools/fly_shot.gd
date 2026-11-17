@@ -31,10 +31,13 @@ func _init() -> void:
 	var quick := OS.get_cmdline_user_args().has("quick")
 	var spires_only := OS.get_cmdline_user_args().has("spires")
 	var vault_only := OS.get_cmdline_user_args().has("vault")
+	var neon := OS.get_cmdline_user_args().has("neon")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var scene: PackedScene = load("res://main.tscn")
 	main = scene.instantiate()
 	root.add_child(main)
+	if neon:
+		main.fly_style = 1
 	for i in 40:
 		await process_frame
 	main.help.close()
@@ -264,7 +267,7 @@ func _spires(w: BulbFly.World) -> bool:
 	main.xr_camera.rotation = Vector3.ZERO
 	main.xr_camera.fov = 80.0
 	main._set_fly_world(w)
-	var wn: String = main.FLY_WORLD_NAMES[w]
+	var wn: String = main.FLY_WORLD_NAMES[w] + ("_neon" if main.fly_style == 1 else "")
 	var good := true
 	for shrink in [1.0, 8.0]:
 		if shrink > 1.0:

@@ -150,6 +150,11 @@ var tint_levels := false
 ## colour (fixed by pixel_trap), and on the Mac it doubled an eye's draw (2.5 to 4.5 ms)
 ## for a change the harness shots barely show.
 var pixel_shadows := false
+## FLY's STYLE (bulb_solid.gdshader art_style): 0 natural, 1 neon. Names in main.gd.
+var art := 0
+## Neon's night: a dark blue haze to hold the silhouettes, nearly black overhead.
+const NEON_SKY := Color(0.02, 0.025, 0.06)
+
 const TINTS := [Color(1.0, 0.55, 0.55), Color(0.55, 1.0, 0.55), Color(0.55, 0.65, 1.0),
 	Color(1.0, 1.0, 0.5), Color(1.0, 0.55, 1.0), Color(0.5, 1.0, 1.0)]
 
@@ -218,7 +223,6 @@ func begin_world(w: World, frame_center: Vector3, frame_fit: float) -> void:
 		m.set_shader_parameter("shadow_iso", BulbSolid.ISO_VOXELS * cell(k))
 		m.set_shader_parameter("shadow_reach", BulbSolid.SHADOW_REACH * N * cell(k))
 		m.set_shader_parameter("shadow_sharp", float(_cfg["shadow_k"]))
-		m.set_shader_parameter("trap_family", int(_cfg["trap"]))
 		m.set_shader_parameter("fp_scale", float(_mp["scale"]))
 		m.set_shader_parameter("fp_min_r", float(_mp["min_r"]))
 		m.set_shader_parameter("fp_fixed_r", float(_mp["fixed_r"]))
@@ -256,7 +260,16 @@ func start_pose() -> Array:
 
 
 func sky_colour() -> Color:
-	return _cfg.get("sky", Color.BLACK)
+	return NEON_SKY if art == 1 else _cfg.get("sky", Color.BLACK)
+
+
+## STYLE, from the menu: re-dress every level.
+func set_art(a: int) -> void:
+	art = a
+	if not active or world == World.BULB:
+		return
+	for s in _chain():
+		_set_look(s, true)
 
 
 func end() -> void:
@@ -284,11 +297,18 @@ func _set_look(s: BulbSolid, on: bool) -> void:
 	var m := s.material()
 	m.set_shader_parameter("sky_tint", _cfg["sky_tint"] if on else Vector3.ONE)
 	m.set_shader_parameter("key_colour", _cfg["key_colour"] if on else Vector3.ONE)
-	var sky: Color = _cfg.get("sky", Color.BLACK)
+	var sky: Color = sky_colour()
 	m.set_shader_parameter("fog_colour", Vector3(sky.r, sky.g, sky.b))
 	m.set_shader_parameter("fog_density", 0.0)
 	m.set_shader_parameter("flatten", 0.0 if on else 0.2)
 	m.set_shader_parameter("pixel_shadow", 1 if on and pixel_shadows and world == World.SPIRES else 0)
+	m.set_shader_parameter("art_style", art if on else 0)
+	# Neon draws its lines from the key per pixel in every world, VAULT's box key included:
+	# its jumps, confetti as colour, are the fold lines here.
+	var fam := int(_cfg.get("trap", 0))
+	if on and art == 1 and fam == 0 and _cfg.has("genome") and str(_cfg["genome"]["formula"]) == "mandelbox":
+		fam = 2
+	m.set_shader_parameter("trap_family", fam)
 	m.set_shader_parameter("pixel_trap", 1 if on and int(_cfg.get("trap", 0)) > 0 else 0)
 	m.set_shader_parameter("ambient", float(_cfg.get("ambient", 0.22)) if on else 0.22)
 	m.set_shader_parameter("head_light", float(_cfg.get("head_light", 0.0)) if on else 0.0)
@@ -415,6 +435,7 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 			s.material().set_shader_parameter("fog_density",
 				float(_cfg["fog_edges"]) / maxf(edge_m, 1e-3))
 			s.material().set_shader_parameter("pixel_trap_m", near_m)
+			s.material().set_shader_parameter("neon_far", 0.6 * edge_m)
 			# The lamp reaches a few times the start clearance, in metres at this size.
 			s.material().set_shader_parameter("lamp_m", float(_cfg.get("lamp_clear", 1.0))
 				* float(_cfg.get("start_clear_m", 1.0)))

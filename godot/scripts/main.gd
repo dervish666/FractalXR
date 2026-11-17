@@ -175,6 +175,9 @@ var fly := BulbFly.new()
 ## Mandelbox walked from inside). In BulbFly.World order.
 const FLY_WORLD_NAMES := ["this bulb", "spires", "vault"]
 var fly_world := BulbFly.World.BULB
+## STYLE under FLY's own worlds: how the world is drawn (BulbFly.art).
+const FLY_STYLE_NAMES := ["natural", "neon"]
+var fly_style := 0
 ## Fastest apparent flight, and the share of the clearance covered a second below it.
 const FLY_MAX_MPS := 1.0
 const FLY_CLEARANCE_PER_S := 0.8
@@ -2999,6 +3002,7 @@ func _apply_solid() -> void:
 			spin = false
 		_solid_key = "%s/fly" % FLY_WORLD_NAMES[fly_world]
 		solid.clear()
+		fly.art = fly_style
 		fly.begin_world(fly_world, cloud.center, cloud.fit)
 		_world_place()
 		_world_sky(true)
@@ -3092,6 +3096,14 @@ func _in_own_world() -> bool:
 func _set_fly_world(w: int) -> void:
 	fly_world = w as BulbFly.World
 	_apply_surface()
+
+
+## STYLE, from the menu. The sky follows the style.
+func _set_fly_style(st: int) -> void:
+	fly_style = st
+	fly.set_art(st)
+	if _in_own_world():
+		_world_sky(true)
 
 
 ## Stand the head where the world says it opens (BulbFly.start_pose), level with the floor:

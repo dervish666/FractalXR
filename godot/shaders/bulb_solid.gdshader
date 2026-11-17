@@ -58,6 +58,20 @@ uniform float fog_density = 0.0;
 // diffuse toward the viewer, falling off over lamp_m metres. 0 = off.
 uniform float head_light = 0.0;
 uniform float lamp_m = 6.0;
+// FLY's STYLE. 0 = natural (everything above), 1 = neon: dark bodies drawn in glowing lines
+// that follow the fractal, not the screen, so both eyes see the same line on the same
+// fold. Lines sit at even steps of the equalised orbit trap, at the trap's jumps (the
+// fold boundaries) and where the surface creases. Widths are in pixels via fwidth, and a
+// set of lines packed closer than a few pixels fades out instead of crawling. Line colour
+// runs past 1.0 so the Environment's glow (threshold 1, main.tscn) blooms it.
+uniform int art_style = 0;
+uniform float neon_bands = 11.0;
+uniform float neon_gain = 2.0;
+uniform float neon_far = 80.0;   // metres: lines fade out by here, and the per-pixel key stops
+uniform vec3 neon_a = vec3(0.12, 0.85, 1.0);
+uniform vec3 neon_b = vec3(1.0, 0.22, 0.72);
+uniform vec3 neon_c = vec3(0.55, 0.35, 1.0);
+uniform vec3 neon_body = vec3(0.004, 0.005, 0.012);
 // FLY's SPIRES: the sun's shadow marched per pixel where the baked one cannot draw it.
 // The vertex shadow is right in bulk and wrong at its edges, where a hard penumbra
 // interpolated across triangles comes out as a staircase. So a pixel marches only when
@@ -196,6 +210,34 @@ void fragment() {
 		c += albedo * key_colour * head_light * ndv * fall * mix(0.4, 1.0, v_ao);
 	}
 	ALBEDO = c * gain * grow * tint;
+	if (art_style == 1) {
+		float dist = length(VERTEX);
+		float fade = 1.0 - smoothstep(0.5 * neon_far, neon_far, dist);
+		float key_raw = (trap_family > 0 && fade > 0.0) ? fly_trap(v_state) : v_trap;
+		// Lines at the half steps: where the key saturates (0 or 1, flat over a whole dome)
+		// f sits on a whole number, and a line there would paint the dome solid.
+		float f = equalise(key_raw) * neon_bands + 0.5;
+		float w = max(fwidth(f), 1e-5);
+		float band = abs(fract(f + 0.5) - 0.5);   // 0 on a line
+		// Where the key changes faster than a band every few pixels it is noise, not a
+		// contour, and lines there would sum to a white sheet: draw nothing.
+		float sharp = 1.0 - smoothstep(0.12, 0.3, w);
+		float line = (1.0 - smoothstep(0.6 * w, 1.7 * w, band)) * sharp;
+		// A crease: the normal turns fast per metre, compared with how far a pixel spans.
+		// Gated like the lines, or distant detail creases everywhere.
+		float turn = length(fwidth(normalize(v_nstate)));
+		float crease = smoothstep(0.35, 0.9, turn) * sharp;
+		float pick = fract(floor(f) * 0.618);
+		vec3 hue = pick < 0.45 ? neon_a : (pick < 0.8 ? neon_b : neon_c);
+		// A dim, lit body so the shape reads between the lines, and a violet rim to hold
+		// silhouettes against the dark sky.
+		vec3 body = neon_body * (0.5 + 3.0 * lit + 1.2 * ao) + neon_c * 0.05 * pow(1.0 - ndv, 3.0);
+		// Silhouettes glow too, so a shape whose key is flat (SPIRES' arches) still reads
+		// as an outline against the dark.
+		float edge = pow(1.0 - ndv, 5.0) * v_ao;
+		vec3 glow = hue * line + neon_a * (crease * 0.5 + edge * 0.6);
+		ALBEDO = (body + glow * neon_gain * fade) * gain * tint;
+	}
 	// Squared, so the near city keeps its colour and the haze gathers toward the edge.
 	if (fog_density > 0.0) {
 		float fd = fog_density * length(VERTEX);

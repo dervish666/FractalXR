@@ -15,6 +15,8 @@ All notable changes to FractalXR are documented here. Format based on
   honeycomb in the upper half-space, our own DE) under a blue sky with a warm sun and fog.
 - WORLD also offers VAULT: a scale 2.39 Mandelbox, entered just off its outer surface.
   Near-neutral stone lit by a warm sun and a blue sky, with a faint lamp at the eye.
+- FLY's STYLE tile (SPIRES and VAULT) adds neon: near-black bodies drawn in glowing contour
+  lines from the orbit trap, cyan silhouettes and creases, under a black sky.
 
 ### Store readiness, 2026-11-13
 
