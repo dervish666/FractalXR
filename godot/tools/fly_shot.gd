@@ -29,6 +29,7 @@ var last_prims := 0
 
 func _init() -> void:
 	var quick := OS.get_cmdline_user_args().has("quick")
+	var spires_only := OS.get_cmdline_user_args().has("spires")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var scene: PackedScene = load("res://main.tscn")
 	main = scene.instantiate()
@@ -60,6 +61,11 @@ func _init() -> void:
 		return
 	print("FLYSHOT base ready after %d frames, %d tris" % [frames, main.solid.tri_count])
 	var fly: BulbFly = main.fly
+	if spires_only:
+		var good := await _spires()
+		print("FLYSHOT %s" % ("PASS" if good else "FAIL"))
+		quit(0 if good else 1)
+		return
 	var surf := _surface_point()
 	print("FLYSHOT surface point %s de %.7f" % [str(surf[0]), fly.de(surf[0])])
 
@@ -247,3 +253,62 @@ func _flight(surf: Array) -> bool:
 		start_clear, min_clear, main.FLY_MIN_CLEAR_M, str(speeds.map(func(v): return snappedf(v, 0.01))),
 		unsettled, ratio, want, fly.describe(), "PASS" if good else "FAIL"])
 	return good
+
+
+## SPIRES: WORLD to the city, then four views from where it puts you, the same after
+## shrinking 8x, and four seconds of flight straight ahead with the clearance tracked.
+func _spires() -> bool:
+	var fly: BulbFly = main.fly
+	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
+	main.xr_camera.rotation = Vector3.ZERO
+	main.xr_camera.fov = 80.0
+	main._set_fly_world(BulbFly.World.SPIRES)
+	var good := true
+	for shrink in [1.0, 8.0]:
+		if shrink > 1.0:
+			var head: Vector3 = main.xr_camera.global_transform.origin
+			main.cloud.global_transform = Transform3D(Basis().scaled(Vector3.ONE * shrink),
+				head - head * shrink) * main.cloud.global_transform
+		var frames := 0
+		var t0 := Time.get_ticks_msec()
+		for i in 3:
+			await process_frame
+		while not fly.is_settled() and frames < 4000:
+			await process_frame
+			frames += 1
+		for i in 10:
+			await process_frame
+		good = good and fly.is_settled()
+		print("FLYSHOT spires x%d cell=%.2fm %s settled=%s in %d frames (%d ms) clear=%.2fm" % [
+			int(shrink), main._fly_s2w(), fly.describe(), str(fly.is_settled()), frames,
+			Time.get_ticks_msec() - t0, fly.de(main._fly_head_state()) * main._fly_s2w()])
+		for v in [["ahead", 0.0, 0.0], ["up", 35.0, 0.0], ["down", -40.0, 0.0], ["back", 0.0, 150.0]]:
+			main.xr_camera.rotation_degrees = Vector3(v[1], v[2], 0.0)
+			for i in 3:
+				await process_frame
+			_shot("spires_x%d_%s.png" % [int(shrink), v[0]])
+		main.xr_camera.rotation = Vector3.ZERO
+		fly.tint_levels = true
+		for i in 3:
+			await process_frame
+		_shot("spires_x%d_tint.png" % int(shrink))
+		fly.tint_levels = false
+	# Flight: right stick forward for four seconds of 72 Hz frames.
+	var dt := 1.0 / 72.0
+	var s2w: float = main._fly_s2w()
+	var start: Vector3 = main._fly_head_state()
+	var start_clear := fly.de(start) * s2w
+	var min_clear := INF
+	var unsettled := 0
+	for i in 288:
+		main._fly_sticks(Vector2(0.0, 1.0), Vector2.ZERO, 0.0, false, dt)
+		await process_frame
+		min_clear = minf(min_clear, fly.de(main._fly_head_state()) * s2w)
+		if not fly.is_settled():
+			unsettled += 1
+	var moved: float = (main._fly_head_state() - start).length() * s2w
+	_shot("spires_flight_end.png")
+	var ok_flight: bool = min_clear >= minf(start_clear, main.FLY_MIN_CLEAR_M) * 0.98 and moved > 0.05
+	print("FLYSHOT spires flight moved=%.2fm start_clear=%.2fm min_clear=%.3fm unsettled=%d/288 %s %s" % [
+		moved, start_clear, min_clear, unsettled, fly.describe(), "PASS" if ok_flight else "FAIL"])
+	return good and ok_flight

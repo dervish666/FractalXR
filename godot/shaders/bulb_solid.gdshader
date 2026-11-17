@@ -47,6 +47,13 @@ uniform vec3 hole_lo = vec3(1.0);
 uniform vec3 hole_hi = vec3(-1.0);
 // Harness only: FLY tints each level so a shot shows where the stack's seams fall.
 uniform vec3 tint = vec3(1.0);
+// FLY's SPIRES world (bulb_fly.gd sets these; the defaults are SOLID as it was): the
+// ambient's colour, as from a blue sky, the key's, as from a low sun, and fog by view
+// distance in metres toward the sky the background is cleared to.
+uniform vec3 sky_tint = vec3(1.0);
+uniform vec3 key_colour = vec3(1.0);
+uniform vec3 fog_colour = vec3(0.6, 0.7, 0.85);
+uniform float fog_density = 0.0;
 
 varying float v_trap;
 varying float v_ao;
@@ -130,7 +137,7 @@ void fragment() {
 
 	float ao = v_ao * v_ao;   // a sharper falloff into the crevices, as AO strength 2.2 is
 	float lit = ndl * v_sh;
-	vec3 c = albedo * (ambient * ao + key * lit * mix(0.6, 1.0, v_ao));
+	vec3 c = albedo * (ambient * ao * sky_tint + key * lit * key_colour * mix(0.6, 1.0, v_ao));
 	// Metal, not plastic: a broad sheen tinted by the surface and a tight glint that stays
 	// mostly the surface's colour. Plastic's highlight is white.
 	vec3 hv = normalize(l + VIEW);
@@ -139,6 +146,11 @@ void fragment() {
 	c += mix(albedo, vec3(1.0), 0.3) * gloss * pow(ndh, 90.0) * lit;
 	c += glow_colour * pow(1.0 - ndv, 3.0) * rim * v_ao;
 	ALBEDO = c * gain * grow * tint;
+	// Squared, so the near city keeps its colour and the haze gathers toward the edge.
+	if (fog_density > 0.0) {
+		float fd = fog_density * length(VERTEX);
+		ALBEDO = mix(fog_colour, ALBEDO, exp(-fd * fd));
+	}
 	// Harness views of the baked terms (tools/solid_shot.sh): 1 AO, 2 shadow, 3 N.L.
 	if (debug_view == 1) ALBEDO = vec3(v_ao);
 	else if (debug_view == 2) ALBEDO = vec3(v_sh);

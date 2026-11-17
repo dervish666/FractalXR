@@ -171,6 +171,13 @@ var solid := BulbSolid.new()
 ## shrinks you about your head.
 const SURFACE_FLY_IDX := 7
 var fly := BulbFly.new()
+## WORLD under FLY: the bulb on show, or SPIRES, an endless honeycomb city.
+const FLY_WORLD_NAMES := ["this bulb", "spires"]
+var fly_world := BulbFly.World.BULB
+## SPIRES opens with one honeycomb cell this many metres across, the head where the
+## clearance is greatest in a scatter through one cell between these heights (cells).
+const SPIRES_M_PER_CELL := 6.0
+const SPIRES_START_Y := Vector2(0.4, 0.8)
 ## Fastest apparent flight, and the share of the clearance covered a second below it.
 const FLY_MAX_MPS := 1.0
 const FLY_CLEARANCE_PER_S := 0.8
@@ -2963,7 +2970,7 @@ func _apply_surface() -> void:
 	_apply_solid()
 	if not ground_mode:
 		# A solid still growing leaves the splats up until it lands (_tick_solid).
-		cloud.set_visible_cloud(not marching and not solid.visible)
+		cloud.set_visible_cloud(not marching and not solid.visible and not _in_spires())
 
 
 ## SOLID on, off, or at a new grid. Entering it re-homes the bulb to the render's framing;
@@ -2976,10 +2983,32 @@ var _solid_saved := {}
 func _apply_solid() -> void:
 	var n: int = SURFACE_SOLID[surface_idx] if bulb_mode and _bulb != null else 0
 	var flying := n > 0 and surface_idx == SURFACE_FLY_IDX
-	if fly.active and not flying:
+	var spires := flying and fly_world == BulbFly.World.SPIRES
+	if fly.active and (not flying or (fly.world == BulbFly.World.SPIRES) != spires):
+		var was_spires := _in_spires()
 		fly.end()
 		if grab != null:
 			grab.max_scale = WorldGrab.MAX_SCALE
+		if was_spires:
+			_spires_sky(false)
+			# Back from the city to a bulb in front of you, not one a mile wide.
+			_solid_home()
+	if spires:
+		if _in_spires():
+			return
+		if _solid_key == "":
+			_solid_saved = {"drift": _drift, "spin": spin, "theme": theme_idx}
+			_drift = false
+			spin = false
+		_solid_key = "spires/fly"
+		solid.clear()
+		fly.begin_spires(cloud.center, cloud.fit)
+		_spires_place()
+		_spires_sky(true)
+		_set_solid_msaa(true)
+		if grab != null:
+			grab.max_scale = FLY_MAX_SCALE
+		return
 	if n == 0:
 		if solid.state != BulbSolid.State.IDLE or _solid_key != "":
 			solid.clear()
@@ -3037,6 +3066,10 @@ func _restore_solid_saved() -> void:
 ## Main thread, every frame in bulb mode: drive the build on the render thread and swap
 ## the splats out for the mesh when it lands.
 func _tick_solid(delta: float) -> void:
+	if _in_spires():
+		RenderingServer.call_on_render_thread(fly.step)
+		fly.update(_fly_head_state(), _fly_s2w(), delta)
+		return
 	if solid.state == BulbSolid.State.IDLE:
 		return
 	if solid.is_building():
@@ -3052,6 +3085,47 @@ func _tick_solid(delta: float) -> void:
 		solid.visible = true
 		cloud.set_visible_cloud(false)
 		_set_solid_msaa(true)
+
+
+func _in_spires() -> bool:
+	return fly.active and fly.world == BulbFly.World.SPIRES
+
+
+## WORLD, from the menu.
+func _set_fly_world(w: int) -> void:
+	fly_world = w as BulbFly.World
+	_apply_surface()
+
+
+## Stand the head in the roomiest spot of one cell, the city level with the floor.
+func _spires_place() -> void:
+	var best := Vector3(0.25, 1.2, 0.1)
+	var best_d := -1.0
+	for i in 400:
+		var t := (float(i) + 0.5) / 400.0
+		var a := float(i) * PI * (3.0 - sqrt(5.0))
+		var q := Vector3(0.5 + 0.45 * cos(a) * sqrt(t), lerpf(SPIRES_START_Y.x, SPIRES_START_Y.y,
+			fposmod(float(i) * 0.618, 1.0)), 0.5 + 0.45 * sin(a) * sqrt(t))
+		var d := fly.de(q)
+		if d > best_d:
+			best_d = d
+			best = q
+	var head := xr_camera.global_transform.origin
+	var k := SPIRES_M_PER_CELL / fly.fit
+	cloud.global_transform = Transform3D(Basis().scaled(Vector3.ONE * k),
+		head - SPIRES_M_PER_CELL * (best - fly.center))
+	print("[fly] spires: head at cell %s, clearance %.2f m" % [str(best), best_d * SPIRES_M_PER_CELL])
+
+
+## The sky behind the city is the fog's colour, so the far edge has nothing to end against.
+func _spires_sky(on: bool) -> void:
+	var env: Environment = $WorldEnvironment.environment
+	if env == null:
+		return
+	if on:
+		env.background_color = BulbFly.SPIRES_SKY
+	else:
+		env.background_color = Color(0, 0, 0, 0) if passthrough else Color(0, 0, 0, 1)
 
 
 ## The eye in the bulb's state units, and metres per state unit: the cloud's transform maps

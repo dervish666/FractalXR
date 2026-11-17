@@ -13,6 +13,8 @@ class_name BulbSource
 
 const FORMULA_IDS := {
 	"mandelbulb": 0.0, "mandelbox": 1.0, "kifs": 2.0, "quat": 3.0, "sierpinski": 4.0,
+	# FLY's endless world, not a gallery bulb: bulb.glsl and here only, no marcher copy.
+	"spires": 5.0,
 }
 
 const RESEED_PROB := 0.02
@@ -145,7 +147,9 @@ func de(p: Vector3) -> float:
 func de_with(p: Vector3, mp: Dictionary) -> float:
 	var f: float = mp["formula"]
 	var d: float
-	if f > 3.5:
+	if f > 4.5:
+		d = _de_spires(p, mp)
+	elif f > 3.5:
 		d = _de_kifs(p, mp, true)
 	elif f > 2.5:
 		d = _de_quat(p, mp)
@@ -160,6 +164,32 @@ func de_with(p: Vector3, mp: Dictionary) -> float:
 	if is_nan(d) or is_inf(d):
 		return 0.0
 	return d
+
+
+## SPIRES, the CPU copy of bulb.glsl's spiresDE (which says what it is).
+func _de_spires(q: Vector3, mp: Dictionary) -> float:
+	var r2_max: float = mp["scale"]
+	var thick: float = mp["min_r"]
+	var spire_k: float = mp["fixed_r"]
+	var z := q
+	var dr := 1.0
+	for i in 14:
+		z.x = absf(fposmod(z.x + 0.5, 1.0) - 0.5)
+		z.z = absf(fposmod(z.z + 0.5, 1.0) - 0.5)
+		if z.x < z.z:
+			var t := z.x
+			z.x = z.z
+			z.z = t
+		var r2 := maxf(z.length_squared(), 1e-12)
+		if r2 >= r2_max:
+			break
+		var k := r2_max / r2
+		z *= k
+		dr *= k
+	var h := absf(z.y)
+	var spire := Vector2(z.x - 0.5, z.z - 0.5).length() - thick * spire_k * h
+	var arch := Vector2(z.x - 0.5, Vector2(z.y, z.z).length() - sqrt(maxf(r2_max - 0.25, 0.0))).length() - thick * h
+	return 0.6 * minf(spire, arch) / dr
 
 
 func _de_bulb(q: Vector3, mp: Dictionary) -> float:

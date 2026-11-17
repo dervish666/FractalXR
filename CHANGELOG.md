@@ -11,6 +11,8 @@ All notable changes to FractalXR are documented here. Format based on
   as you shrink into the shape, up to ten levels, each half the size and twice the detail.
   Right stick flies along the right hand's ray, slower near walls, never closer than 12 cm;
   left stick shrinks you about your head. Untested on a headset.
+- FLY's WORLD tile adds SPIRES: an endless honeycomb of spires and arches (a hyperbolic
+  honeycomb in the upper half-space, our own DE) under a blue sky with a warm sun and fog.
 
 ### Store readiness, 2026-11-13
 

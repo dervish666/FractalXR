@@ -255,7 +255,43 @@ vec4 quatDE(vec3 pos) {
 	return vec4(dist, trapR, trapY, esc);
 }
 
+// 5 = SPIRES, FLY's endless world (scripts/sources/bulb_fly.gd). A hyperbolic honeycomb in
+// the upper half-space model, y up and the ground at y = 0: each pass folds x and z into
+// one cell's fundamental triangle round the nearest lattice point, then inverts in the
+// hemisphere of squared radius R2 over it. A point outside every hemisphere is in a cell's
+// open column and stops. What is solid is the honeycomb's edges, thickened: a vertical
+// line over each cell centre (a spire) and a semicircle in each cell wall (an arch). The
+// thickness grows with height, constant in the hyperbolic metric, so every level down
+// toward the ground is the level above it again, smaller.
+// The parameters ride in the box family's slots: scale = R2, min_r = edge thickness per
+// unit height, fixed_r = spire thickness relative to the arches.
+// FLY only: the marcher never draws it, so march.gdshader has no copy (see BulbSource).
+vec4 spiresDE(vec3 q) {
+	float R2 = p.scale;
+	vec3 z = q;
+	float dr = 1.0;
+	float trap = 1e9;
+	float depth = 0.0;
+	for (int i = 0; i < 14; i++) {
+		z.xz = abs(fract(z.xz + 0.5) - 0.5);
+		if (z.x < z.z) z.xz = z.zx;
+		float r2 = max(dot(z, z), 1e-12);
+		if (r2 >= R2) break;
+		float k = R2 / r2;   // the inversion stretches lengths by k here
+		z *= k;
+		dr *= k;
+		trap = min(trap, r2);
+		depth += 1.0;
+	}
+	float h = abs(z.y);
+	float spire = length(z.xz - vec2(0.5)) - p.min_r * p.fixed_r * h;
+	float arch = length(vec2(z.x - 0.5, length(z.yz) - sqrt(max(R2 - 0.25, 0.0)))) - p.min_r * h;
+	// Not a true distance after the inversions; 0.6 keeps it a lower bound.
+	return vec4(0.6 * min(spire, arch) / dr, sqrt(min(trap, R2)), fract(depth * 0.37), 1.0);
+}
+
 vec4 de(vec3 q) {
+	if (p.formula > 4.5) return spiresDE(q);
 	if (p.formula > 3.5) return kifsDE(q);   // 4 = Sierpinski (tetra fold)
 	if (p.formula > 2.5) return quatDE(q);
 	if (p.formula > 1.5) return kifsDE(q);   // 2 = cubic lattice

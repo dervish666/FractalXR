@@ -87,6 +87,9 @@ var just_ready := false
 ## The brightness ramp a new mesh fades in on. FLY's levels rebuild as you move, and a
 ## level that faded from black every time would flash.
 var grow_in := true
+## Penumbra sharpness (Quilez's k) for the next build. FLY's SPIRES softens it: a hard sun
+## shadow baked per vertex draws the triangles' staircase along every arch.
+var shadow_k := SHADOW_K
 
 ## The cube the last request covered, in state units: minimum corner and cell size.
 var box_lo := Vector3.ZERO
@@ -234,7 +237,7 @@ func request_box(mp: Dictionary, n: int, lo: Vector3, h: float, light_state: Vec
 	_pc.encode_float(80, mp["k_angle_b"])
 	_pc.encode_float(84, inside_mode)
 	_pc.encode_float(88, ao_radius)
-	_pc.encode_float(92, SHADOW_K)
+	_pc.encode_float(92, shadow_k)
 	_pc.encode_float(96, _light.x)
 	_pc.encode_float(100, _light.y)
 	_pc.encode_float(104, _light.z)

@@ -42,6 +42,13 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).stepping(func(d: int):
 				set_style(m, mem, wrapi(style(m) + d, 0, STYLE_NAMES.size()))).slider(
 			func(): return style(m), STYLE_NAMES.size()).hinted("How the bulb is drawn"),
+		# FLY's world: the bulb you were looking at, or the endless honeycomb city.
+		WristMenu.Item.new("look", "WORLD",
+			func(): return FractalMain.FLY_WORLD_NAMES[m.fly_world],
+			func(): m._set_fly_world((m.fly_world + 1) % FractalMain.FLY_WORLD_NAMES.size()),
+			false, func(): return vis.call() and style(m) == FLY).stepping(
+			func(d: int): m._set_fly_world(wrapi(m.fly_world + d, 0, FractalMain.FLY_WORLD_NAMES.size()))).hinted(
+			"Where you fly"),
 		# How fine the chosen surface is: planes for lines, trace steps for marched, grid cells
 		# for solid. A detail, not a look, so it waits behind MORE.
 		WristMenu.Item.new("look", "QUALITY",
