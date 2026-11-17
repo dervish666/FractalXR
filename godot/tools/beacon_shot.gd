@@ -118,15 +118,17 @@ func _hold_and_shot(name: String) -> void:
 	# of iterations that wait is what a viewer sits through.
 	main.guide.paused = true
 	var t0 := Time.get_ticks_msec()
+	var dc0: Vector2i = main.ground.deep_counts()
 	var frames := 0
 	for i in 10:
 		await process_frame
-	while frames < 2500 and main.ground.progress() < 0.999:
+	while frames < 20000 and main.ground.progress() < 0.999:
 		frames += 1
 		main.guide.paused = true
 		await process_frame
-	print("BEACON fill %s iter %d: %d frames, %.1f s, progress %.2f" % [name, main.ground.effective_iter(), frames,
-		(Time.get_ticks_msec() - t0) / 1000.0, main.ground.progress()])
+	var dc: Vector2i = main.ground.deep_counts() - dc0
+	print("BEACON fill %s iter %d: %d frames, %.1f s, progress %.2f, deep texels pert %d df32 %d" % [name,
+		main.ground.effective_iter(), frames, (Time.get_ticks_msec() - t0) / 1000.0, main.ground.progress(), dc.x, dc.y])
 	main.guide.paused = false
 	await _shot(name)
 

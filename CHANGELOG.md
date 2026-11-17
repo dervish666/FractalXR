@@ -34,6 +34,17 @@ All notable changes to FractalXR are documented here. Format based on
   orbit settles on a cycle, so a minibrot's black interior costs a fraction of the count.
   Past about 2000x the df32 fill cannot keep up with those counts on the Mac (7% in six
   minutes at 16384); perturbation is the next step.
+- GROUND's deep Mandelbrot fills by perturbation: each texel iterates its difference from one
+  reference orbit, in plain float32, 25-35x less GPU work than df32. A tour stop at 3.2
+  million x and 16384 iterations now fills in 53 s on the Mac, where the same kind of stop
+  reached 7% in six minutes. A trip pins its minibrot's nucleus as the reference.
+  The other families stay on df32: the folded ones cannot perturb, and the cubic and quartic
+  lose too many digits in float32. Perturbation is grainier than df32 on the most chaotic
+  texels (the ones the exact count itself changes under a 1e-5 texel nudge); side by side
+  the frames look the same.
+- The fill's cycle check scales with the texel. A fixed tolerance called 291 of 1024
+  outside texels inside round one deep minibrot, eating its decorations.
+- Quitting during a beacon scan no longer aborts.
 
 ### Store readiness, 2026-11-13
 

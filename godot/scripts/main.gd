@@ -1116,10 +1116,16 @@ func _perf_tail() -> String:
 			_forest_branch_count(), TREE_WIND_NAMES[tree_wind_idx],
 			"on" if tree.leaves_on else "off", forest.visible_cost, forest.budget]
 	if ground_mode:
-		return head + " mode=ground set=%s julia=%s zoom=%s fill=%.2f iter=%d/%d relief=%s" % [
+		# deep=pert/df: texels the fill ran on each deep path since the last line, so a
+		# headset log shows whether the tours are perturbing or falling back to df32.
+		var dc := ground.deep_counts()
+		var deep := dc - _deep_logged
+		_deep_logged = dc
+		return head + " mode=ground set=%s julia=%s zoom=%s fill=%.2f iter=%d/%d relief=%s deep=%d/%d" % [
 			ground.formula_name().replace(" ", "_"), str(ground.julia),
 			_zoom_text(ground.zoom_factor()), ground.progress(),
-			GROUND_ITER[ground_iter_idx], ground.effective_iter(), GROUND_RELIEF[ground_relief_idx]]
+			GROUND_ITER[ground_iter_idx], ground.effective_iter(), GROUND_RELIEF[ground_relief_idx],
+			deep.x, deep.y]
 	if bulb_mode:
 		return head + " mode=bulb surface=%s marching=%s cover=%.2f solid_tris=%d solid_build_ms=%.0f" % [
 			SURFACE_NAMES[surface_idx].replace(" ", "_"), str(march.is_on()),
@@ -3610,6 +3616,9 @@ func _save_resume() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_save_resume()
+
+
+var _deep_logged := Vector2i.ZERO
 
 
 func _exit_tree() -> void:

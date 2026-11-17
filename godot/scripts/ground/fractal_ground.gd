@@ -14,9 +14,12 @@ class_name FractalGround
 ## adapts to the measured GPU time, so a big jump sharpens over a few frames rather than
 ## dropping any.
 ##
-## Deep levels iterate in two-float (df32) arithmetic, gated per dispatch on DF_RATIO so a
-## shallow fill costs what it always did. docs/deep-zoom/README.md has why df32 and not
-## perturbation.
+## Deep levels are gated per dispatch on DF_RATIO so a shallow fill costs what it always did.
+## Past it the Mandelbrot, cubic and quartic iterate by perturbation against one reference
+## orbit (ground.glsl's PERT), and the folded families and Julia in two-float (df32)
+## arithmetic. docs/deep-zoom/README.md has the df32 reasoning; perturbation came back once
+## GroundGuide's tours started asking for 16384 iterations, where df32 on the M1 filled 7%
+## of a view in six minutes.
 
 ## Level size. A level is only usable out to about (n/2 - SLACK) of its texels from the
 ## viewer, and on a ground plane seen at grazing angles that window radius, not the texel
@@ -75,6 +78,23 @@ const DF_RATIO := 4194304.0
 ## which is the one case the budget loop alone cannot fix.
 const DF_COST := 3.0
 const DF_COST_MAX := 64.0
+## Families ground.glsl's PERT variant carries, indexing FORMULA_NAMES: the Mandelbrot. The
+## cubic and quartic perturb on paper but not in float32; see the shader.
+const PERT_FORMULAS: Array[int] = [0]
+## A perturbation texel against the budget, in float32 texels: the same float32 maths plus a
+## reference read and the rebase test.
+const PERT_COST := 1.5
+## Longest stored reference orbit. Rebasing lets a shorter one serve any iteration count.
+const REF_MAX := 32768
+## A reference serves texels within about this many level-0 texels of it, and the viewer is
+## given a new one before the window can reach past it. d is float32 and |d| starts at |dc|,
+## so its rounding is in proportion to the texel's distance from the reference, not to the
+## gap between texels: a C replay of the loop held a boundary patch at 98.8% with 64-bit d
+## at any distance, and float32 d fell to 94% at 1000 texels and 91% at 4000 (its own
+## reference: 98.5%). tools/ground_check.sh, mean count error in texels of position against
+## df32's 0.01-0.05: 0.003-0.04 on the reference's own patch, 0.12-0.16 at 4880 texels. 2000
+## is 3 m of walking at level 0, more at every coarser one, and a rebuild is a worker job.
+const REF_RANGE_T0 := 2000.0
 ## The floor reference holds still while the eye stays within this many metres of it, and
 ## once it has to move it follows until it is back within REF_SETTLE_M. Turning your head
 ## swings the eye 8-10 cm round the neck, and a reference that followed every centimetre
@@ -154,6 +174,33 @@ var _shader: RID
 var _pipeline: RID
 var _shader_df: RID
 var _pipeline_df: RID
+var _shader_pert: RID
+var _pipeline_pert: RID
+## Two references, each with its own buffer and uniform set. Slot 0 is the orbit of a point
+## by the viewer, slot 1 a minibrot's nucleus GroundGuide pinned. A rect takes the nucleus
+## when it is in range, measured in that level's own texels, else the viewer's: the fine
+## levels round your feet stay on the viewer's, and the coarse ones that draw the minibrot
+## ahead on its nucleus, whose orbit never escapes.
+var _ref_buf: Array[RID] = [RID(), RID()]
+var _set_pert: Array[RID] = [RID(), RID()]
+## Perturbation on for the families that allow it. tools/ground_check.gd and the bench turn
+## it off to time df32.
+var perturb := true
+## Slot 0 as the main thread last built it, [x, y, len, capped_at]: its own copy for deciding
+## when to build another. The render thread reads only the _ref_next pair and _ref_cur.
+var _ref_main: Array = []
+var _ref_next0: Array = []  # [x, y, len, PackedFloat32Array] for slot 0, for the render thread
+var _ref_next1: Array = []  # the same for slot 1; [] nothing new
+var _ref_drop1 := false     # slot 1 is to be forgotten (home, a new family)
+var _ref_cur: Array = [[], []]   # per slot [x, y, len] the GPU buffer holds; render thread only
+## A reference orbit is 64-bit GDScript work, up to REF_MAX steps (milliseconds), so it is
+## built on the WorkerThreadPool and the fill uses df32 for the few frames until it lands.
+var _ref_task := -1
+var _ref_built: Array = []  # [x, y, n, cap, PackedFloat32Array], written by the task
+## A minibrot's nucleus GroundGuide offered as the reference: x, y in 64-bit, period p.
+var _pin_x := 0.0
+var _pin_y := 0.0
+var _pin_p := 0
 var _set: RID
 var _tex: RID
 var _texture := Texture2DArrayRD.new()
@@ -305,16 +352,23 @@ func setup() -> bool:
 	# registers and costs exactly what it did.
 	var spirv := file.get_spirv(&"f32")
 	var spirv_df := file.get_spirv(&"df")
-	if spirv == null or spirv_df == null:
-		_error = "ground.glsl: missing f32/df versions"
+	var spirv_pert := file.get_spirv(&"pert")
+	if spirv == null or spirv_df == null or spirv_pert == null:
+		_error = "ground.glsl: missing f32/df/pert versions"
 		return false
-	if spirv.compile_error_compute != "" or spirv_df.compile_error_compute != "":
-		_error = "ground.glsl: %s%s" % [spirv.compile_error_compute, spirv_df.compile_error_compute]
+	if spirv.compile_error_compute != "" or spirv_df.compile_error_compute != "" \
+			or spirv_pert.compile_error_compute != "":
+		_error = "ground.glsl: %s%s%s" % [spirv.compile_error_compute,
+			spirv_df.compile_error_compute, spirv_pert.compile_error_compute]
 		return false
 	_shader = _rd.shader_create_from_spirv(spirv)
 	_pipeline = _rd.compute_pipeline_create(_shader)
 	_shader_df = _rd.shader_create_from_spirv(spirv_df)
 	_pipeline_df = _rd.compute_pipeline_create(_shader_df)
+	_shader_pert = _rd.shader_create_from_spirv(spirv_pert)
+	_pipeline_pert = _rd.compute_pipeline_create(_shader_pert)
+	for s in 2:
+		_ref_buf[s] = _rd.storage_buffer_create(REF_MAX * 16)
 
 	_tex = _rd.texture_create(level_format(n_tex, LEVELS), RDTextureView.new(), [])
 	_texture.texture_rd_rid = _tex
@@ -325,8 +379,19 @@ func setup() -> bool:
 	img.binding = 0
 	img.add_id(_tex)
 	_set = _rd.uniform_set_create([img], _shader, 0)
+	_set_pert = [_pert_set(img, 0), _pert_set(img, 1)]
 	_ready_ok = true
 	return true
+
+
+## The PERT variant's uniform set: the levels image and the reference orbit. Built in
+## setup() and again in set_quality(), which frees the texture this depends on.
+func _pert_set(img: RDUniform, slot: int) -> RID:
+	var buf := RDUniform.new()
+	buf.uniform_type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER
+	buf.binding = 1
+	buf.add_id(_ref_buf[slot])
+	return _rd.uniform_set_create([img, buf], _shader_pert, 0)
 
 
 ## The clipmap stack's format, in one place because setup(), set_quality() and
@@ -469,6 +534,7 @@ func zoom_factor() -> float:
 ## Back to the current family's HOMES entry, the head over its point, facing as it opens.
 func home() -> void:
 	iter_hint = 0
+	clear_reference_nucleus()
 	var h: Vector3 = HOMES[formula]
 	wpu = h.z
 	_m = Transform2D.IDENTITY
@@ -522,6 +588,7 @@ func set_quality(n: int) -> void:
 	img.binding = 0
 	img.add_id(_tex)
 	_set = _rd.uniform_set_create([img], _shader, 0)
+	_set_pert = [_pert_set(img, 0), _pert_set(img, 1)]
 	# A new texture holds nothing yet, not even an old picture to refill in place.
 	for i in LEVELS:
 		_have[i] = false
@@ -754,6 +821,7 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_material.set_shader_parameter("max_level", max_level)
 	_material.set_shader_parameter("fog_end",
 		float(n_tex / 2 - SLACK - 2) * _texel(LEVELS - 1) * wpu)
+	_keep_reference(vx, vy)
 	RenderingServer.call_on_render_thread(_flush)
 
 
@@ -911,14 +979,19 @@ static func _encode_df(pc: PackedByteArray, off_hi: int, off_lo: int, x: float) 
 	pc.encode_float(off_lo, x - pc.decode_float(off_hi))
 
 
-func _push_constant(level: int, r: Rect2i) -> PackedByteArray:
+func _push_constant(level: int, r: Rect2i, slot := -1) -> PackedByteArray:
 	var o := _texel_centre(level, r.position)
+	if slot >= 0:
+		var c: Array = _ref_cur[slot]
+		return push_constant_at(level, r, o[0] - c[0], o[1] - c[1], c[2])
 	return push_constant_at(level, r, o[0], o[1])
 
 
 ## The dispatch push constant with the fractal origin given directly. tools/ground_check.gd
 ## uses this to fill a rect anywhere at any depth through the real encoding.
-func push_constant_at(level: int, r: Rect2i, ox: float, oy: float) -> PackedByteArray:
+## For the PERT variant (ox, oy) is the offset from the reference point and ref_len the
+## reference orbit's last index.
+func push_constant_at(level: int, r: Rect2i, ox: float, oy: float, ref_len := 0) -> PackedByteArray:
 	var pc := PackedByteArray()
 	pc.resize(PC_SIZE)
 	pc.encode_s32(0, r.position.x)
@@ -938,6 +1011,7 @@ func push_constant_at(level: int, r: Rect2i, ox: float, oy: float) -> PackedByte
 	pc.encode_s32(56, formula)
 	_encode_df(pc, 64, 68, ox)
 	_encode_df(pc, 72, 76, oy)
+	pc.encode_s32(88, ref_len)
 	return pc
 
 
@@ -964,6 +1038,20 @@ func _flush() -> void:
 				_df_cost = maxf(DF_COST, _df_cost * 0.87)
 			else:
 				_budget = minf(BUDGET_MAX, _budget * 1.15)
+	if _ref_drop1:
+		_ref_cur[1] = []
+		_ref_drop1 = false
+	for s in 2:
+		var nx: Array = _ref_next1 if s == 1 else _ref_next0
+		if nx.is_empty():
+			continue
+		var data: PackedFloat32Array = nx[3]
+		_rd.buffer_update(_ref_buf[s], 0, data.size() * 4, data.to_byte_array())
+		_ref_cur[s] = [nx[0], nx[1], nx[2]]
+		if s == 1:
+			_ref_next1 = []
+		else:
+			_ref_next0 = []
 	_worked = false
 	_any_f32 = false
 	_any_df = false
@@ -986,7 +1074,14 @@ func _flush() -> void:
 
 
 var _cl := -1
-var _bound := -1   # 0 f32, 1 df: which pipeline the list has bound
+var _bound := -1   # 0 f32, 1 df, 2 + slot pert: which pipeline and set the list has bound
+var _n_pert := 0   # texels dispatched on each deep path, ever
+var _n_df := 0
+
+
+## Texels filled by perturbation and by df32 so far: the log and the harnesses take deltas.
+func deep_counts() -> Vector2i:
+	return Vector2i(_n_pert, _n_df)
 var _any_f32 := false
 var _any_df := false
 
@@ -997,7 +1092,11 @@ func _spend(rects: Array[Rect2i], i: int, left: float) -> float:
 	while not rects.is_empty() and left > 0.0:
 		var r: Rect2i = rects[0]
 		var deep := _is_deep(i, r)
-		var cost := _df_cost if deep else 1.0
+		var slot := _pert_slot(i, r) if deep else -1
+		var pert := slot >= 0
+		var cost := PERT_COST if pert else (_df_cost if deep else 1.0)
+		if pert:
+			deep = false   # float32 work: the df32 charge and the thin-strip rule are not for it
 		_any_df = _any_df or deep
 		_any_f32 = _any_f32 or not deep
 		var rows := mini(r.size.y, maxi(1, int(left / (cost * float(maxi(1, r.size.x))))))
@@ -1015,15 +1114,20 @@ func _spend(rects: Array[Rect2i], i: int, left: float) -> float:
 		if _cl < 0:
 			_cl = _rd.compute_list_begin()
 			_rd.capture_timestamp("ground_begin")
-		var want := 1 if deep else 0
+		var want := 2 + slot if pert else (1 if deep else 0)
 		if want != _bound:
-			_rd.compute_list_bind_compute_pipeline(_cl, _pipeline_df if deep else _pipeline)
-			_rd.compute_list_bind_uniform_set(_cl, _set, 0)
+			_rd.compute_list_bind_compute_pipeline(_cl,
+				_pipeline_pert if pert else (_pipeline_df if deep else _pipeline))
+			_rd.compute_list_bind_uniform_set(_cl, _set_pert[slot] if pert else _set, 0)
 			_bound = want
-		_rd.compute_list_set_push_constant(_cl, _push_constant(i, sub), PC_SIZE)
+		_rd.compute_list_set_push_constant(_cl, _push_constant(i, sub, slot), PC_SIZE)
 		_rd.compute_list_dispatch(_cl, int(ceil(float(sub.size.x) / 16.0)),
 			int(ceil(float(sub.size.y) / 16.0)), 1)
 		left -= cost * float(sub.size.x * sub.size.y)
+		if pert:
+			_n_pert += sub.size.x * sub.size.y
+		elif deep:
+			_n_df += sub.size.x * sub.size.y
 		if split_x:
 			rects[0] = Rect2i(r.position + Vector2i(sub.size.x, 0), Vector2i(r.size.x - sub.size.x, 16))
 			if r.size.y > 16:
@@ -1033,6 +1137,111 @@ func _spend(rects: Array[Rect2i], i: int, left: float) -> float:
 		else:
 			rects[0] = Rect2i(r.position + Vector2i(0, rows), Vector2i(r.size.x, r.size.y - rows))
 	return left
+
+
+## Which reference this rect fills against, or -1 for none (df32 then): a family that
+## perturbs, and a reference within REF_RANGE_T0 of the whole rect in this level's texels.
+## The nucleus first. Render thread.
+func _pert_slot(level: int, r: Rect2i) -> int:
+	if not perturb or julia or not formula in PERT_FORMULAS:
+		return -1
+	var t := _texel(level)
+	var o := _texel_centre(level, r.position)
+	var x1 := o[0] + float(r.size.x) * t
+	var y1 := o[1] + float(r.size.y) * t
+	for s: int in [1, 0]:
+		var c: Array = _ref_cur[s]
+		if c.is_empty():
+			continue
+		var far := maxf(maxf(absf(o[0] - c[0]), absf(x1 - c[0])), maxf(absf(o[1] - c[1]), absf(y1 - c[1])))
+		if far < REF_RANGE_T0 * 1.25 * t:
+			return s
+	return -1
+
+
+## Pin a minibrot's nucleus (x, y in 64-bit, period p) as reference slot 1. Its orbit comes
+## back to 0 every p steps and never escapes, so every texel round that minibrot follows it
+## closely. One period is a few hundred 64-bit steps, cheap enough to build here.
+func set_reference_nucleus(x: float, y: float, p: int) -> void:
+	if p <= 0 or p >= REF_MAX or (p == _pin_p and x == _pin_x and y == _pin_y):
+		return
+	_pin_x = x
+	_pin_y = y
+	_pin_p = p
+	var z := reference_orbit(x, y, p)
+	_ref_next1 = [x, y, z.size() / 4 - 1, z]
+
+
+## Forget the pinned nucleus: a new family, home, or a harness comparing without it.
+func clear_reference_nucleus() -> void:
+	_pin_p = 0
+	_ref_next1 = []
+	_ref_drop1 = true
+
+
+## How far from slot 0's reference the viewer may stand, in fractal units: the range less half
+## a level-0 window, so everything level 0 holds is still within it.
+func _ref_reach() -> float:
+	return (REF_RANGE_T0 - float(n_tex / 2)) * _texel0()
+
+
+## Keep slot 0 serving the viewer, building a new orbit when the viewer walked out of reach
+## or a capped orbit is shorter than the count now asked for. Nothing at all while the finest
+## level is shallow: no level would use it. Main thread.
+func _keep_reference(vx: float, vy: float) -> void:
+	if _ref_task >= 0:
+		if not WorkerThreadPool.is_task_completed(_ref_task):
+			return
+		WorkerThreadPool.wait_for_task_completion(_ref_task)
+		_ref_task = -1
+		var b := _ref_built
+		var z: PackedFloat32Array = b[4]
+		var m := z.size() / 4 - 1
+		# An orbit stopped by the count rather than by escaping is short for a higher count.
+		_ref_main = [b[0], b[1], m, b[3] if (b[3] >= 0 and m >= b[2]) else -1]
+		_ref_next0 = [b[0], b[1], m, z]
+	if not perturb or julia or not formula in PERT_FORMULAS:
+		return
+	if maxf(1.0, Vector2(vx, vy).length()) / _texel0() <= DF_RATIO:
+		return
+	var r := _ref_reach()
+	var it := mini(effective_iter(), REF_MAX - 1)
+	if not _ref_main.is_empty() and absf(float(_ref_main[0]) - vx) < r \
+			and absf(float(_ref_main[1]) - vy) < r and (int(_ref_main[3]) < 0 or int(_ref_main[3]) >= it):
+		return
+	_build_reference(vx, vy, it, it)
+
+
+## Start iterating slot 0's reference in 64-bit on the WorkerThreadPool; _keep_reference()
+## collects it. `cap` is the count an orbit that never escapes was stopped at.
+func _build_reference(x: float, y: float, n: int, cap: int) -> void:
+	_ref_task = WorkerThreadPool.add_task(func() -> void:
+		_ref_built = [x, y, n, cap, FractalGround.reference_orbit(x, y, n)])
+
+
+## Z_0 .. Z_M of the Mandelbrot z -> z^2 + C from Z_0 = 0, stopping at n steps or one past
+## escape. Each Z is four float32s, x hi, y hi, x lo, y lo, the layout ground.glsl's Ref buffer
+## reads. Static so tools/ground_check.gd can build the same orbit.
+static func reference_orbit(cx: float, cy: float, n: int) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	out.resize(4 * (n + 1))
+	var zx := 0.0
+	var zy := 0.0
+	var m := n
+	for i in n:
+		var nx := zx * zx - zy * zy + cx
+		zy = 2.0 * zx * zy + cy
+		zx = nx
+		var o := 4 * i + 4
+		out[o] = zx
+		out[o + 1] = zy
+		out[o + 2] = zx - out[o]
+		out[o + 3] = zy - out[o + 1]
+		if zx * zx + zy * zy > 65536.0:
+			m = i + 1
+			break
+	out.resize(4 * (m + 1))
+	return out
 
 
 func _read_timestamp() -> void:
@@ -1104,11 +1313,20 @@ func pending_texels() -> int:
 	return total
 
 
+## The reference task writes into this node, so it must land before the node goes. Here on
+## the main thread: from cleanup(), on the render thread at quit, the pool's lock was already
+## gone ("recursive_mutex lock failed", an abort on every harness exit).
+func _exit_tree() -> void:
+	if _ref_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_ref_task)
+		_ref_task = -1
+
+
 func cleanup() -> void:
 	if _rd == null:
 		return
 	_texture.texture_rd_rid = RID()
-	for rid: RID in [_tex, _shader, _shader_df]:
+	for rid: RID in [_tex, _shader, _shader_df, _shader_pert, _ref_buf[0], _ref_buf[1]]:
 		if rid.is_valid():
 			_rd.free_rid(rid)
 	_ready_ok = false

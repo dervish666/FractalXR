@@ -2,11 +2,13 @@
 
 f32 = "";
 df = "#define DEEP";
+pert = "#define PERT";
 
 #[compute]
 #version 450
 
-// The #[versions] defines land here: DEEP for the df variant, nothing for f32.
+// The #[versions] defines land here: DEEP for the df variant, PERT for the perturbation one,
+// nothing for f32.
 VERSION_DEFINES
 
 // The ground viewer's fractal fill: escape-time Mandelbrot / Julia into one rectangle of
@@ -54,7 +56,10 @@ layout(push_constant, std430) uniform PC {
 	// the old vec2(a) * texel lost neighbouring texels past about 1000x.
 	vec4 origin;
 	vec2 julia_c_lo;
-	vec2 _pad2;
+	// PERT only: the reference orbit holds Z_0 .. Z_ref_len, and origin is the rect's first
+	// texel centre less the reference point C, so it is a small delta and float32 holds it.
+	int ref_len;
+	int _pad3;
 } p;
 
 const float ESC2 = 65536.0;        // escape radius squared (256^2): big radius, smooth count
@@ -132,6 +137,16 @@ void iterate(int f, inout vec2 z, inout vec2 dz, vec2 c, vec2 addC) {
 // escape_df) and far below how near an outside point that escapes can shadow the cycle.
 const float CYCLE_EPS2 = 1e-10;
 const float CYCLE_EPS2_DF = 1e-16;
+
+// The cycle check compares each z with the point nearest 0 that the orbit reached in the
+// previous power-of-two window, not with z at the window's start as escape() does. Near a
+// deep minibrot the orbit spends most of a period out at |z| ~ 1, where float32 resolves
+// 1e-7 and neighbouring texels differ by less; near 0 it resolves the same digits at a
+// fraction of the size. The tolerance follows the texel: a return closer than CYCLE_K of
+// the gap between neighbouring texels' orbits (texel * |dz/dc|) is as inside as this fill
+// can tell, and the old fixed 1e-5 would have swallowed whole decorations round a minibrot
+// smaller than that.
+const float CYCLE_K = 0.01;
 
 vec4 escape(vec2 c, vec2 z0) {
 	vec2 z = z0;
@@ -327,6 +342,7 @@ vec4 escape_df(vec2 cx, vec2 cy, vec2 x0, vec2 y0) {
 	vec2 xs = x0;
 	vec2 ys = y0;
 	int check = 1;
+	float tk2 = CYCLE_K * CYCLE_K * p.texel * p.texel;
 	vec2 dz = vec2(1.0, 0.0);
 	vec2 addC = (p.julia != 0) ? vec2(0.0) : vec2(1.0, 0.0);
 	float ac = length(vec2(cx.x, cy.x));
@@ -355,7 +371,9 @@ vec4 escape_df(vec2 cx, vec2 cy, vec2 x0, vec2 y0) {
 		// The difference in df, so its hi part carries the bits float32 z would have lost.
 		float ddx = df_add(x, -xs).x;
 		float ddy = df_add(y, -ys).x;
-		if (ddx * ddx + ddy * ddy < CYCLE_EPS2_DF) break;
+		// Scaled to the texel as in escape_pert: a fixed 1e-16 called 291 of 1024 outside
+		// texels inside round a stage-19 minibrot (tools/ground_check.sh, minibrot case).
+		if (ddx * ddx + ddy * ddy < min(CYCLE_EPS2_DF, tk2 * dot(dz, dz))) break;
 		if (n == check) {
 			xs = x;
 			ys = y;
@@ -367,6 +385,100 @@ vec4 escape_df(vec2 cx, vec2 cy, vec2 x0, vec2 y0) {
 	if (m2 <= ESC2) return vec4(float(p.max_iter), -40.0, 1.0, clamp(sqrt(minR2), 0.0, 1.0));
 	float lm = log(m2) * 0.5;
 	float s = float(n) - log2(lm / LOG_ESC) / log2(degree_of(p.formula));
+	float de = sqrt(m2) * lm / max(1e-20, length(dz));
+	float tia = mix(avg0, avg1, clamp(s - floor(s), 0.0, 1.0));
+	float st = 1.0 - clamp(minAxis / max(1e-4, p.stalk_width), 0.0, 1.0);
+	return vec4(s, log2(max(de, 1e-30)), 0.0, mix(tia, st, p.stalk));
+}
+#endif
+
+#ifdef PERT
+// Perturbation, Mandelbrot only: one reference orbit Z_n of a point C, iterated in 64-bit
+// on the CPU, and each texel iterates only its difference d_n = z_n - Z_n from it, with
+// dc = c - C:
+//
+//   d' = 2 Z d + d^2 + dc = (2Z + d) d + dc
+//
+// No term in it is large, so every texel is plain float32 work and a deep fill costs what a
+// shallow one does, against df32's 40x on the M1. Every other family stays on df32. The
+// folded ones are not holomorphic, and the cubic and quartic were measured
+// (tools/ground_check.sh, and a C replay of this loop): float32 deltas matched the 64-bit
+// count on 88-93% of a boundary patch with the reference only 250 texels away, where the
+// Mandelbrot holds 98-99.5% out to 4000.
+//
+// Rebasing (Zhuoran's): when |z| drops below |d|, or the stored orbit runs out, the texel
+// carries on from the start of the reference with d = z. That is the whole glitch fix, no
+// second pass and no second reference, and it lets any reference serve: an orbit that
+// escapes after a few hundred steps still fills a texel needing thousands. The best
+// reference is a minibrot's nucleus (GroundGuide hands it over), whose orbit returns to 0
+// every period and never escapes.
+//
+// Each entry is Z_n as a two-float, (hi.x, hi.y, lo.x, lo.y). The step itself only multiplies
+// by Z, where hi's 24 bits are plenty, but z = Z + d is a sum, and with Z rounded to float32
+// a texel that rebases early takes that rounding (|Z| * 6e-8, a hundred texels at stage 17)
+// into its orbit. A reference 24000 texels off the patch matched the 64-bit count on 73-96%
+// of texels that way, against 99.9% for its own; hi + (lo + d) keeps the digits.
+layout(set = 0, binding = 1, std430) restrict readonly buffer Ref { vec4 ref_z[]; };
+
+
+vec4 escape_pert(vec2 dc) {
+	vec2 d = vec2(0.0);
+	vec2 z = vec2(0.0);
+	int k = 0;
+	vec2 dz = vec2(1.0, 0.0);
+	float ac = length(ref_z[1].xy + dc);   // Z_1 = C
+	float m2 = 0.0;
+	float sum = 0.0, sumPrev = 0.0, count = 0.0;
+	float minR2 = 1e30;
+	float minAxis = 1e30;
+	vec2 zs = vec2(1e30);    // nearest-0 point of the last closed window
+	vec2 zw = vec2(0.0);     // nearest-0 point of the open window
+	float zw2 = 1e30;
+	int check = 1;
+	float tk2 = CYCLE_K * CYCLE_K * p.texel * p.texel;
+	int n = 0;
+	for (int i = 0; i < p.max_iter; i++) {
+		vec2 zp = z;
+		dz = 2.0 * cmul(z, dz) + vec2(1.0, 0.0);
+		d = cmul(2.0 * ref_z[k].xy + d, d) + dc;
+		k++;
+		vec4 Z = ref_z[k];
+		z = Z.xy + (Z.zw + d);
+		m2 = dot(z, z);
+		minR2 = min(minR2, m2);
+		n = i + 1;
+		if (p.tex_on > 0.5 && i > 1) {
+			minAxis = min(minAxis, min(abs(z.x), abs(z.y)));
+			float azp2 = dot(zp, zp);
+			float lo = abs(azp2 - ac);
+			float hi = azp2 + ac;
+			float t = (sqrt(m2) - lo) / max(1e-12, hi - lo);
+			sumPrev = sum;
+			sum += clamp(t, 0.0, 1.0);
+			count += 1.0;
+		}
+		if (m2 > ESC2) break;
+		if (k >= p.ref_len || m2 < dot(d, d)) {
+			d = z;
+			k = 0;
+		}
+		vec2 dd = z - zs;
+		if (dot(dd, dd) < min(CYCLE_EPS2, tk2 * dot(dz, dz))) break;
+		if (m2 < zw2) {
+			zw = z;
+			zw2 = m2;
+		}
+		if (n == check) {
+			zs = zw;
+			zw2 = 1e30;
+			check *= 2;
+		}
+	}
+	float avg1 = count > 0.0 ? sum / count : 0.0;
+	float avg0 = count > 1.0 ? sumPrev / (count - 1.0) : avg1;
+	if (m2 <= ESC2) return vec4(float(p.max_iter), -40.0, 1.0, clamp(sqrt(minR2), 0.0, 1.0));
+	float lm = log(m2) * 0.5;
+	float s = float(n) - log2(lm / LOG_ESC);
 	float de = sqrt(m2) * lm / max(1e-20, length(dz));
 	float tia = mix(avg0, avg1, clamp(s - floor(s), 0.0, 1.0));
 	float st = 1.0 - clamp(minAxis / max(1e-4, p.stalk_width), 0.0, 1.0);
@@ -386,7 +498,11 @@ void main() {
 	ivec2 g = ivec2(gl_GlobalInvocationID.xy);
 	if (g.x >= p.rect_size.x || g.y >= p.rect_size.y) return;
 	ivec2 a = p.rect_origin + g;
-#ifdef DEEP
+#ifdef PERT
+	// origin is already relative to the reference point, a few thousand texels at most.
+	vec2 dc = vec2(p.origin.x + p.origin.y, p.origin.z + p.origin.w) + vec2(g) * p.texel;
+	vec4 r = escape_pert(dc);
+#elif defined(DEEP)
 	vec2 px = df_add(p.origin.xy, df_mul_f(vec2(p.texel, p.texel_lo), float(g.x)));
 	vec2 py = df_add(p.origin.zw, df_mul_f(vec2(p.texel, p.texel_lo), float(g.y)));
 	vec4 r = (p.julia != 0)

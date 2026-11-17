@@ -335,6 +335,7 @@ func pick(hit_xz: Vector2, head_xz: Vector2) -> bool:
 
 ## Trip to a beacon: the ornament on the way when it is a real stop, then the minibrot.
 func go_to(b: Dictionary, mps: float, efold: float) -> void:
+	ground.set_reference_nucleus(b["x"], b["y"], int(b["period"]))
 	ground.iter_hint = mini(ITER_PER_PERIOD * int(b["period"]), ITER_HINT_MAX)
 	_hint_wpu = minf(MINI_M / b["size"], wpu_max)
 	var w_mini := minf(MINI_M / b["size"], wpu_max)
@@ -422,6 +423,24 @@ func _poll_scan() -> void:
 		beacons.append(b)
 		if beacons.size() >= MAX_BEACONS:
 			break
+	# The nearest nucleus makes the best perturbation reference for the fill round it: its
+	# orbit never escapes. A trip pins its own target instead.
+	if trip.is_empty() and not _result.is_empty():
+		var fx := ground.viewer_fx()
+		var fy := ground.viewer_fy()
+		var near: Dictionary = _result[0]
+		for b in _result:
+			if Vector2(b["x"] - fx, b["y"] - fy).length() < Vector2(near["x"] - fx, near["y"] - fy).length():
+				near = b
+		ground.set_reference_nucleus(near["x"], near["y"], int(near["period"]))
+
+
+## A scan in flight writes into this node; let it land before the node goes, on the main
+## thread. Quitting mid-scan aborted on the pool's lock ("recursive_mutex lock failed").
+func _exit_tree() -> void:
+	if _task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_task)
+		_task = -1
 
 
 ## Block until the scan in flight lands (harness only).

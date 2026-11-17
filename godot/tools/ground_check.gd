@@ -32,6 +32,13 @@ var tex: RID
 var uset: RID
 var tex_base: RID     # the pre-df32 fill writes RGBA16F, so it gets a texture of its own
 var uset_base: RID
+var ref_buf: RID      # the PERT variant's reference orbit
+var uset_pert: RID
+var _ref := [0.0, 0.0, 0]   # the reference point and orbit length the buffer holds
+## The reference sits this many texels from the patch: a viewer standing off to the side.
+var ref_off := Vector2(0.0, 0.0)
+## A fixed reference [x, y, period] instead, a nucleus as GroundGuide pins it. Empty: none.
+var ref_fixed: Array = []
 var ground: FractalGround
 var _slot0 := Vector2i.ZERO    # where the last dispatch's first texel landed in the texture
 var _iter := ITER               # the cap the CPU truth runs to; the fraction case raises it
@@ -40,18 +47,21 @@ var _seed := 0                  # seed=N on the command line: other spots, same 
 
 func _init() -> void:
 	var stage := 17
+	var only_stop := false
 	for a in OS.get_cmdline_user_args():
 		if a.is_valid_int():
 			stage = int(a)
 		elif a.begins_with("seed="):
 			_seed = int(a.substr(5))
+		elif a == "stop":
+			only_stop = true
 	rd = RenderingServer.create_local_rendering_device()
 	if rd == null:
 		print("GROUNDCHECK FAIL no local RenderingDevice (run windowed, not --headless)")
 		quit(1)
 		return
 	var file: RDShaderFile = load("res://shaders/ground.glsl")
-	for v: String in ["f32", "df"]:
+	for v: String in ["f32", "df", "pert"]:
 		var sp := file.get_spirv(StringName(v))
 		if sp == null or sp.compile_error_compute != "":
 			print("GROUNDCHECK FAIL %s variant: %s" % [v, "missing" if sp == null else sp.compile_error_compute])
@@ -86,6 +96,12 @@ func _init() -> void:
 	img.binding = 0
 	img.add_id(tex)
 	uset = rd.uniform_set_create([img], shaders["f32"], 0)
+	ref_buf = rd.storage_buffer_create(FractalGround.REF_MAX * 16)
+	var ub2 := RDUniform.new()
+	ub2.uniform_type = RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER
+	ub2.binding = 1
+	ub2.add_id(ref_buf)
+	uset_pert = rd.uniform_set_create([img, ub2], shaders["pert"], 0)
 	ground = FractalGround.new()
 	ground.auto_iter = false   # the CPU reference runs to max_iter and nothing else
 	ground.n_tex = TEX
@@ -93,6 +109,12 @@ func _init() -> void:
 
 	var ok := true
 	var rng := RandomNumberGenerator.new()
+	if only_stop:
+		ok = _stop_case()
+		print("GROUNDCHECK %s stop" % ("PASS" if ok else "FAIL"))
+		_free()
+		quit(0 if ok else 1)
+		return
 	# Every family at the deep stage, then a Julia set.
 	for f in FractalGround.FORMULA_NAMES.size():
 		ok = _case(f, false, Vector2.ZERO, stage, rng) and ok
@@ -101,17 +123,23 @@ func _init() -> void:
 	# fails here the new origin arithmetic broke the common case.
 	ok = _case(0, false, Vector2.ZERO, 3, rng, true) and ok
 	ok = _fraction_case(rng) and ok
+	ok = _minibrot_case(rng) and ok
 	_sweep(rng)
 	_bench(rng)
 	print("GROUNDCHECK %s stage=%d" % ["PASS" if ok else "FAIL", stage])
+	_free()
+	quit(0 if ok else 1)
+
+
+func _free() -> void:
 	ground.free()
 	rd.free_rid(tex)
+	rd.free_rid(ref_buf)
 	if tex_base.is_valid():
 		rd.free_rid(tex_base)
 	for v: String in shaders:
 		rd.free_rid(shaders[v])
 	rd.free()
-	quit(0 if ok else 1)
 
 
 func _texel(stage: int) -> float:
@@ -268,17 +296,37 @@ func _dispatch(variant: String, f: int, julia: bool, jc: Vector2, stage: int, ox
 	if variant == "base":
 		var t := ground._texel(0)
 		_slot0 = Vector2i(int(round(ox / t - 0.5)), int(round(oy / t - 0.5)))
-	var pc := ground.push_constant_at(0, Rect2i(_slot0, Vector2i(size, size)), ox, oy)
+	var pc: PackedByteArray
+	if variant == "pert":
+		# The reference is the patch centre moved by ref_off texels: the viewer's own point
+		# when that is (0, 0). Its orbit escapes like any boundary point's, so this exercises
+		# the rebase at the end of the stored orbit as well as the |z| < |d| one.
+		var t := ground._texel(0)
+		if ref_fixed.is_empty():
+			_set_reference(f, ox + (float(size) * 0.5 + ref_off.x) * t, oy + (float(size) * 0.5 + ref_off.y) * t)
+		else:
+			_set_reference(f, ref_fixed[0], ref_fixed[1], ref_fixed[2])
+		pc = ground.push_constant_at(0, Rect2i(_slot0, Vector2i(size, size)), ox - _ref[0], oy - _ref[1], _ref[2])
+	else:
+		pc = ground.push_constant_at(0, Rect2i(_slot0, Vector2i(size, size)), ox, oy)
 	if variant == "base":
 		pc = pc.slice(0, 64)
 	var cl := rd.compute_list_begin()
 	rd.compute_list_bind_compute_pipeline(cl, pipes[variant])
-	rd.compute_list_bind_uniform_set(cl, uset_base if variant == "base" else uset, 0)
+	rd.compute_list_bind_uniform_set(cl, uset_base if variant == "base" else (uset_pert if variant == "pert" else uset), 0)
 	rd.compute_list_set_push_constant(cl, pc, pc.size())
 	rd.compute_list_dispatch(cl, int(ceil(float(size) / 16.0)), int(ceil(float(size) / 16.0)), 1)
 	rd.compute_list_end()
 	rd.submit()
 	rd.sync()
+
+
+## Upload the reference orbit of (x, y) for family f, run to the CPU truth's cap.
+func _set_reference(f: int, x: float, y: float, period := 0) -> void:
+	var n := period if period > 0 else mini(ground.max_iter, FractalGround.REF_MAX - 1)
+	var z := FractalGround.reference_orbit(x, y, n)
+	rd.buffer_update(ref_buf, 0, z.size() * 4, z.to_byte_array())
+	_ref = [x, y, z.size() / 4 - 1]
 
 
 ## The smooth count of texel k in the level texture's bytes. Follows level_format().
@@ -401,6 +449,29 @@ func _case(f: int, julia: bool, jc: Vector2, stage: int, rng: RandomNumberGenera
 		print("GROUNDCHECK base f32 fill at stage %d: near=%.3f match=%.3f, new f32 near=%.3f, new vs base near=%.3f" % [
 			stage, nb, _match(b, t), _near(s, t), _near(s, b)])
 	var ok := df_ok and (f32_ok if shallow else not f32_ok)
+	var pert_line := ""
+	if not julia and not shallow and f in FractalGround.PERT_FORMULAS:
+		# Against the patch's own centre, the reference a viewer standing on it would get.
+		var pm := _gpu("pert", f, julia, jc, stage, ox, oy)
+		var mp := _match(pm, t)
+		var ep := _err_texels(pm, t)
+		var pert_ok := mp >= minf(0.95, cond - 0.05) and mp >= 0.85 and _distinct(pm) >= int(0.8 * float(dt))
+		# Against a reference at the edge of REF_RANGE_T0. Perturbation in float32 is not
+		# df32-exact on chaotic texels (see REF_RANGE_T0 and _stop_case), and the texels it
+		# gets different are ones the 64-bit count itself changes when nudged by 1e-5 of a
+		# texel: grain, not structure. So this gate catches breakage, blocks or an offset,
+		# where the float32 control's error is 1.4-12, not grain. Measured 0.02-0.11.
+		ref_off = Vector2(FractalGround.REF_RANGE_T0, -0.7 * FractalGround.REF_RANGE_T0)
+		var pf := _gpu("pert", f, julia, jc, stage, ox, oy)
+		ref_off = Vector2.ZERO
+		var mf := _match(pf, t)
+		var ef := _err_texels(pf, t)
+		var far_ok := ef <= 0.35 and _distinct(pf) >= int(0.8 * float(dt))
+		pert_ok = pert_ok and far_ok
+		ok = ok and pert_ok
+		pert_line = "  pert %s own ref: match=%.3f err=%.4f distinct=%d (ref escapes at %d); ref %d texels off: match=%.3f err=%.4f %s" % [
+			"PASS" if pert_ok else "FAIL", mp, ep, _distinct(pm), _ref[2], int(FractalGround.REF_RANGE_T0 * 1.22),
+			mf, ef, "PASS" if far_ok else "FAIL"]
 	# The patch's own sensitivity at df32's resolution: the truth moved by one df32 step
 	# of the coordinate (2^-47 of its magnitude). Past the depth where this drops, no
 	# two-float fill can be exact there, and the numbers say so.
@@ -410,6 +481,8 @@ func _case(f: int, julia: bool, jc: Vector2, stage: int, rng: RandomNumberGenera
 		name, stage, String.num_scientific(pow(2.0, float(stage))), "PASS" if ok else "FAIL",
 		_err_texels(d, t), _err_texels(s, t), md, dd, ms, _near(s, t), ds, ("PASS" if f32_ok else "FAIL(control)") if not shallow else ("PASS" if f32_ok else "FAIL"),
 		dt, cond, String.num_scientific(snappedf(eps, 1e-6)), self_df, _same_pairs(t), _same_pairs(d), _same_pairs(s), ox, oy])
+	if pert_line != "":
+		print(pert_line)
 	if not ok:
 		# The first row, so a failure shows whether it is blocks, noise or an offset.
 		var row := func(a: PackedFloat32Array) -> String:
@@ -528,6 +601,150 @@ func _fraction_case(rng: RandomNumberGenerator) -> bool:
 	return ok
 
 
+## What GroundGuide's tours fly to: the edge of a minibrot deep in the set, at about 24 times
+## its period in iterations. pert runs against the minibrot's nucleus (one period of orbit,
+## as GroundGuide pins it) and against the patch's own centre, df32 alongside, all against
+## the 64-bit count. The interior counts too: the PERT cycle check must not call an outside
+## texel inside, which a fixed tolerance would round a minibrot this small.
+func _minibrot_case(rng: RandomNumberGenerator) -> bool:
+	rng.seed = 2424 + 7919 * _seed
+	var t0 := _texel(0)
+	var found: Array = []
+	for attempt in 40:
+		var spot := _find_spot(0, false, Vector2.ZERO, _texel(10 + rng.randi_range(0, 6)), rng)
+		if spot.is_empty():
+			continue
+		var p := GroundGuide.atom_period(spot[0], spot[1], 20000)
+		if p < 20 or p > 400:
+			continue
+		var nu := GroundGuide.nucleus(spot[0], spot[1], p)
+		if not nu[2] or GroundGuide.exact_period(nu[0], nu[1], p) != p:
+			continue
+		var size := GroundGuide.size_estimate(nu[0], nu[1], p)
+		# About 16 texels across the minibrot, so the patch holds its body and its edge.
+		var stage := roundi(log(t0 * 16.0 / size) / log(2.0))
+		if stage < 14 or stage > FractalGround.STAGE_MAX:
+			continue
+		found = [nu[0], nu[1], p, size, stage]
+		break
+	if found.is_empty():
+		print("GROUNDCHECK minibrot FAIL no minibrot found between stage 14 and %d" % FractalGround.STAGE_MAX)
+		return false
+	var stage: int = found[4]
+	var texel := _texel(stage)
+	var p: int = found[2]
+	_iter = mini(24 * p, 8192)
+	ground.max_iter = _iter
+	# The nucleus at texel (8, 16): the minibrot's body on the left, its edge and the
+	# decorations round it to the right.
+	var ox: float = found[0] - 8.0 * texel
+	var oy: float = found[1] - 16.0 * texel
+	var t := _truth(0, false, Vector2.ZERO, ox, oy, texel)
+	var cond := _match(_truth(0, false, Vector2.ZERO, ox + JITTER * texel, oy, texel), t)
+	var d := _gpu("df", 0, false, Vector2.ZERO, stage, ox, oy)
+	ref_fixed = [found[0], found[1], p]
+	var pn := _gpu("pert", 0, false, Vector2.ZERO, stage, ox, oy)
+	ref_fixed = []
+	var po := _gpu("pert", 0, false, Vector2.ZERO, stage, ox, oy)
+	# A viewer standing off in the decorations: the reference escapes, and every texel that
+	# shadows the minibrot past it rebases onto the start of an orbit that is not its own.
+	ref_off = Vector2(FractalGround.REF_RANGE_T0 - 512.0, 0.0)
+	var pf := _gpu("pert", 0, false, Vector2.ZERO, stage, ox, oy)
+	var far_len: int = _ref[2]
+	ref_off = Vector2.ZERO
+	var inside_wrong := func(a: PackedFloat32Array) -> int:
+		var n := 0
+		for k in t.size():
+			if (a[k] >= float(_iter)) != (t[k] >= float(_iter)):
+				n += 1
+		return n
+	var ed := _err_texels(d, t)
+	# df32's cycle check too: a fixed tolerance called 291 outside texels inside here once.
+	var ok: bool = inside_wrong.call(d) <= 10
+	var line := "GROUNDCHECK minibrot stage=%d period=%d size=%s iter=%d inside=%.2f self=%.3f  df match=%.3f err=%.4f inside-wrong=%d" % [
+		stage, p, String.num_scientific(found[3]), _iter, _inside(t), cond, _match(d, t), ed, inside_wrong.call(d)]
+	for pair: Array in [["pert@nucleus", pn], ["pert@own", po], ["pert@%d-off(escapes %d)" % [int(FractalGround.REF_RANGE_T0 - 512.0), far_len], pf]]:
+		var a: PackedFloat32Array = pair[1]
+		var e := _err_texels(a, t)
+		var iw: int = inside_wrong.call(a)
+		# Breakage, not grain (see the far-reference case above): position error well under
+		# the float32 control's, and no outside texels swallowed by the cycle check.
+		var good := e <= 0.35 and iw <= 10
+		ok = ok and good
+		line += "  %s %s match=%.3f err=%.4f inside-wrong=%d" % [pair[0], "PASS" if good else "FAIL", _match(a, t), e, iw]
+	print(line.replace("GROUNDCHECK minibrot", "GROUNDCHECK minibrot " + ("PASS" if ok else "FAIL")))
+	print("  minibrot nucleus (%.17f, %.17f)" % [found[0], found[1]])
+	# Fill time at this spot and count, 256x256, the cost a tour stop actually pays.
+	var times := ""
+	for v: String in ["df", "pert"]:
+		ref_fixed = [found[0], found[1], p] if v == "pert" else []
+		var t1 := Time.get_ticks_usec()
+		_dispatch(v, 0, false, Vector2.ZERO, stage, ox, oy, 256)
+		times += " %s=%.1fms" % [v, float(Time.get_ticks_usec() - t1) / 1000.0]
+	ref_fixed = []
+	print("BENCH minibrot stage=%d iter=%d 256x256%s" % [stage, _iter, times])
+	_iter = ITER
+	ground.max_iter = ITER
+	return ok
+
+
+## tools/pert_shot.sh's first stop, where its pictures of perturbation and df32 differ in
+## the fine grain: patches where a viewer standing there sees them, level 0 at the feet, level
+## 1 two metres out, level 2 at the minibrot's edge, each against the 64-bit count, filled
+## with df32 and with perturbation against the references the app would give it. Report
+## only. Measured: feet all 1.000; mid df 0.971, pert 0.91-0.93; edge df 0.960, pert
+## 0.78-0.85, where the 64-bit count itself agrees with itself moved 1e-5 of a texel on 87%.
+## A C replay of the shader's loop reproduces pert's numbers to the digit and gets 0.98 with
+## 64-bit d, so it is float32's limit, not a bug. The frames are alike to the eye at 1:1.
+##   tools/ground_check.sh stop
+func _stop_case() -> bool:
+	var nu := GroundGuide.nucleus(-0.64011570248696, 0.37754570328187387, 41)
+	var size := GroundGuide.size_estimate(nu[0], nu[1], 41)
+	var wpu := GroundGuide.MINI_M / size
+	var vx: float = nu[0]
+	var vy: float = nu[1] + GroundGuide.AHEAD_M / wpu   # the viewer, the nucleus 4.5 m ahead
+	var stage := int(floor(log(wpu / FractalGround.WPU_BASE) / log(2.0)))
+	_iter = 24 * 41
+	ground.max_iter = _iter
+	var ok := true
+	# [name, level, metres ahead of the viewer]
+	for c: Array in [["feet", 0, 0.3], ["mid", 1, 2.0], ["edge", 2, GroundGuide.AHEAD_M - size * wpu * 0.6]]:
+		var lv: int = c[1]
+		var texel := _texel(stage - lv)
+		var fy: float = vy - float(c[2]) / wpu
+		var ox := (roundf(vx / texel) + 0.5) * texel
+		var oy := (roundf(fy / texel) + 0.5) * texel
+		var t := _truth(0, false, Vector2.ZERO, ox, oy, texel)
+		var cond := _match(_truth(0, false, Vector2.ZERO, ox + JITTER * texel, oy, texel), t)
+		var d := _gpu("df", 0, false, Vector2.ZERO, stage - lv, ox, oy)
+		ref_fixed = [vx, vy, 0]
+		var pv := _gpu("pert", 0, false, Vector2.ZERO, stage - lv, ox, oy)
+		var dist_v := Vector2(ox - vx, oy - vy).length() / texel
+		ref_fixed = [nu[0], nu[1], 41]
+		var pn := _gpu("pert", 0, false, Vector2.ZERO, stage - lv, ox, oy)
+		var dist_n := Vector2(ox - nu[0], oy - nu[1]).length() / texel
+		ref_fixed = []
+		var po := _gpu("pert", 0, false, Vector2.ZERO, stage - lv, ox, oy)   # the patch centre
+		var flips := func(a: PackedFloat32Array) -> String:
+			var n_in := 0
+			var n_out := 0
+			for k in t.size():
+				if a[k] >= float(_iter) and t[k] < float(_iter):
+					n_in += 1
+				elif a[k] < float(_iter) and t[k] >= float(_iter):
+					n_out += 1
+			return "%d/%d" % [n_in, n_out]
+		print("  %s patch %.17f %.17f texel %s viewer %.17f %.17f nucleus %.17f %.17f" % [c[0], ox, oy, var_to_str(texel), vx, vy, nu[0], nu[1]])
+		print("  %s flips called-inside/called-outside: df %s pert@viewer %s pert@nucleus %s pert@own(16) %s match=%.3f err=%.4f" % [
+			c[0], flips.call(d), flips.call(pv), flips.call(pn), flips.call(po), _match(po, t), _err_texels(po, t)])
+		print("GROUNDCHECK stop %s level %d: truth distinct=%d inside=%.2f self=%.3f | df match=%.3f err=%.4f | pert@viewer (%.0f texels) match=%.3f err=%.4f | pert@nucleus (%.0f texels) match=%.3f err=%.4f" % [
+			c[0], lv, _distinct(t), _inside(t), cond, _match(d, t), _err_texels(d, t),
+			dist_v, _match(pv, t), _err_texels(pv, t), dist_n, _match(pn, t), _err_texels(pn, t)])
+	_iter = ITER
+	ground.max_iter = ITER
+	return ok
+
+
 ## Wall time of a 1024x1024 fill (slots wrap in the small texture, which only costs
 ## overwrites), best of three, per variant at a shallow and a deep boundary spot.
 func _bench(rng: RandomNumberGenerator) -> void:
@@ -540,7 +757,7 @@ func _bench(rng: RandomNumberGenerator) -> void:
 		for it: int in [256, 1024]:
 			ground.max_iter = it
 			var line := "BENCH stage=%d iter=%d" % [stage, it]
-			for v: String in ["base", "f32", "df"]:
+			for v: String in ["base", "f32", "df", "pert"]:
 				if not pipes.has(v):
 					continue
 				var best := 1e30

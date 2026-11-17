@@ -2,6 +2,30 @@
 
 2026-09-15 · Plan for review · Native Quest build (`godot/`), GROUND mode
 
+## 2026-11-17: perturbation after all, for the Mandelbrot
+
+The recommendation below held until GroundGuide's tours (BEACONS, TOUR) started asking for
+24 times a minibrot's period in iterations, up to 16384. df32 on the M1 then filled 7% of a
+view in six minutes. `ground.glsl` now has a third variant, PERT, for the Mandelbrot only:
+float32 deltas against a reference orbit iterated in doubles on the CPU, Zhuoran's rebasing
+in place of glitch detection, the reference stored as two-floats so a rebase keeps its digits.
+What the 2026-09 analysis predicted, and what was measured:
+
+- **The float32 cliff is real but shallow for the quadratic.** On a boundary patch the
+  Mandelbrot holds 98-99.5% exact against the 64-bit count with its reference within 4000
+  texels. The cubic and quartic fall to 88-93% at 250 texels, so they stay on df32 with the
+  folded families.
+- **The error scales with distance from the reference,** in that level's texels, because d
+  starts at dc and float32 rounds it relative to itself. A C replay of the shader loop with
+  64-bit d holds 98.8% at any distance. Hence `REF_RANGE_T0` (2000), and two references:
+  the viewer's point and a pinned nucleus, whichever is in range.
+- **On the most chaotic texels pert is grainier than df32,** 78-91% exact at the 1774x tour
+  stop against df32's 96-97%. Those texels change count in the exact maths when moved by
+  1e-5 of a texel; at 1:1 the frames are indistinguishable. `tools/ground_check.sh stop`.
+- **Cost:** 25-35x less GPU time than df32 at tour stops, close to the shallow fill.
+- **A fixed cycle tolerance was wrong at depth for both paths.** df32's 1e-16 called 291 of
+  1024 outside texels inside round a stage-19 minibrot. Both now scale it with the texel.
+
 ## Recommendation up front
 
 **Do not build perturbation. Build two-float (df32) arithmetic in `ground.glsl`.**
