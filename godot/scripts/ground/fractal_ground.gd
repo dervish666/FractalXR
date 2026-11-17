@@ -647,6 +647,27 @@ func iter_floor() -> int:
 	return mini(4096, 512 << ((_stage - 10) / 3))
 
 
+## NEAR: the per-pixel escape budget for the shader's near field (ground.gdshader), 0 off.
+## Where a texel spans several pixels near the set, the fragment iterates its own point.
+const NEAR_STEPS := [0, 128, 256, 512]
+var near_iter := 256
+
+
+func _set_near(vx: float, vy: float) -> void:
+	_material.set_shader_parameter("near_iter", near_iter)
+	if near_iter <= 0:
+		return
+	var f := PackedFloat32Array([vx, vy])
+	_material.set_shader_parameter("near_c", Vector4(f[0], vx - f[0], f[1], vy - f[1]))
+	_material.set_shader_parameter("near_formula", formula)
+	_material.set_shader_parameter("near_julia", 1 if julia else 0)
+	_material.set_shader_parameter("near_julia_c", Vector2(_jx, _jy))
+	_material.set_shader_parameter("near_max_iter", effective_iter())
+	_material.set_shader_parameter("near_tex_on", 1.0 if texture_on else 0.0)
+	_material.set_shader_parameter("near_stalk", stalk)
+	_material.set_shader_parameter("near_stalk_width", stalk_width)
+
+
 func effective_iter() -> int:
 	return maxi(maxi(max_iter, iter_floor()), iter_hint)
 
@@ -821,6 +842,7 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_material.set_shader_parameter("max_level", max_level)
 	_material.set_shader_parameter("fog_end",
 		float(n_tex / 2 - SLACK - 2) * _texel(LEVELS - 1) * wpu)
+	_set_near(vx, vy)
 	_keep_reference(vx, vy)
 	RenderingServer.call_on_render_thread(_flush)
 

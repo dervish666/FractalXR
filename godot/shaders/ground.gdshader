@@ -329,6 +329,104 @@ void relief_normal(mat2 m, int level, float hx0, float hx1, float hz0, float hz1
 	lap = (hx1 + hx0 + hz1 + hz0 - 4.0 * hc) / tm;
 }
 
+// NEAR: the escape count per pixel, where the screen is finer than the finest data the
+// clipmap can hold there. At 1024 texels a level, a level's window reaches only so far, so
+// the headset's eye buffer sees texels 10-20 pixels across near the set and every line built
+// from the bilinear count wobbles at that size. This is ground.glsl's float32 escape(), the
+// same maths and the same four outputs, run in the fragment. Keep the two in step.
+//
+// Cost control: a pixel runs it only when its texel is coarser than the pixel, the data
+// says the set is within a few texels (the count is smooth further out and the bilinear is
+// already exact to the eye), and the texel's own count is under near_iter, the budget. A
+// pixel the budget cannot settle keeps the texel value.
+uniform int near_iter = 0;              // per-pixel iteration budget; 0 is off
+uniform vec4 near_c = vec4(0.0);        // the viewer's fractal x hi, x lo, y hi, y lo
+uniform int near_formula = 0;
+uniform int near_julia = 0;
+uniform vec2 near_julia_c = vec2(0.0);
+uniform int near_max_iter = 256;
+uniform float near_tex_on = 1.0;
+uniform float near_stalk = 0.0;
+uniform float near_stalk_width = 0.05;
+
+vec2 n_cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+
+// ground.glsl iterate() and degree_of(), formula order as FORMULA_NAMES.
+float n_degree(int f) { return f == 6 ? 3.0 : (f == 7 ? 4.0 : 2.0); }
+
+void n_iterate(int f, inout vec2 z, inout vec2 dz, vec2 c, vec2 addC) {
+	vec2 zf = z;
+	if (f == 1) zf = abs(z);
+	else if (f == 2) zf = vec2(z.x, -z.y);
+	else if (f == 4) zf = vec2(abs(z.x), z.y);
+	if (f == 6) {
+		dz = 3.0 * n_cmul(n_cmul(z, z), dz) + addC;
+		z = n_cmul(n_cmul(z, z), z) + c;
+		return;
+	}
+	if (f == 7) {
+		vec2 z2 = n_cmul(z, z);
+		dz = 4.0 * n_cmul(n_cmul(z2, z), dz) + addC;
+		z = n_cmul(z2, z2) + c;
+		return;
+	}
+	dz = 2.0 * n_cmul(zf, dz) + addC;
+	vec2 sq = n_cmul(zf, zf);
+	if (f == 3) sq.x = abs(sq.x);
+	else if (f == 4) sq.y = -sq.y;
+	else if (f == 5) sq = vec2(abs(sq.x), -abs(sq.y));
+	z = sq + c;
+}
+
+// ok false: the budget ran out before the orbit settled either way.
+vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok) {
+	const float ESC2 = 65536.0;
+	const float LOG_ESC = 5.5451774;
+	vec2 z = z0;
+	vec2 dz = vec2(1.0, 0.0);
+	vec2 addC = near_julia != 0 ? vec2(0.0) : vec2(1.0, 0.0);
+	float ac = length(c);
+	float m2 = dot(z, z);
+	float sum = 0.0, sumPrev = 0.0, count = 0.0;
+	float minR2 = 1e30;
+	float minAxis = 1e30;
+	float deg = n_degree(near_formula);
+	int n = 0;
+	int lim = min(cap, near_max_iter);
+	for (int i = 0; i < lim; i++) {
+		vec2 zp = z;
+		n_iterate(near_formula, z, dz, c, addC);
+		m2 = dot(z, z);
+		minR2 = min(minR2, m2);
+		n = i + 1;
+		if (near_tex_on > 0.5 && i > 1) {
+			minAxis = min(minAxis, min(abs(z.x), abs(z.y)));
+			float azp2 = pow(dot(zp, zp), 0.5 * deg);
+			float lo = abs(azp2 - ac);
+			float hi = azp2 + ac;
+			float t = (sqrt(m2) - lo) / max(1e-12, hi - lo);
+			sumPrev = sum;
+			sum += clamp(t, 0.0, 1.0);
+			count += 1.0;
+		}
+		if (m2 > ESC2) break;
+	}
+	float avg1 = count > 0.0 ? sum / count : 0.0;
+	float avg0 = count > 1.0 ? sumPrev / (count - 1.0) : avg1;
+	if (m2 <= ESC2) {
+		// Inside only if it ran the whole max_iter, as the fill decides it.
+		ok = lim >= near_max_iter;
+		return vec4(float(near_max_iter), -40.0, 1.0, clamp(sqrt(minR2), 0.0, 1.0));
+	}
+	ok = true;
+	float lm = log(m2) * 0.5;
+	float s = float(n) - log2(lm / LOG_ESC) / log2(deg);
+	float de = sqrt(m2) * lm / max(1e-20, length(dz));
+	float tia = mix(avg0, avg1, clamp(s - floor(s), 0.0, 1.0));
+	float st = 1.0 - clamp(minAxis / max(1e-4, near_stalk_width), 0.0, 1.0);
+	return vec4(s, log2(max(de, 1e-30)), 0.0, mix(tia, st, near_stalk));
+}
+
 // STYLE on the ground. styles.gdshaderinc's art_colour draws an object by its folds and a
 // world-space pattern, and a flat floor has neither: pencil came out blank paper, circuit a
 // PCB texture that ignored the set, and neon and toon turned the filaments to mush. Here
@@ -518,6 +616,26 @@ void fragment() {
 	}
 	vec4 s = mix(sa, sb, k);
 	bool valid = in0;
+
+	// NEAR (above): per-pixel escape where a texel spans more than a pixel near the set.
+	if (near_iter > 0) {
+		float fpg_n = sqrt(length(dFdx(e0)) * length(dFdy(e0)));
+		// Octaves the sampled texel is coarser than this pixel.
+		float mag = float(l0) + k - log2(max(fpg_n, 1e-9));
+		float ibn = clamp(s.b, 0.0, 0.999);
+		float de_tex = exp2((s.g + 40.0 * ibn) / (1.0 - ibn)) / (texel0 * exp2(float(l0)));
+		bool near_set = ibn > 0.001 || de_tex < 4.0;
+		bool cheap = s.r < float(near_iter) || (s.b > 0.001 && s.b < 0.999);
+		float c_ratio = max(1.0, length(near_c.xz)) / (texel0 * max(fpg_n, 1e-9));
+		if (mag > 0.25 && near_set && cheap && c_ratio < 4194304.0) {
+			vec2 dc = e0 * texel0;
+			vec2 cp = vec2(near_c.x + (near_c.y + dc.x), near_c.z + (near_c.w + dc.y));
+			bool ok;
+			vec4 r = near_julia != 0 ? near_escape(near_julia_c, cp, near_iter, ok)
+				: near_escape(cp, vec2(0.0), near_iter, ok);
+			if (ok) s = mix(s, r, smoothstep(0.25, 0.75, mag));
+		}
+	}
 
 	// How much per-texel detail this pixel can still resolve. Measured as iteration counts
 	// per pixel, which is what the contour fade below has always used: past about one

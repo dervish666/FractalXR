@@ -144,6 +144,15 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(): m._set_render_hq(not m._render_hq),
 			false, vis).toggle(func(): return m._render_hq).minor().hinted(
 			"Sharp far detail for stills, slow to fill"),
+		# NEAR: the escape count worked per pixel where a texel spans several pixels near the
+		# set (fractal_ground.gd NEAR_STEPS). The budget is iterations a pixel.
+		WristMenu.Item.new("look", "NEAR",
+			func(): return "off" if m.ground.near_iter == 0 else "%d" % m.ground.near_iter,
+			func(): m.ground.near_iter = FractalGround.NEAR_STEPS[
+				(FractalGround.NEAR_STEPS.find(m.ground.near_iter) + 1) % FractalGround.NEAR_STEPS.size()],
+			false, vis).stepping(func(d: int): m.ground.near_iter = FractalGround.NEAR_STEPS[
+				wrapi(FractalGround.NEAR_STEPS.find(m.ground.near_iter) + d, 0, FractalGround.NEAR_STEPS.size())]).hinted(
+			"Pixel-sharp detail close to you, costs frame time"),
 		# The frame-time dial goes after what the ground looks like, not ahead of it.
 		MenuShared.detail(m, vis),
 		MenuShared.fovea(m, vis),
