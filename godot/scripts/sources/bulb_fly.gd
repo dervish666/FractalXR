@@ -150,10 +150,14 @@ var tint_levels := false
 ## colour (fixed by pixel_trap), and on the Mac it doubled an eye's draw (2.5 to 4.5 ms)
 ## for a change the harness shots barely show.
 var pixel_shadows := false
-## FLY's STYLE (bulb_solid.gdshader art_style): 0 natural, 1 neon. Names in main.gd.
+## FLY's STYLE (bulb_solid.gdshader art_style): 0 natural, 1 neon, 2 toon, 3 pencil,
+## 4 circuit. Names in main.gd.
 var art := 0
 ## Neon's night: a dark blue haze to hold the silhouettes, nearly black overhead.
-const NEON_SKY := Color(0.02, 0.025, 0.06)
+## Each STYLE's sky, and so its fog (natural keeps the world's). By art: neon, toon,
+## pencil (the paper), circuit.
+const STYLE_SKY := {1: Color(0.02, 0.025, 0.06), 2: Color(0.45, 0.72, 1.0),
+	3: Color(0.92, 0.9, 0.85), 4: Color(0.01, 0.03, 0.02)}
 
 const TINTS := [Color(1.0, 0.55, 0.55), Color(0.55, 1.0, 0.55), Color(0.55, 0.65, 1.0),
 	Color(1.0, 1.0, 0.5), Color(1.0, 0.55, 1.0), Color(0.5, 1.0, 1.0)]
@@ -260,7 +264,7 @@ func start_pose() -> Array:
 
 
 func sky_colour() -> Color:
-	return NEON_SKY if art == 1 else _cfg.get("sky", Color.BLACK)
+	return STYLE_SKY.get(art, _cfg.get("sky", Color.BLACK))
 
 
 ## STYLE, from the menu: re-dress every level.

@@ -176,7 +176,7 @@ var fly := BulbFly.new()
 const FLY_WORLD_NAMES := ["this bulb", "spires", "vault"]
 var fly_world := BulbFly.World.BULB
 ## STYLE under FLY's own worlds: how the world is drawn (BulbFly.art).
-const FLY_STYLE_NAMES := ["natural", "neon"]
+const FLY_STYLE_NAMES := ["natural", "neon", "toon", "pencil", "circuit"]
 var fly_style := 0
 ## Fastest apparent flight, and the share of the clearance covered a second below it.
 const FLY_MAX_MPS := 1.0

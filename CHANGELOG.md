@@ -17,6 +17,10 @@ All notable changes to FractalXR are documented here. Format based on
   Near-neutral stone lit by a warm sun and a blue sky, with a faint lamp at the eye.
 - FLY's STYLE tile (SPIRES and VAULT) adds neon: near-black bodies drawn in glowing contour
   lines from the orbit trap, cyan silhouettes and creases, under a black sky.
+- STYLE also offers toon (flat colours in two light steps, ink outlines, a cartoon sky),
+  pencil (graphite hatching on paper, crossed in the shade) and circuit (copper traces, pads
+  and the odd lit LED on a green board). Patterns stick to the fractal and keep their size
+  on screen as you shrink.
 
 ### Store readiness, 2026-11-13
 

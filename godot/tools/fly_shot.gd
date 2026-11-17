@@ -31,13 +31,15 @@ func _init() -> void:
 	var quick := OS.get_cmdline_user_args().has("quick")
 	var spires_only := OS.get_cmdline_user_args().has("spires")
 	var vault_only := OS.get_cmdline_user_args().has("vault")
-	var neon := OS.get_cmdline_user_args().has("neon")
+	var style := 0
+	for k in FractalMain.FLY_STYLE_NAMES.size():
+		if OS.get_cmdline_user_args().has(str(FractalMain.FLY_STYLE_NAMES[k])):
+			style = k
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var scene: PackedScene = load("res://main.tscn")
 	main = scene.instantiate()
 	root.add_child(main)
-	if neon:
-		main.fly_style = 1
+	main.fly_style = style
 	for i in 40:
 		await process_frame
 	main.help.close()
@@ -267,7 +269,7 @@ func _spires(w: BulbFly.World) -> bool:
 	main.xr_camera.rotation = Vector3.ZERO
 	main.xr_camera.fov = 80.0
 	main._set_fly_world(w)
-	var wn: String = main.FLY_WORLD_NAMES[w] + ("_neon" if main.fly_style == 1 else "")
+	var wn: String = main.FLY_WORLD_NAMES[w] + ("_" + main.FLY_STYLE_NAMES[main.fly_style] if main.fly_style > 0 else "")
 	var good := true
 	for shrink in [1.0, 8.0]:
 		if shrink > 1.0:
