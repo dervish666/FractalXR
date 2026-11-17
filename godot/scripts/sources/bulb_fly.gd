@@ -9,9 +9,12 @@ class_name BulbFly
 ## BulbSolid over its own cube (request_box), so the DE, the surface nets and the baked
 ## light are SOLID's own.
 ##
-## Two worlds. BULB: level 0 is main.gd's SOLID 192 mesh of the whole shape, built once.
-## SPIRES: an endless honeycomb (bulb.glsl's spiresDE) with no outside to mesh, so level 0
-## is a cube round the head like the rest, and fog hides where it ends.
+## Three worlds (WORLDS below says how each is set up):
+##   BULB    level 0 is main.gd's SOLID 192 mesh of the bulb on show, built once.
+##   SPIRES  an endless honeycomb (bulb.glsl's spiresDE): no outside to mesh, so level 0 is
+##           a cube round the head like the rest, and fog hides where it ends.
+##   VAULT   a Mandelbox at scale 2.39, walked from inside: bounded, so level 0 is one mesh
+##           of all of it, built here, and the finer levels follow the head.
 ##
 ## A level's cube is fixed in state space and only moves when the head crosses a quarter
 ## of it, so shrinking never rebuilds anything: it only adds a finer level.
@@ -23,18 +26,13 @@ class_name BulbFly
 ## Sits under the ParticleCloud like BulbSolid; every level gets the same state-to-local
 ## transform, from the framing frozen at begin().
 
-enum World { BULB, SPIRES }
+enum World { BULB, SPIRES, VAULT }
 
-## Cells per axis for every level the stack builds. Level k has cell h0 / 2^k and side
-## N * h0 / 2^k. In BULB the base's 192 cells make level 1 half its cube at twice its
-## resolution; in SPIRES level 0 is N cells too.
+## Cells per axis for every level above 0. Level k has cell h0 / 2^k and side N cells.
 const N := 96
 const MAX_LEVELS := 10
 ## The finest level wanted is the first whose cell is this small in the world.
 const H_TARGET_M := 0.01
-## SPIRES is busy at every scale (a bulb's levels are mostly empty air), so it stops at
-## a coarser cell to keep the triangle count near the bulb's.
-const H_TARGET_SPIRES_M := 0.02
 ## A level's cube is re-centred on the head in steps of this many of its cells (a quarter
 ## of the cube), which keeps every level's grid on the level 0 lattice.
 const SNAP_CELLS := 24
@@ -50,27 +48,74 @@ const HOLE_PAD := 2.5
 ## Every material parameter main.gd sets on the base, copied to the levels in BULB.
 const SHARED_PARAMS: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal4",
 	&"palette_cycles", &"gain", &"light_dir", &"debug_view"]
+## Per-pixel colour (bulb_solid.gdshader's pixel_trap) reaches this many level 0 cells of
+## SPIRES (one honeycomb cell each) from the eye; VAULT's reach is in metres per its own.
+const PIXEL_TRAP_CELLS := 2.4
 
-## SPIRES: a world unit is one honeycomb cell. Level 0 spans this many of them.
-const SPIRES_SIDE0 := 16.0
-## The genome SPIRES meshes: R2 0.5 puts the arches' feet at the cell corners; thickness
-## is per unit of height.
-const SPIRES_GENOME := {"formula": "spires", "scale": 0.5, "minR": 0.05, "fixedR": 1.0,
-	"mandelbulb": false}
-## Navy shadow, steel, brass, sky and cream: the blue-and-gold city in Sam's reference.
-const SPIRES_PALETTE := [Vector3(0.06, 0.09, 0.17), Vector3(0.2, 0.31, 0.5),
-	Vector3(0.82, 0.62, 0.3), Vector3(0.55, 0.68, 0.86), Vector3(0.95, 0.88, 0.7)]
-const SPIRES_SKY := Color(0.58, 0.7, 0.86)
-## The sun, low and to one side, in state space (y up, as the world is).
-const SPIRES_SUN := Vector3(0.45, 0.55, 0.3)
-## Penumbra sharpness, baked and per pixel. Baked alone at SOLID's 10 it drew jagged white
-## bands along the arches, and 3.5 only blurred them (harness, 2026-11-17); with the
-## per-pixel march fixing the edges the bake can stay sharp, so fewer triangles straddle one.
-const SPIRES_SHADOW_K := 12.0
+## The worlds FLY builds itself. genome: what BulbSource meshes. side0 / grid0: level 0's
+## cube in state units and its cells; static0: level 0 is built once round the origin
+## rather than following the head. h_target: the finest cell wanted, in metres (busier
+## worlds stop coarser to hold the triangle count). trap: the per-pixel colour key in
+## fly_de.gdshaderinc, 1 honeycomb, 2 box. start_clear_m: VAULT opens scaled so the
+## roomiest spot it finds has this much clearance; SPIRES opens at m_per_unit.
+## Palettes run shadow to highlight; sky is the fog and the background; sun is in state
+## space, where y is up as the world is.
+## The worlds' surface: slate, grey, stone, warm stone, sand, close in value. In Sam's
+## reference renders the surface is nearly neutral and the colour is the light: sky blue
+## in the shade, sun gold on the lit faces. A navy-to-cream palette instead put hard-edged
+## shards of colour wherever the orbit trap jumps between vertices.
+const NEUTRAL_STONE := [Vector3(0.2, 0.23, 0.29), Vector3(0.27, 0.29, 0.33),
+	Vector3(0.34, 0.33, 0.31), Vector3(0.42, 0.37, 0.3), Vector3(0.5, 0.45, 0.36)]
+
+const WORLDS := {
+	World.SPIRES: {
+		"genome": {"formula": "spires", "scale": 0.5, "minR": 0.05, "fixedR": 1.0,
+			"mandelbulb": false},
+		"side0": 16.0, "grid0": 96, "static0": false, "h_target": 0.02, "trap": 1,
+		"m_per_unit": 6.0, "start_y": Vector2(0.4, 0.8),
+		# Near-neutral stone, slate to warm: the blue and the gold are the light's (see
+		# NEUTRAL_STONE). Was navy to cream, which Sam found odd (2026-11-17).
+		"palette": NEUTRAL_STONE,
+		"sky": Color(0.58, 0.7, 0.86), "sun": Vector3(0.45, 0.55, 0.3),
+		"sky_tint": Vector3(1.18, 1.44, 2.0), "key_colour": Vector3(1.0, 0.86, 0.62),
+		"shadow_k": 12.0, "fog_edges": 1.8,
+	},
+	World.VAULT: {
+		# The standard Mandelbox: fold limit 1, min radius 0.5, fixed radius 1, scale 2.39.
+		# At 2.0 (our gallery's Mandelbox) it is a solid cube with 2% pores; 2.39 opens it
+		# into halls.
+		"genome": {"formula": "mandelbox", "scale": 2.39, "minR": 0.5, "fixedR": 1.0,
+			"mandelbulb": true},
+		# Extent 2 (s + 1) / (s - 1) = 4.88, plus a margin.
+		# 192 cells made 1.8M triangles of level 0 alone: the inside is all wall.
+		# No per-pixel colour (trap 0): the box's key jumps at every fold, and one sample a
+		# pixel against the vertices' neighbourhood average scattered gold confetti.
+		"side0": 10.4, "grid0": 128, "static0": true, "h_target": 0.01, "trap": 0,
+		# Opens just off the outer surface, facing in along start_dir: the roomiest hollow
+		# inside was the central chamber, flat walls and a few holes (harness, 2026-11-17),
+		# where the outside is towers and canyons. start_clear: DE there, in state units.
+		"start_clear_m": 2.2, "start_dir": Vector3(0.82, 0.32, 0.47), "start_clear": 0.05,
+		# Almost one stone: the box's colour key jumps between neighbouring vertices, and
+		# even NEUTRAL_STONE's spread drew those jumps as pale polygons (harness, 2026-11-17).
+		"palette": [Vector3(0.31, 0.31, 0.32), Vector3(0.33, 0.32, 0.31),
+			Vector3(0.35, 0.33, 0.3), Vector3(0.37, 0.34, 0.3), Vector3(0.39, 0.36, 0.31)],
+		# Darker haze and less sky in the shade than SPIRES: the reference's shadows are deep
+		# blue, and the first pass read washed out (harness, 2026-11-17).
+		"sky": Color(0.34, 0.44, 0.6), "sun": Vector3(0.35, 0.7, 0.25),
+		"sky_tint": Vector3(0.8, 1.0, 1.55), "key_colour": Vector3(1.15, 0.9, 0.55),
+		"rim": 0.25,
+		# Baked per vertex, a sharp penumbra drew pale polygons across the sunlit faces.
+		"shadow_k": 4.0,
+		"fog_edges": 1.2,
+		# A little lamp at the eye for the canyons the sun never reaches.
+		"ambient": 0.2, "head_light": 0.3, "lamp_clear": 4.0,
+	},
+}
 
 var active := false
 var world := World.BULB
-## Level 0. In BULB it is main.gd's SOLID; in SPIRES it is _own0.
+var _cfg := {}
+## Level 0. In BULB it is main.gd's SOLID; otherwise _own0.
 var base: BulbSolid
 var levels: Array[BulbSolid] = []
 var _own0 := BulbSolid.new()
@@ -91,6 +136,7 @@ var center := Vector3.ZERO
 var fit := 1.0
 var _light := Vector3.UP
 var _h0 := 0.0
+var _grid0 := 192
 ## The finest level wanted at the current scale, for the harness and the [perf] line.
 var want := 0
 ## Debug: draw the levels only up to this one (-1 = all).
@@ -99,13 +145,11 @@ var cap_levels := -1
 ## can be shot as plain SOLID; tint_levels colours each level to show the seams.
 var show_levels := true
 var tint_levels := false
-## SPIRES's per-pixel sun shadow (bulb_solid.gdshader), off for a before-and-after.
-## Default off: the jagged bands it was written for turned out to be colour (fixed by
-## pixel_trap), and on the Mac it doubled an eye's draw (2.5 to 4.5 ms) for a change the
-## harness shots barely show.
+## The per-pixel sun shadow (bulb_solid.gdshader), SPIRES only (its DE is the one in
+## fly_de.gdshaderinc). Default off: the jagged bands it was written for turned out to be
+## colour (fixed by pixel_trap), and on the Mac it doubled an eye's draw (2.5 to 4.5 ms)
+## for a change the harness shots barely show.
 var pixel_shadows := false
-## SPIRES's per-pixel colour reaches this many honeycomb cells from the eye.
-const PIXEL_TRAP_CELLS := 2.4
 const TINTS := [Color(1.0, 0.55, 0.55), Color(0.55, 1.0, 0.55), Color(0.55, 0.65, 1.0),
 	Color(1.0, 1.0, 0.5), Color(1.0, 0.55, 1.0), Color(0.5, 1.0, 1.0)]
 
@@ -135,44 +179,84 @@ func begin(base_solid: BulbSolid, src: BulbSource, light_state: Vector3,
 	end()
 	active = true
 	world = World.BULB
+	_cfg = {}
 	center = frame_center
 	fit = frame_fit
 	base = base_solid
 	_src = src
 	_mp = src.march_params()
 	_light = light_state
-	_h0 = 2.0 * BulbSolid.half_of(src) / float(base_solid.grid)
+	_grid0 = base_solid.grid
+	_h0 = 2.0 * BulbSolid.half_of(src) / float(_grid0)
 	_shown[0] = true   # main.gd builds it; is_settled() checks it there
 
 
-## SPIRES: the endless honeycomb, every level round the head.
-func begin_spires(frame_center: Vector3, frame_fit: float) -> void:
+## SPIRES or VAULT: a world FLY builds itself, level 0 included.
+func begin_world(w: World, frame_center: Vector3, frame_fit: float) -> void:
 	end()
 	active = true
-	world = World.SPIRES
+	world = w
+	_cfg = WORLDS[w]
 	center = frame_center
 	fit = frame_fit
 	base = _own0
-	_src = BulbSource.new(SPIRES_GENOME)
+	_src = BulbSource.new(_cfg["genome"])
 	_mp = _src.march_params()
-	_light = SPIRES_SUN.normalized()
-	_h0 = SPIRES_SIDE0 / float(N)
+	_light = (_cfg["sun"] as Vector3).normalized()
+	_grid0 = int(_cfg["grid0"])
+	_h0 = float(_cfg["side0"]) / float(_grid0)
 	_own0.shared_cdf = PackedFloat32Array()
 	var chain := _chain()
 	for k in chain.size():
 		var s := chain[k]
-		s.shadow_k = SPIRES_SHADOW_K
-		s.set_palette(SPIRES_PALETTE)
+		s.shadow_k = float(_cfg["shadow_k"])
+		s.set_palette(_cfg["palette"])
 		s.set_palette_cycles(1.0)
 		_set_look(s, true)
 		var m := s.material()
 		m.set_shader_parameter("shadow_cell", cell(k))
 		m.set_shader_parameter("shadow_iso", BulbSolid.ISO_VOXELS * cell(k))
-		m.set_shader_parameter("shadow_reach", BulbSolid.SHADOW_REACH * side(k))
-		m.set_shader_parameter("shadow_sharp", SPIRES_SHADOW_K)
-		m.set_shader_parameter("de_r2", float(SPIRES_GENOME["scale"]))
-		m.set_shader_parameter("de_thick", float(SPIRES_GENOME["minR"]))
-		m.set_shader_parameter("de_spire", float(SPIRES_GENOME["fixedR"]))
+		m.set_shader_parameter("shadow_reach", BulbSolid.SHADOW_REACH * N * cell(k))
+		m.set_shader_parameter("shadow_sharp", float(_cfg["shadow_k"]))
+		m.set_shader_parameter("trap_family", int(_cfg["trap"]))
+		m.set_shader_parameter("fp_scale", float(_mp["scale"]))
+		m.set_shader_parameter("fp_min_r", float(_mp["min_r"]))
+		m.set_shader_parameter("fp_fixed_r", float(_mp["fixed_r"]))
+
+
+## Where a world opens: [state point, metres per state unit, facing in state space].
+## SPIRES stands you in the roomiest spot of one cell at a fixed size; VAULT comes in from
+## outside along start_dir until the surface is start_clear away, sized to start_clear_m.
+func start_pose() -> Array:
+	var golden := PI * (3.0 - sqrt(5.0))
+	var best := Vector3.ZERO
+	var best_d := -1.0
+	if world == World.SPIRES:
+		var ys: Vector2 = _cfg["start_y"]
+		for i in 400:
+			var t := (float(i) + 0.5) / 400.0
+			var a := float(i) * golden
+			var q := Vector3(0.5 + 0.45 * cos(a) * sqrt(t), lerpf(ys.x, ys.y,
+				fposmod(float(i) * 0.618, 1.0)), 0.5 + 0.45 * sin(a) * sqrt(t))
+			var d := de(q)
+			if d > best_d:
+				best_d = d
+				best = q
+		return [best, float(_cfg["m_per_unit"]), Vector3.FORWARD]
+	var dir: Vector3 = (_cfg["start_dir"] as Vector3).normalized()
+	var want_d := float(_cfg["start_clear"])
+	var t := 0.6 * side(0)
+	for i in 4000:
+		var d := de(dir * t)
+		if d < want_d:
+			break
+		t -= maxf(d - want_d, 1e-4) * 0.8
+	var at := dir * t
+	return [at, float(_cfg["start_clear_m"]) / maxf(de(at), 1e-6), -dir]
+
+
+func sky_colour() -> Color:
+	return _cfg.get("sky", Color.BLACK)
 
 
 func end() -> void:
@@ -181,6 +265,7 @@ func end() -> void:
 		_set_look(base, false)
 	_own0.clear()
 	_own0.clear_hole()
+	_set_look(_own0, false)
 	for k in MAX_LEVELS:
 		levels[k].clear()
 		levels[k].clear_hole()
@@ -193,17 +278,21 @@ func end() -> void:
 	base = null
 
 
-## SPIRES's air: a sky-blue ambient, a warm sun, and fog to the sky colour that is all
-## but complete at the edge of level 0, so nothing is seen to end.
+## A world's air: a sky-tinted ambient, a warm sun, fog to the sky colour (set per frame
+## in update), and colour per pixel near the eye. Off puts SOLID's look back.
 func _set_look(s: BulbSolid, on: bool) -> void:
 	var m := s.material()
-	m.set_shader_parameter("sky_tint", Vector3(0.62, 0.76, 1.05) * 1.9 if on else Vector3.ONE)
-	m.set_shader_parameter("key_colour", Vector3(1.0, 0.86, 0.62) if on else Vector3.ONE)
-	m.set_shader_parameter("fog_colour", Vector3(SPIRES_SKY.r, SPIRES_SKY.g, SPIRES_SKY.b))
+	m.set_shader_parameter("sky_tint", _cfg["sky_tint"] if on else Vector3.ONE)
+	m.set_shader_parameter("key_colour", _cfg["key_colour"] if on else Vector3.ONE)
+	var sky: Color = _cfg.get("sky", Color.BLACK)
+	m.set_shader_parameter("fog_colour", Vector3(sky.r, sky.g, sky.b))
 	m.set_shader_parameter("fog_density", 0.0)
 	m.set_shader_parameter("flatten", 0.0 if on else 0.2)
-	m.set_shader_parameter("pixel_shadow", 1 if on and pixel_shadows else 0)
-	m.set_shader_parameter("pixel_trap", 1 if on else 0)
+	m.set_shader_parameter("pixel_shadow", 1 if on and pixel_shadows and world == World.SPIRES else 0)
+	m.set_shader_parameter("pixel_trap", 1 if on and int(_cfg.get("trap", 0)) > 0 else 0)
+	m.set_shader_parameter("ambient", float(_cfg.get("ambient", 0.22)) if on else 0.22)
+	m.set_shader_parameter("head_light", float(_cfg.get("head_light", 0.0)) if on else 0.0)
+	m.set_shader_parameter("rim", float(_cfg.get("rim", 0.9)) if on else 0.9)
 	if not on:
 		s.shadow_k = BulbSolid.SHADOW_K
 
@@ -218,8 +307,12 @@ func cell(k: int) -> float:
 	return _h0 / float(1 << k)
 
 
+func cells(k: int) -> int:
+	return _grid0 if k == 0 else N
+
+
 func side(k: int) -> float:
-	return cell(k) * float(N)
+	return cell(k) * float(cells(k))
 
 
 ## The CPU distance estimate on the frozen formula, in state units.
@@ -230,8 +323,10 @@ func de(state_p: Vector3) -> float:
 
 
 ## The cube level k would take with the head here: centred on the head, snapped to a
-## quarter of the cube.
+## quarter of the cube. A static level 0 sits on the origin.
 func cube_lo(k: int, head_state: Vector3) -> Vector3:
+	if k == 0 and bool(_cfg.get("static0", true)):
+		return Vector3.ONE * (-0.5 * side(0))
 	var step := cell(k) * float(SNAP_CELLS)
 	var c := (head_state / step).round() * step
 	return c - Vector3.ONE * (0.5 * side(k))
@@ -242,9 +337,9 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 	if not active or base == null:
 		return
 	var chain := _chain()
-	var spires := world == World.SPIRES
+	var own := world != World.BULB
 	# Levels wanted: the first whose cell is the target or finer.
-	var target := H_TARGET_SPIRES_M if spires else H_TARGET_M
+	var target := float(_cfg.get("h_target", H_TARGET_M))
 	var base_cell_m := _h0 * s2w
 	want = 0
 	if base_cell_m > target:
@@ -253,7 +348,7 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 		want = mini(want, cap_levels)
 	var d_head := de(head_state)
 	var busy := 0
-	var first := 0 if spires else 1
+	var first := 0 if own else 1
 	for k in range(first, MAX_LEVELS + 1):
 		var s := chain[k]
 		s.tick(center, fit, delta)
@@ -265,7 +360,7 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 				_shown_lo[k] = _build_lo[k]
 				if k == 0 and _own0.shared_cdf.is_empty():
 					# The first level 0 sets the colours for the rest of the flight: an
-					# equalisation re-measured at every move would recolour the city.
+					# equalisation re-measured at every move would recolour the world.
 					_own0.shared_cdf = _own0.cdf
 			elif s.state == BulbSolid.State.IDLE:
 				# No surface in the cube: SOLID gives up and keeps its old mesh. Here an
@@ -278,7 +373,7 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 				busy += 1
 	for k in range(first, MAX_LEVELS + 1):
 		var s := chain[k]
-		if k > want:
+		if k > want and k > 0:
 			if _shown[k] or _building[k]:
 				s.clear()
 				_shown[k] = false
@@ -293,7 +388,7 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 			continue
 		# A cube the DE says holds no surface is empty without a build. The head is at its
 		# centre, so nothing within the half-diagonal means nothing in the cube.
-		if d_head > side(k) * 0.87:
+		if k > 0 and d_head > side(k) * 0.87:
 			s.clear()
 			_shown[k] = true
 			_shown_lo[k] = lo
@@ -306,23 +401,26 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 		_build_lo[k] = lo
 		if k > 0:
 			s.shared_cdf = base.cdf
-		if not spires:
+		if not own:
 			_sync_material(s)
 		# AO and shadow reach the same number of cells on every level.
-		s.request_box(_mp, N, lo, cell(k), _light, BulbSolid.AO_RADIUS * side(k),
-			BulbSolid.SHADOW_REACH * side(k))
+		s.request_box(_mp, cells(k), lo, cell(k), _light, BulbSolid.AO_RADIUS * N * cell(k),
+			BulbSolid.SHADOW_REACH * N * cell(k))
 	_apply_holes(chain)
-	if spires:
-		# Squared fog (bulb_solid.gdshader): exp(-1.8^2) leaves 4% at the edge of level 0,
-		# and a fifth of the way out it takes 12%.
+	if own:
+		# Squared fog (bulb_solid.gdshader): exp(-e^2) left at the edge of level 0.
 		var edge_m := 0.5 * side(0) * s2w
+		var near_m := PIXEL_TRAP_CELLS * s2w if world == World.SPIRES else 30.0 * cell(want) * s2w
 		for s in chain:
-			s.material().set_shader_parameter("fog_density", 1.8 / maxf(edge_m, 1e-3))
-			# Per-pixel colour within a few honeycomb cells, whatever size you are.
-			s.material().set_shader_parameter("pixel_trap_m", PIXEL_TRAP_CELLS * s2w)
+			s.material().set_shader_parameter("fog_density",
+				float(_cfg["fog_edges"]) / maxf(edge_m, 1e-3))
+			s.material().set_shader_parameter("pixel_trap_m", near_m)
+			# The lamp reaches a few times the start clearance, in metres at this size.
+			s.material().set_shader_parameter("lamp_m", float(_cfg.get("lamp_clear", 1.0))
+				* float(_cfg.get("start_clear_m", 1.0)))
 	for k in MAX_LEVELS + 1:
 		var s := chain[k]
-		if k > 0 and s.visible and not spires:
+		if k > 0 and s.visible and not own:
 			_sync_material(s)
 		var t: Color = TINTS[k % TINTS.size()] if tint_levels else Color.WHITE
 		s.material().set_shader_parameter("tint", Vector3(t.r, t.g, t.b))

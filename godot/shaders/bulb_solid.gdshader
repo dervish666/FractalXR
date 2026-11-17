@@ -54,6 +54,10 @@ uniform vec3 sky_tint = vec3(1.0);
 uniform vec3 key_colour = vec3(1.0);
 uniform vec3 fog_colour = vec3(0.6, 0.7, 0.85);
 uniform float fog_density = 0.0;
+// A soft lamp at the eye, for inside a closed shape where the sun never reaches (VAULT):
+// diffuse toward the viewer, falling off over lamp_m metres. 0 = off.
+uniform float head_light = 0.0;
+uniform float lamp_m = 6.0;
 // FLY's SPIRES: the sun's shadow marched per pixel where the baked one cannot draw it.
 // The vertex shadow is right in bulk and wrong at its edges, where a hard penumbra
 // interpolated across triangles comes out as a staircase. So a pixel marches only when
@@ -70,7 +74,7 @@ uniform int shadow_steps = 40;
 // its bands are thinner than a pixel. 0 = off.
 uniform int pixel_trap = 0;
 uniform float pixel_trap_m = 14.0;
-#include "res://shaders/spires_de.gdshaderinc"
+#include "res://shaders/fly_de.gdshaderinc"
 
 varying float v_trap;
 varying float v_ao;
@@ -147,7 +151,7 @@ void fragment() {
 	if (pixel_trap > 0) {
 		float near = 1.0 - smoothstep(pixel_trap_m, pixel_trap_m * 1.5, length(VERTEX));
 		if (near > 0.0)
-			trap = mix(v_trap, spires_trap(v_state), near);
+			trap = mix(v_trap, fly_trap(v_state), near);
 	}
 	if (colour_cycle > 0.0 && palette_cycles < 1.5) {
 		albedo = v_cycled;
@@ -187,6 +191,10 @@ void fragment() {
 	c += albedo * sheen * pow(ndh, shininess) * lit;
 	c += mix(albedo, vec3(1.0), 0.3) * gloss * pow(ndh, 90.0) * lit;
 	c += glow_colour * pow(1.0 - ndv, 3.0) * rim * v_ao;
+	if (head_light > 0.0) {
+		float fall = lamp_m * lamp_m / (lamp_m * lamp_m + dot(VERTEX, VERTEX));
+		c += albedo * key_colour * head_light * ndv * fall * mix(0.4, 1.0, v_ao);
+	}
 	ALBEDO = c * gain * grow * tint;
 	// Squared, so the near city keeps its colour and the haze gathers toward the edge.
 	if (fog_density > 0.0) {

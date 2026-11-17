@@ -30,6 +30,7 @@ var last_prims := 0
 func _init() -> void:
 	var quick := OS.get_cmdline_user_args().has("quick")
 	var spires_only := OS.get_cmdline_user_args().has("spires")
+	var vault_only := OS.get_cmdline_user_args().has("vault")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var scene: PackedScene = load("res://main.tscn")
 	main = scene.instantiate()
@@ -61,8 +62,8 @@ func _init() -> void:
 		return
 	print("FLYSHOT base ready after %d frames, %d tris" % [frames, main.solid.tri_count])
 	var fly: BulbFly = main.fly
-	if spires_only:
-		var good := await _spires()
+	if spires_only or vault_only:
+		var good := await _spires(BulbFly.World.VAULT if vault_only else BulbFly.World.SPIRES)
 		print("FLYSHOT %s" % ("PASS" if good else "FAIL"))
 		quit(0 if good else 1)
 		return
@@ -257,12 +258,13 @@ func _flight(surf: Array) -> bool:
 
 ## SPIRES: WORLD to the city, then four views from where it puts you, the same after
 ## shrinking 8x, and four seconds of flight straight ahead with the clearance tracked.
-func _spires() -> bool:
+func _spires(w: BulbFly.World) -> bool:
 	var fly: BulbFly = main.fly
 	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
 	main.xr_camera.rotation = Vector3.ZERO
 	main.xr_camera.fov = 80.0
-	main._set_fly_world(BulbFly.World.SPIRES)
+	main._set_fly_world(w)
+	var wn: String = main.FLY_WORLD_NAMES[w]
 	var good := true
 	for shrink in [1.0, 8.0]:
 		if shrink > 1.0:
@@ -279,14 +281,14 @@ func _spires() -> bool:
 		for i in 10:
 			await process_frame
 		good = good and fly.is_settled()
-		print("FLYSHOT spires x%d cell=%.2fm %s settled=%s in %d frames (%d ms) clear=%.2fm" % [
-			int(shrink), main._fly_s2w(), fly.describe(), str(fly.is_settled()), frames,
+		print("FLYSHOT %s x%d unit=%.2fm %s settled=%s in %d frames (%d ms) clear=%.2fm" % [
+			wn, int(shrink), main._fly_s2w(), fly.describe(), str(fly.is_settled()), frames,
 			Time.get_ticks_msec() - t0, fly.de(main._fly_head_state()) * main._fly_s2w()])
 		for v in [["ahead", 0.0, 0.0], ["up", 35.0, 0.0], ["down", -40.0, 0.0], ["back", 0.0, 150.0]]:
 			main.xr_camera.rotation_degrees = Vector3(v[1], v[2], 0.0)
 			for i in 3:
 				await process_frame
-			_shot("spires_x%d_%s.png" % [int(shrink), v[0]])
+			_shot("%s_x%d_%s.png" % [wn, int(shrink), v[0]])
 		main.xr_camera.rotation = Vector3.ZERO
 		if shrink == 1.0:
 			# Per-pixel shadows off for the before, then which pixels march (debug 4), and
@@ -298,21 +300,21 @@ func _spires() -> bool:
 				main.xr_camera.rotation_degrees = Vector3(-40.0, 0.0, 0.0)
 				for i in 3:
 					await process_frame
-				_shot("spires_x1_down_px%d.png" % int(on))
-				print("FLYSHOT spires eye pixel_shadow=%s ms=%.3f" % [str(on), await _time_eye_here()])
+				_shot("%s_x1_down_px%d.png" % [wn, int(on)])
+				print("FLYSHOT " + wn + " eye pixel_shadow=%s ms=%.3f" % [str(on), await _time_eye_here()])
 			for dv in [[4, "marching"], [2, "shadow"], [5, "albedo"]]:
 				for s in fly._chain():
 					s.material().set_shader_parameter("debug_view", dv[0])
 				await process_frame
 				await process_frame
-				_shot("spires_x1_down_%s.png" % dv[1])
+				_shot("%s_x1_down_%s.png" % [wn, dv[1]])
 			for s in fly._chain():
 				s.material().set_shader_parameter("debug_view", 0)
 			main.xr_camera.rotation = Vector3.ZERO
 		fly.tint_levels = true
 		for i in 3:
 			await process_frame
-		_shot("spires_x%d_tint.png" % int(shrink))
+		_shot("%s_x%d_tint.png" % [wn, int(shrink)])
 		fly.tint_levels = false
 	# Flight: right stick forward for four seconds of 72 Hz frames.
 	var dt := 1.0 / 72.0
@@ -328,10 +330,10 @@ func _spires() -> bool:
 		if not fly.is_settled():
 			unsettled += 1
 	var moved: float = (main._fly_head_state() - start).length() * s2w
-	_shot("spires_flight_end.png")
+	_shot("%s_flight_end.png" % wn)
 	var ok_flight: bool = min_clear >= minf(start_clear, main.FLY_MIN_CLEAR_M) * 0.98 and moved > 0.05
-	print("FLYSHOT spires flight moved=%.2fm start_clear=%.2fm min_clear=%.3fm unsettled=%d/288 %s %s" % [
-		moved, start_clear, min_clear, unsettled, fly.describe(), "PASS" if ok_flight else "FAIL"])
+	print("FLYSHOT %s flight moved=%.2fm start_clear=%.2fm min_clear=%.3fm unsettled=%d/288 %s %s" % [
+		wn, moved, start_clear, min_clear, unsettled, fly.describe(), "PASS" if ok_flight else "FAIL"])
 	return good and ok_flight
 
 
