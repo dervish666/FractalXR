@@ -25,6 +25,15 @@ All notable changes to FractalXR are documented here. Format based on
   neon glows along its topographic lines; IFS frames get outlines and per-frame colour.
   Strokes and traces on GROUND lie in world metres: they hold still as you walk and slide
   during a zoom. Pencil trees draw without leaves (the leaves add light, and paper is white).
+- GROUND's Mandelbrot gains BEACONS: light pillars on the small copies of the set
+  (minibrots) near you, found by Newton's method from each region's period. Trigger on one
+  glides you there and zooms until it stands a few metres ahead, stopping first at the
+  halfway depth where its Julia-like decorations are richest. TOUR does it by itself, slowly,
+  waiting for the ground to fill at each stop. A trip raises the iteration count to 24 times
+  its minibrot's period (up to 16384), and the fill now stops iterating a point once its
+  orbit settles on a cycle, so a minibrot's black interior costs a fraction of the count.
+  Past about 2000x the df32 fill cannot keep up with those counts on the Mac (7% in six
+  minutes at 16384); perturbation is the next step.
 
 ### Store readiness, 2026-11-13
 

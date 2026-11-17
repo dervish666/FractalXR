@@ -243,6 +243,8 @@ const MARCH_GAIN := 1.2
 var surface_idx := 0
 ## The third mode: stand on a Mandelbrot or Julia set that runs to the horizon.
 var ground := FractalGround.new()
+## BEACONS and TOUR: minibrots found by the maths, and trips to them (Mandelbrot only).
+var guide := GroundGuide.new()
 var ground_mode := false
 ## The orbit of the point under the pointing hand, drawn above the ground.
 var orbit := OrbitTrace.new()
@@ -649,6 +651,9 @@ func _ready() -> void:
 	ifs_echoes.setup(ifs)
 	ifs_dive.setup(ifs, cloud)
 	add_child(ground)
+	guide.ground = ground
+	guide.visible = false
+	add_child(guide)
 	add_child(orbit)
 	add_child(plant_marker)
 	xr_camera.add_child(vignette)
@@ -1285,6 +1290,8 @@ func _plant_tree_at(hit: Vector2) -> bool:
 func _set_ground_mode(on: bool) -> void:
 	ground_mode = on
 	ground.visible = on
+	guide.visible = false
+	guide.set_tour(false)
 	orbit.visible = false
 	# _ground_grab() only clears its grip history while ground mode runs it, so a grip held
 	# across leaving and coming back applied the hand's travel in between to the fresh ground.
@@ -1313,6 +1320,10 @@ func _set_ground_mode(on: bool) -> void:
 func _ground_teleport(hand: XRController3D) -> void:
 	var hit = _hand_floor_hit(hand)
 	if hit != null:
+		var hp := xr_camera.global_transform.origin
+		if guide.pick(hit, Vector2(hp.x, hp.z)):
+			return
+		guide.set_tour(false)
 		ground.glide_to(hit)
 
 
@@ -2459,8 +2470,15 @@ func _process_frame(delta: float) -> void:
 		if not _xr_focused or help.is_open() or _menu_active:
 			ground.stop_glide()
 		ground.update(Vector2(hp.x, hp.z), delta)
-		# A trigger glide carries you with no hand in it, so it gets the walk's tunnel.
-		_want_vignette(ComfortVignette.WALK, ground.glide_mps / GROUND_PAN_MPS)
+		# A trip waits, rather than ends, while the menu or the dash is up: TOUR is switched on
+		# from the menu, and its first leg should not die under the hand that started it.
+		guide.paused = not _xr_focused or help.is_open() or _menu_active
+		var look := Vector2(-xr_camera.global_transform.basis.z.x, -xr_camera.global_transform.basis.z.z)
+		if look.length_squared() > 1e-4:
+			guide.facing = look.normalized()
+		guide.update(Vector2(hp.x, hp.z), delta)
+		# A trigger glide or a trip carries you with no hand in it, so it gets the walk's tunnel.
+		_want_vignette(ComfortVignette.WALK, maxf(ground.glide_mps / GROUND_PAN_MPS, guide.moving))
 		_tick_orbit()
 		return
 	if tree_mode:
@@ -2598,10 +2616,15 @@ func _handle_input(delta: float) -> void:
 		if right.length_squared() > 1e-6:
 			right = right.normalized()
 		var grabbing := _ground_grab()
+		if grabbing:
+			guide.set_tour(false)
 		var snap := _snap_step(snap_x, not grabbing and not stick_owned)
 		if not grabbing:
 			# Walk and zoom move the floor past you with no hand in it, so both close the tunnel.
 			var moving := 0.0
+			# Your own stick ends a trip and the tour: you have taken the wheel.
+			if ls.length() > 0.15 or absf(rs.y) > 0.15:
+				guide.set_tour(false)
 			if ls.length() > 0.15:
 				ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
 				moving = minf(1.0, ls.length())

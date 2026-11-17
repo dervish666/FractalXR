@@ -137,6 +137,11 @@ var max_iter := 256
 ## Raise the iteration count with depth (iter_floor). tools/ground_check.gd turns it off to
 ## pin the count its CPU reference runs to.
 var auto_iter := true
+## The count a GroundGuide trip asks for: about ITER_PER_PERIOD times its minibrot's period.
+## Measured round eight tour stops (period 23 to 779): 90% of the outside points in view
+## escape within 7 to 38 periods and 95% within 11 to 72, where 256-4096 left them black.
+## 0 when no trip has asked. The shader's periodicity check keeps the interior cheap.
+var iter_hint := 0
 var _iter_used := 256       # the effective count the stored levels were filled with
 var texture_on := true
 var stalk := 0.0
@@ -389,6 +394,12 @@ func world_to_fractal64(w: Vector2) -> PackedFloat64Array:
 	return PackedFloat64Array([_cx + o.x, _cy + o.y])
 
 
+## fractal_to_world() for a 64-bit point: the difference from the centre is taken in
+## doubles, so a beacon deep in the set lands on its texel and not on float32's grid.
+func fractal64_to_world(x: float, y: float) -> Vector2:
+	return _m.basis_xform_inv(Vector2((x - _cx) * wpu, (y - _cy) * wpu))
+
+
 func fractal_to_world(f: Vector2) -> Vector2:
 	return _m.basis_xform_inv(Vector2((f.x - _cx) * wpu, (f.y - _cy) * wpu))
 
@@ -428,6 +439,19 @@ func zoom(factor: float) -> void:
 	_sync_stage()
 
 
+## Scale about the world point p (xz, metres), so the ground there stays put: a trip
+## grows its minibrot in place in front of you rather than about your feet.
+func zoom_about(p: Vector2, factor: float) -> void:
+	var f := world_to_fractal64(p)
+	var lo := WPU_BASE * pow(2.0, float(STAGE_MIN))
+	var hi := WPU_BASE * pow(2.0, float(STAGE_MAX + 1)) * 0.999
+	wpu = clampf(wpu * factor, lo, hi)
+	var o := _m.basis_xform(p) / wpu
+	_cx = f[0] - o.x
+	_cy = f[1] - o.y
+	_sync_stage()
+
+
 ## Put the fractal point (x, y) under the viewer's head. Takes two floats rather than a
 ## Vector2 so a caller holding 64-bit coordinates keeps them.
 func set_viewer_fractal(x: float, y: float) -> void:
@@ -444,6 +468,7 @@ func zoom_factor() -> float:
 
 ## Back to the current family's HOMES entry, the head over its point, facing as it opens.
 func home() -> void:
+	iter_hint = 0
 	var h: Vector3 = HOMES[formula]
 	wpu = h.z
 	_m = Transform2D.IDENTITY
@@ -556,7 +581,7 @@ func iter_floor() -> int:
 
 
 func effective_iter() -> int:
-	return maxi(max_iter, iter_floor())
+	return maxi(maxi(max_iter, iter_floor()), iter_hint)
 
 
 func set_texture_on(on: bool) -> void:

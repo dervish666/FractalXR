@@ -124,8 +124,19 @@ void iterate(int f, inout vec2 z, inout vec2 dz, vec2 c, vec2 addC) {
 	z = sq + c;
 }
 
+// Periodicity checking (Brent): z is saved at steps 1, 2, 4, 8 ... and an orbit that comes
+// back to the saved point has settled on an attracting cycle, so the point is inside and
+// the rest of max_iter would only confirm it. Inside a deep minibrot that is most of the
+// fill's work: GroundGuide raises the count to tens of thousands there, and 40% of the view
+// is interior. The tolerance sits far above the orbit's own rounding (float32 here, df32 in
+// escape_df) and far below how near an outside point that escapes can shadow the cycle.
+const float CYCLE_EPS2 = 1e-10;
+const float CYCLE_EPS2_DF = 1e-16;
+
 vec4 escape(vec2 c, vec2 z0) {
 	vec2 z = z0;
+	vec2 zs = z0;
+	int check = 1;
 	vec2 dz = vec2(1.0, 0.0);
 	vec2 addC = (p.julia != 0) ? vec2(0.0) : vec2(1.0, 0.0);
 	float ac = length(c);
@@ -154,6 +165,12 @@ vec4 escape(vec2 c, vec2 z0) {
 			count += 1.0;
 		}
 		if (m2 > ESC2) break;
+		vec2 dd = z - zs;
+		if (dot(dd, dd) < CYCLE_EPS2) break;
+		if (n == check) {
+			zs = z;
+			check *= 2;
+		}
 	}
 	float avg1 = count > 0.0 ? sum / count : 0.0;
 	float avg0 = count > 1.0 ? sumPrev / (count - 1.0) : avg1;
@@ -307,6 +324,9 @@ void iterate_df(int f, inout vec2 x, inout vec2 y, inout vec2 dz, vec2 cx, vec2 
 vec4 escape_df(vec2 cx, vec2 cy, vec2 x0, vec2 y0) {
 	vec2 x = x0;
 	vec2 y = y0;
+	vec2 xs = x0;
+	vec2 ys = y0;
+	int check = 1;
 	vec2 dz = vec2(1.0, 0.0);
 	vec2 addC = (p.julia != 0) ? vec2(0.0) : vec2(1.0, 0.0);
 	float ac = length(vec2(cx.x, cy.x));
@@ -332,6 +352,15 @@ vec4 escape_df(vec2 cx, vec2 cy, vec2 x0, vec2 y0) {
 			count += 1.0;
 		}
 		if (m2 > ESC2) break;
+		// The difference in df, so its hi part carries the bits float32 z would have lost.
+		float ddx = df_add(x, -xs).x;
+		float ddy = df_add(y, -ys).x;
+		if (ddx * ddx + ddy * ddy < CYCLE_EPS2_DF) break;
+		if (n == check) {
+			xs = x;
+			ys = y;
+			check *= 2;
+		}
 	}
 	float avg1 = count > 0.0 ? sum / count : 0.0;
 	float avg0 = count > 1.0 ? sumPrev / (count - 1.0) : avg1;

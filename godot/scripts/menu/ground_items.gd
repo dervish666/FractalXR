@@ -16,7 +16,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 
 		WristMenu.Item.new("scene", "HOME",
 			func(): return "start view",
-			func(): m.ground.home(),
+			func(): m.guide.set_tour(false); m.ground.home(),
 			false, vis).hinted("Back to where this family opened"),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
@@ -115,6 +115,18 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 				m._apply_ground_look(),
 			false, vis).toggle(func(): return m.ground_inside_room).minor().hinted(
 			"The black inside shows your room"),
+		# Light pillars on the small copies of the set near you; the trigger on one flies you
+		# there. Mandelbrot only: the other families have no Newton to find them by.
+		WristMenu.Item.new("look", "BEACONS",
+			func(): return "on" if m.guide.enabled else "off",
+			func(): m.guide.enabled = not m.guide.enabled,
+			false, func(): return vis.call() and m.guide.applies()).toggle(
+			func(): return m.guide.enabled).hinted("Lights the small copies of the set near you"),
+		WristMenu.Item.new("look", "TOUR",
+			func(): return "on" if m.guide.tour else "off",
+			func(): m.guide.set_tour(not m.guide.tour),
+			false, func(): return vis.call() and m.guide.applies()).toggle(
+			func(): return m.guide.tour).hinted("Flies you from one copy to the next by itself"),
 		# The orbit of the point under the pointing hand, hung in the air over the map.
 		WristMenu.Item.new("look", "ORBIT",
 			func(): return "on" if m.orbit_on else "off",
