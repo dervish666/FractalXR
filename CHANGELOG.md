@@ -7,6 +7,12 @@ All notable changes to FractalXR are documented here. Format based on
 
 ### FLY spike, 2026-11-17
 
+- STYLE on GROUND is redrawn from the fractal itself: contour lines on the iteration bands
+  at a step that widens where they crowd (they used to vanish there), the set's edge from the
+  stored distance estimate, and the orbit trap inside the set. Neon glows along the contours,
+  toon cels the theme's palette, pencil hatches along the contours by the picture's tone, and
+  circuit runs copper traces along them round a chip-filled set. Before, pencil and circuit
+  drew a generic pattern on a flat plane that ignored the set.
 - Turning is smooth again by default: right stick X turns about your head at up to 90° a
   second. The scene card's TURN tile (behind MORE, every mode) brings back the 30° snaps.
 - VIGNETTE (scene card, behind MORE): full, light or off for the comfort tunnel.

@@ -5,6 +5,7 @@ extends SceneTree
 ## natural shot (STYLE must put the old look back). A blank frame fails.
 ##
 ##   tools/style_shot.sh
+##   STYLE_MODES=ground tools/style_shot.sh    # the ground only
 
 const OUT := "res://.spike-out/style"
 
@@ -28,6 +29,12 @@ func _init() -> void:
 	for i in 240:
 		await process_frame
 	await _styles("ground")
+
+	# STYLE_MODES=ground stops here: the light run for work on the ground alone.
+	if OS.get_environment("STYLE_MODES") == "ground":
+		print("STYLESHOT %s" % ("PASS" if ok else "FAIL"))
+		quit(0 if ok else 1)
+		return
 
 	main.xr_camera.rotation_degrees = Vector3(-8.0, 0.0, 0.0)
 	main._set_mode("tree")

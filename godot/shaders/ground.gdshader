@@ -329,6 +329,144 @@ void relief_normal(mat2 m, int level, float hx0, float hx1, float hz0, float hz1
 	lap = (hx1 + hx0 + hz1 + hz0 - 4.0 * hc) / tm;
 }
 
+// STYLE on the ground. styles.gdshaderinc's art_colour draws an object by its folds and a
+// world-space pattern, and a flat floor has neither: pencil came out blank paper, circuit a
+// PCB texture that ignored the set, and neon and toon turned the filaments to mush. Here
+// every line comes from the fractal itself:
+// - count contours, at a step of 2^L counts picked per pixel so the lines stay about
+//   `gap` pixels apart however tightly the bands crowd. The odd lines fade out as the step
+//   doubles, so the hand-over between steps never shows.
+// - the set's edge, from the distance estimate the fill stores (s.g, log2 fractal units),
+//   in pixels: one pixel sharp at any zoom and at any distance, filaments included, where
+//   the count is already chaotic.
+// - the orbit trap (s.a) for structure inside the set, where the count is flat.
+
+// An anti-aliased line of `wpx` pixels on every whole number of `key`, which changes by
+// `wk` a pixel.
+float gline(float key, float wk, float wpx) {
+	float d = abs(fract(key + 0.5) - 0.5) / max(wk, 1e-6);
+	return clamp(0.5 * wpx + 0.5 - d, 0.0, 1.0);
+}
+
+// Contours of `key` at the adaptive step, about `gap` pixels apart. idx: the line's index at
+// the coarser of the two steps in play, for picking a colour that does not flicker as the
+// step changes. Fades to nothing where the key is chaos (a step past 2^6 counts).
+float gcontours(float key, float wk, float gap, float wpx, float lmin, out float idx) {
+	float lv = max(log2(max(wk * gap, 1e-6)), lmin);
+	float L = floor(lv);
+	float st = exp2(L);
+	float q = key / st;
+	float c = gline(q, wk / st, wpx);
+	float n = floor(q + 0.5);
+	idx = floor(n * 0.5);
+	c *= mod(n, 2.0) > 0.5 ? 1.0 - fract(lv) : 1.0;
+	return c * (1.0 - smoothstep(5.0, 7.0, lv));
+}
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+// nat: the natural colour (palette, texture, relief light). inside 0..1. de_px: pixels to the
+// set (0 inside). wk: fwidth(s.r).
+vec3 ground_art(vec4 s, vec3 nat, float v, float wk, float inside, float de_px, float lit,
+		float ao, vec3 pos, float dist) {
+	float out_k = 1.0 - inside;
+	// Slow escapers shadow a repelling cycle, |dz| grows exponentially and the DE is tiny:
+	// whole dendrite zones sit within a pixel of the set. They are `dense`, drawn as a fill,
+	// and `edge` is the line round them, a pixel or two out, plus the inside mask's own edge.
+	float dense = clamp(1.5 - de_px, 0.0, 1.0) * out_k;
+	float edge = smoothstep(0.6, 1.6, de_px) * (1.0 - smoothstep(1.8, 3.4, de_px)) * out_k;
+	// Only where the DE is smooth across the pixel: inside a dendrite zone it jumps from 0 to a
+	// few pixels between neighbours, and lines there were a bright speckle that bloomed to haze.
+	edge *= 1.0 - smoothstep(0.6, 1.5, fwidth(de_px));
+	float iw = fwidth(inside);
+	float iedge = iw > 1e-4 ? clamp(1.0 - abs(inside - 0.5) / iw, 0.0, 1.0) : 0.0;
+	edge = max(edge, iedge);
+	float trap = s.a * 10.0;                                       // orbit-trap rings inside
+	float wt = max(fwidth(trap), 1e-6);
+	float tone = clamp(dot(nat, LUMA) * 1.25, 0.0, 1.0);
+	float idx;
+	if (art_style == 1) {
+		// No neon_far fade: the ground's fog already ends it, and the two stacked dimmed the
+		// middle distance twice.
+		float fade = 1.0;
+		float c = gcontours(s.r, wk, 9.0, 1.4, 0.0, idx) * out_k;
+		float pick = fract(idx * 0.618);
+		vec3 hue = pick < 0.45 ? neon_a : (pick < 0.8 ? neon_b : neon_c);
+		// The set glows from its edge: a hot core and a wide soft halo over the filaments.
+		float halo = exp2(-de_px / 3.0) * out_k;
+		float rings = gline(trap, wt, 1.2) * (1.0 - smoothstep(0.08, 0.3, wt)) * inside;
+		vec3 body = neon_body * (0.6 + 3.0 * lit + 1.2 * ao) + neon_b * 0.03 * tone;
+		// The edge takes the orbit trap's texture, so a zone of filaments packed closer than a
+		// pixel still shows its grain instead of one white sheet.
+		vec3 ecol = mix(neon_c, neon_b, smoothstep(0.25, 0.75, s.a)) * (0.03 + 0.12 * s.a);
+		vec3 glow = hue * c * (1.0 - dense) + ecol * dense + neon_a * (edge * 0.8 + halo * 0.06)
+			+ neon_c * rings * 0.35;
+		return body + glow * neon_gain * fade;
+	}
+	if (art_style == 2) {
+		// Flat cels of the theme's own colours: the palette coordinate quantised in steps that
+		// widen where the bands crowd, two light steps from the relief, ink on the cel edges
+		// and a heavy outline round the set.
+		const float N = 6.0;
+		float kv = v * N;
+		float wv = fwidth(kv);
+		float lv = max(log2(max(wv * 10.0, 1e-6)), 0.0);
+		float st = exp2(floor(lv));
+		vec3 cel = palette((floor(kv / st) + 0.5) * st / N);
+		float fl = max(fwidth(lit), 1e-4);
+		float shade = mix(0.55, 1.0, smoothstep(0.3 - fl, 0.3 + fl, lit)) * mix(0.8, 1.0, step(0.75, ao));
+		float in_band = floor(clamp(s.a, 0.0, 0.999) * 3.0);
+		vec3 icel = inside_colour * (1.0 + 0.35 * in_band);
+		vec3 col = mix(cel, icel, step(0.5, inside)) * shade;
+		float ink = gcontours(kv, wv, 10.0, 1.3, 0.0, idx) * (1.0 - smoothstep(4.0, 6.0, lv)) * out_k;
+		ink = max(ink, gline(trap * 0.3, wt * 0.3, 1.0) * inside * (1.0 - smoothstep(0.1, 0.3, wt)) * 0.6);
+		// Past where the cels hold (lv high) the filaments are drawn in ink by their distance.
+		ink = max(max(ink, edge), dense * 0.85);
+		return mix(col, vec3(0.03, 0.025, 0.04), ink);
+	}
+	if (art_style == 3) {
+		// Graphite contour hatching: the count's own level lines are the strokes, more of them
+		// where the picture is dark, and the orbit trap's rings cross them in the deepest shade.
+		float dark = 1.0 - tone;
+		float idx2;
+		float a = gcontours(s.r, wk, 9.0, 1.0, 0.0, idx) * smoothstep(0.1, 0.3, dark);
+		float b = gcontours(s.r, wk, 4.5, 0.9, -1.0, idx2) * smoothstep(0.4, 0.62, dark);
+		float x = gline(trap * 2.0, wt * 2.0, 0.9) * (1.0 - smoothstep(0.1, 0.35, wt * 2.0))
+			* smoothstep(0.62, 0.85, dark);
+		float pres = 0.7 + 0.3 * hash2(vec2(idx, 7.0));
+		float xi = gline(trap, wt, 1.0) * (1.0 - smoothstep(0.1, 0.35, wt));
+		float ink = max(max(a * pres, b * 0.8), x * 0.85) * out_k + max(x, xi) * inside * 0.9;
+		ink = max(ink, inside * 0.5);                                  // a graphite wash in the set
+		ink = max(ink, edge * 0.95);
+		ink = max(ink, dense * (0.62 + 0.3 * s.a));                    // filaments, soft
+		vec3 sheet = paper * mix(1.0, 0.86, dark * 0.6);
+		return mix(sheet, graphite, ink);
+	}
+	// Circuit: copper traces along the count's level lines, a via wherever a trace crosses an
+	// orbit-trap ring, a gold rail round the set, and the set itself a dense chip of fine
+	// traces on a dark die.
+	float t = gcontours(s.r, wk, 11.0, 2.2, 0.0, idx) * out_k;
+	float tr2 = gline(trap, wt, 6.0) * (1.0 - smoothstep(0.08, 0.25, wt));
+	float via = step(0.5, t) * tr2;
+	float led = via * step(0.85, hash2(vec2(idx, floor(trap))));
+	float shade = 0.25 * ao + 0.85 * lit;
+	vec3 board = vec3(0.025, 0.15, 0.07) * (0.45 + shade) * (0.8 + 0.4 * tone);
+	vec3 copper = vec3(0.85, 0.52, 0.2) * (0.35 + shade);
+	vec3 gold = vec3(1.0, 0.86, 0.45) * (0.5 + shade);
+	vec3 cb = mix(board, copper, t);
+	cb = mix(cb, gold, via);
+	cb += vec3(0.25, 1.6, 0.45) * led;
+	// The die: the shared circuit pattern in world metres, fine.
+	float px = max(sqrt(length(dFdx(pos.xz)) * length(dFdy(pos.xz))), 1e-9);
+	float per = exp2(ceil(log2(px * 14.0)));
+	vec3 chip = circuit(pos.xz, per, px);
+	vec3 die = mix(vec3(0.02, 0.022, 0.03), copper * 0.3, chip.x * 0.7) + vec3(0.25, 1.6, 0.45) * chip.z * 0.4;
+	cb = mix(cb, die, step(0.5, inside));
+	cb = mix(cb, copper * (0.25 + 0.35 * s.a), dense);
+	cb = mix(cb, gold, edge);
+	return cb;
+}
+
 void fragment() {
 	vec2 w = v_world.xz - head_xz;
 	// Offset from the viewer in level-0 texels. Small numbers by construction.
@@ -408,7 +546,6 @@ void fragment() {
 	// level actually sampled, so slopes carry per-texel detail up close and coarsen with
 	// distance the way terrain does. Lit by one fixed directional light.
 	// STYLE's light: flat ground in a fixed sun unless relief says otherwise.
-	vec3 n_art = vec3(0.0, 1.0, 0.0);
 	float lit_art = 0.75;
 	float ao_art = 1.0;
 	if (relief_on) {
@@ -443,7 +580,6 @@ void fragment() {
 		// what stops a terrain read like a bas-relief with a torch on it.
 		float cavity = 1.0 - 0.4 * clamp(lap * 0.6, 0.0, 1.0);
 		col = (col * (0.25 + 0.75 * diff) + spec * (1.0 - inside)) * cavity;
-		n_art = n;
 		lit_art = diff;
 		ao_art = cavity;
 	}
@@ -464,13 +600,18 @@ void fragment() {
 	}
 
 	if (art_style > 0) {
-		// Neon's lines between whole counts, the topographic lines' places; none inside the
-		// set, where the count is flat. Toon's colours by palette band. Strokes and traces
-		// lie in world metres, so they hold still as you walk (a zoom slides them).
-		float fc = inside > 0.5 ? 0.25 : s.r + 0.5;
-		// Facing 1: a plane seen at a grazing angle is not a silhouette, or the whole far
-		// field would ink in.
-		col = art_colour(fc, fract(v) * 3.999, v_world, n_art, lit_art, ao_art, 1.0, dist);
+		// Pixels to the set: the stored distance estimate over the pixel's footprint, both in
+		// fractal units. Inside the set the estimate is meaningless and the mask takes over.
+		// The footprint's geometric mean, not its long side: at a grazing angle the long side
+		// runs metres down the view and called every filament zone solid edge.
+		float fpg = sqrt(length(dFdx(e0)) * length(dFdy(e0)));
+		// Inside texels store log2 DE = -40, and the sample mixed them in with the same weights
+		// as s.b, which dragged every pixel near a speck of the set to zero distance. Undo the
+		// mix to get the escaped texels' own mean.
+		float ib = clamp(s.b, 0.0, 0.999);
+		float g_out = (s.g + 40.0 * ib) / (1.0 - ib);
+		float de_px = exp2(g_out) / max(texel0 * fpg, 1e-30);
+		col = ground_art(s, col, v, wcount, inside, de_px, lit_art, ao_art, v_world, dist);
 	}
 	col *= brightness;
 	float fog = smoothstep(fog_end * 0.55, fog_end, dist);
