@@ -1133,11 +1133,11 @@ func _perf_tail() -> String:
 		var dc := ground.deep_counts()
 		var deep := dc - _deep_logged
 		_deep_logged = dc
-		return head + " mode=ground set=%s julia=%s zoom=%s fill=%.2f iter=%d/%d relief=%s deep=%d/%d" % [
+		return head + " mode=ground set=%s julia=%s zoom=%s fill=%.2f iter=%d/%d relief=%s deep=%d/%d near=%d art=%s" % [
 			ground.formula_name().replace(" ", "_"), str(ground.julia),
 			_zoom_text(ground.zoom_factor()), ground.progress(),
 			GROUND_ITER[ground_iter_idx], ground.effective_iter(), GROUND_RELIEF[ground_relief_idx],
-			deep.x, deep.y]
+			deep.x, deep.y, ground.near_iter, ART_NAMES[art]]
 	if bulb_mode:
 		return head + " mode=bulb surface=%s marching=%s cover=%.2f solid_tris=%d solid_build_ms=%.0f" % [
 			SURFACE_NAMES[surface_idx].replace(" ", "_"), str(march.is_on()),

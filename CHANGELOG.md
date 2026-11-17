@@ -7,7 +7,7 @@ All notable changes to FractalXR are documented here. Format based on
 
 ### FLY spike, 2026-11-17
 
-- GROUND gains NEAR (look card, default 256): where a texel of the ground's data spans
+- GROUND gains NEAR (look card, off by default): where a texel of the ground's data spans
   several pixels near the set, the fragment works out its own escape count, up to that many
   iterations, instead of stretching the texel. Float32 zooms only; deep views keep the data.
   Off, 128, 256 or 512. Frame cost on the Quest is unmeasured. tools/near_shot.sh compares

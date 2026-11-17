@@ -650,7 +650,9 @@ func iter_floor() -> int:
 ## NEAR: the per-pixel escape budget for the shader's near field (ground.gdshader), 0 off.
 ## Where a texel spans several pixels near the set, the fragment iterates its own point.
 const NEAR_STEPS := [0, 128, 256, 512]
-var near_iter := 256
+## Off by default: at 256 GROUND ran 9-12 fps on the Quest (2026-11-17, before the edge
+## budget fix and the two-pixel gate). Measure before turning it on by default.
+var near_iter := 0
 
 
 func _set_near(vx: float, vy: float) -> void:

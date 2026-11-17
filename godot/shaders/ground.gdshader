@@ -625,15 +625,20 @@ void fragment() {
 		float ibn = clamp(s.b, 0.0, 0.999);
 		float de_tex = exp2((s.g + 40.0 * ibn) / (1.0 - ibn)) / (texel0 * exp2(float(l0)));
 		bool near_set = ibn > 0.001 || de_tex < 4.0;
-		bool cheap = s.r < float(near_iter) || (s.b > 0.001 && s.b < 0.999);
+		// A texel on the set's edge can only be settled per pixel when the budget reaches
+		// max_iter; below it every such pixel spent the whole budget and kept the texel.
+		bool mixed = s.b > 0.001 && s.b < 0.999;
+		bool cheap = mixed ? near_max_iter <= near_iter : s.r < float(near_iter);
 		float c_ratio = max(1.0, length(near_c.xz)) / (texel0 * max(fpg_n, 1e-9));
-		if (mag > 0.25 && near_set && cheap && c_ratio < 4194304.0) {
+		// Only where a texel spans two pixels or more: below that the bilinear is already
+		// close, and the headset paid full price for a change nobody could see.
+		if (mag > 0.75 && near_set && cheap && c_ratio < 4194304.0) {
 			vec2 dc = e0 * texel0;
 			vec2 cp = vec2(near_c.x + (near_c.y + dc.x), near_c.z + (near_c.w + dc.y));
 			bool ok;
 			vec4 r = near_julia != 0 ? near_escape(near_julia_c, cp, near_iter, ok)
 				: near_escape(cp, vec2(0.0), near_iter, ok);
-			if (ok) s = mix(s, r, smoothstep(0.25, 0.75, mag));
+			if (ok) s = mix(s, r, smoothstep(0.75, 1.25, mag));
 		}
 	}
 
