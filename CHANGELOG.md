@@ -5,6 +5,13 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### FLY spike, 2026-11-17
+
+- SURFACE gains "fly" in BULB: the SOLID 192 mesh plus finer meshes stacked round the head
+  as you shrink into the shape, up to ten levels, each half the size and twice the detail.
+  Right stick flies along the right hand's ray, slower near walls, never closer than 12 cm;
+  left stick shrinks you about your head. Untested on a headset.
+
 ### Store readiness, 2026-11-13
 
 - System dash and session shutdown hide pointers, release grabs and stop locomotion. Snap turn

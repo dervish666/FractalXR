@@ -158,13 +158,30 @@ var march := BulbMarch.new()
 # This DE needs roughly 48 trace steps to reach a true exterior surface. Lower rungs
 # painted the bounding volume or punched holes, so the performance budget lives in
 # resolution and post-hit shading rather than a misleading step-count preview.
-const SURFACE_STEPS := [0, 48, 64, 80, 0, 0, 0]
-const SURFACE_NAMES := ["splats", "march 48", "march 64", "march 80", "solid 128", "solid 192", "solid 256"]
+const SURFACE_STEPS := [0, 48, 64, 80, 0, 0, 0, 0]
+const SURFACE_NAMES := ["splats", "march 48", "march 64", "march 80", "solid 128", "solid 192", "solid 256", "fly"]
 ## SOLID (spike, T-48): the bulb meshed on the device with AO and a soft shadow baked into
 ## its vertices (scripts/sources/bulb_solid.gd). Grid cells per axis for each SURFACE entry,
 ## 0 where the entry is not solid. Appended, so INSIDE_STEPS_IDX still names march 48.
-const SURFACE_SOLID := [0, 0, 0, 0, 128, 192, 256]
+const SURFACE_SOLID := [0, 0, 0, 0, 128, 192, 256, 192]
 var solid := BulbSolid.new()
+## FLY (spike): SOLID 192 as level 0 and finer meshes stacked round the head as you shrink
+## into it (scripts/sources/bulb_fly.gd). Steer with the right hand: stick forward flies
+## along its ray, at a speed that scales with the distance to the nearest wall; left stick
+## shrinks you about your head.
+const SURFACE_FLY_IDX := 7
+var fly := BulbFly.new()
+## Fastest apparent flight, and the share of the clearance covered a second below it.
+const FLY_MAX_MPS := 1.0
+const FLY_CLEARANCE_PER_S := 0.8
+## Never closer to a wall than this, in metres: inside the camera's 5 cm near plane the
+## wall would cut open.
+const FLY_MIN_CLEAR_M := 0.12
+## Octaves of shrink a second at full stick.
+const FLY_OCTAVES_PER_S := 0.7
+## World scale bounds while flying, as a multiple of the cloud's own: 2^14 is past where
+## the state-space floats run out of mantissa for the finest level.
+const FLY_MAX_SCALE := 16384.0
 ## SOLID re-homes the bulb to the size of the Mandelbulber taste-test render Sam liked
 ## (godot/.spike-out/mb2-2026-10-11): 35 cm across, 0.7 m out, 15 cm under the eyes. The
 ## splat toy is 1.2 m across at 1.1 m, which puts twice the pixels and triangles in view.
@@ -613,6 +630,7 @@ func _ready() -> void:
 	add_child(cloud)
 	cloud.add_child(march)
 	cloud.add_child(solid)
+	cloud.add_child(fly)
 	cloud.add_child(tree)
 	cloud.add_child(forest)
 	cloud.add_child(ifs)
@@ -2594,6 +2612,8 @@ func _handle_input(delta: float) -> void:
 	# Stick nudges are disabled while grabbing: fighting the hand for control of the
 	# same transform makes the cloud feel like it is slipping. A captured handle counts, or
 	# the sculpture moves out from under the plane you are dragging.
+	elif bulb_mode and fly.active and (grab == null or not grab.is_grabbing()):
+		_fly_sticks(rs, ls, snap_x, stick_owned, delta)
 	elif (grab == null or not grab.is_grabbing()) and not ifs_edit.is_editing():
 		# Around you (the grove, inside the galaxy, a room-size sculpture) the stick turns and
 		# moves the world, so it follows the ground's rules: snap turns, and the walk's tunnel
@@ -2955,6 +2975,11 @@ var _solid_saved := {}
 
 func _apply_solid() -> void:
 	var n: int = SURFACE_SOLID[surface_idx] if bulb_mode and _bulb != null else 0
+	var flying := n > 0 and surface_idx == SURFACE_FLY_IDX
+	if fly.active and not flying:
+		fly.end()
+		if grab != null:
+			grab.max_scale = WorldGrab.MAX_SCALE
 	if n == 0:
 		if solid.state != BulbSolid.State.IDLE or _solid_key != "":
 			solid.clear()
@@ -2963,7 +2988,7 @@ func _apply_solid() -> void:
 			_restore_solid_saved()
 		return
 	var entering := _solid_key == ""
-	var key := "%s/%d" % [_bulb.display_name, n]
+	var key := "%s/%d%s" % [_bulb.display_name, n, "/fly" if flying else ""]
 	if key == _solid_key and (solid.is_building() or solid.is_ready()):
 		solid.visible = solid.is_ready()
 		return
@@ -2985,6 +3010,10 @@ func _apply_solid() -> void:
 	var key_state := (cloud.global_transform.basis.orthonormalized().inverse()
 		* SOLID_KEY_WORLD.normalized())
 	solid.request(_bulb, n, key_state)
+	if flying:
+		fly.begin(solid, _bulb, key_state, cloud.center, cloud.fit)
+		if grab != null:
+			grab.max_scale = FLY_MAX_SCALE
 
 
 ## Leaving SOLID puts back what entering it switched off. Each one only if it still holds
@@ -3012,12 +3041,69 @@ func _tick_solid(delta: float) -> void:
 		return
 	if solid.is_building():
 		RenderingServer.call_on_render_thread(solid.step)
-	solid.tick(cloud.center, cloud.fit, delta)
+	if fly.active:
+		solid.tick(fly.center, fly.fit, delta)
+		RenderingServer.call_on_render_thread(fly.step)
+		fly.update(_fly_head_state(), _fly_s2w(), delta)
+	else:
+		solid.tick(cloud.center, cloud.fit, delta)
 	if solid.just_ready:
 		solid.just_ready = false
 		solid.visible = true
 		cloud.set_visible_cloud(false)
 		_set_solid_msaa(true)
+
+
+## The eye in the bulb's state units, and metres per state unit: the cloud's transform maps
+## local to world, and local is (state - center) * fit, with FLY's frozen framing.
+func _fly_head_state() -> Vector3:
+	return _fly_state_of(xr_camera.global_transform.origin)
+
+
+func _fly_state_of(world: Vector3) -> Vector3:
+	var local: Vector3 = cloud.global_transform.affine_inverse() * world
+	return local / fly.fit + fly.center
+
+
+func _fly_s2w() -> float:
+	return fly.fit * cloud.global_transform.basis.get_scale().x
+
+
+## FLY's sticks. Right forward flies along the right hand's ray (the head on the desktop),
+## right sideways snap-turns about the head, left forward shrinks you about your head.
+## Speed follows the distance to the nearest wall, so you slow in a crevice for free, and
+## a move that would bring a wall inside FLY_MIN_CLEAR_M is refused.
+func _fly_sticks(rs: Vector2, ls: Vector2, snap_x: float, stick_owned: bool, delta: float) -> void:
+	var head := xr_camera.global_transform.origin
+	var snap := _snap_step(snap_x, not stick_owned)
+	if snap != 0:
+		var turn := Basis(Vector3.UP, snap * SNAP_TURN_RAD)
+		cloud.global_transform = Transform3D(turn, head - turn * head) * cloud.global_transform
+	var moving := 0.0
+	if absf(ls.y) > 0.15:
+		var s := cloud.global_transform.basis.get_scale().x
+		var k := pow(2.0, ls.y * FLY_OCTAVES_PER_S * delta)
+		k = clampf(s * k, 0.05, FLY_MAX_SCALE) / s
+		# About the head: the point under your eyes stays put while the world grows.
+		cloud.global_transform = Transform3D(Basis().scaled(Vector3.ONE * k), head - head * k) \
+			* cloud.global_transform
+		moving = absf(ls.y)
+	if absf(rs.y) > 0.15:
+		var aim := right_hand if right_hand != null and right_hand.get_has_tracking_data() else null
+		var dir: Vector3 = -(aim.global_transform.basis.z if aim != null else xr_camera.global_transform.basis.z)
+		dir = dir.normalized()
+		var s2w := _fly_s2w()
+		var st := _fly_head_state()
+		var clear_m := fly.de(st) * s2w
+		var v := minf(FLY_MAX_MPS, maxf(0.05, clear_m * FLY_CLEARANCE_PER_S)) * rs.y
+		# The world moves, not you: a step of the head along dir is the cloud along -dir.
+		var step := dir * v * delta
+		var st2 := _fly_state_of(head + step)
+		var clear2 := fly.de(st2) * s2w
+		if clear2 >= FLY_MIN_CLEAR_M or clear2 > clear_m:
+			cloud.global_translate(-step)
+			moving = maxf(moving, absf(rs.y))
+	_want_vignette(ComfortVignette.WALK, minf(1.0, moving))
 
 
 func _solid_home() -> void:

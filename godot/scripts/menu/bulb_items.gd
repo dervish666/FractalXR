@@ -2,15 +2,15 @@ extends RefCounted
 
 ## BULB's tiles, in the order BULB shows them.
 
-enum {SPLATS, LINES, SOLID, MARCHED}
-const STYLE_NAMES := ["splats", "lines", "solid", "marched"]
+enum {SPLATS, LINES, SOLID, MARCHED, FLY}
+const STYLE_NAMES := ["splats", "lines", "solid", "marched", "fly"]
 const QUALITY_WORDS := ["low", "mid", "high"]
 
 
 static func build(m: FractalMain) -> Array[WristMenu.Item]:
 	var vis := func(): return m.bulb_mode
 	# The fineness each surface last had, so SURFACE comes back to it.
-	var mem := {LINES: 1, SOLID: 4, MARCHED: 1}
+	var mem := {LINES: 1, SOLID: 4, MARCHED: 1, FLY: FractalMain.SURFACE_FLY_IDX}
 	var out: Array[WristMenu.Item] = [
 		WristMenu.Item.new("pick", "BULBS",
 			func(): return str(m.library.bulbs[m.bulb_idx].get("name", "?")),
@@ -32,7 +32,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		WristMenu.Item.new("look", "SURFACE",
 			func():
 				var st := style(m)
-				if st == SOLID:
+				if st == SOLID or st == FLY:
 					if m.solid.is_building():
 						return "solid · growing %d%%" % int(m.solid.progress() * 100.0)
 					if m.solid.get_error() != "":
@@ -47,7 +47,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		WristMenu.Item.new("look", "QUALITY",
 			func(): return quality_name(m),
 			func(): step_quality(m, mem, 1),
-			false, func(): return vis.call() and style(m) != SPLATS).stepping(
+			false, func(): return vis.call() and style(m) != SPLATS and style(m) != FLY).stepping(
 			func(d: int): step_quality(m, mem, d)).minor().hinted(
 			"Finer surface, more frame time"),
 		MenuShared.splat(m, vis),
@@ -117,6 +117,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 
 ## Which SURFACE is showing, read from the three settings it folds together.
 static func style(m: FractalMain) -> int:
+	if m.surface_idx == FractalMain.SURFACE_FLY_IDX:
+		return FLY
 	if FractalMain.SURFACE_SOLID[m.surface_idx] > 0:
 		return SOLID
 	if FractalMain.SURFACE_STEPS[m.surface_idx] > 0:

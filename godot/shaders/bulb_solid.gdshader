@@ -39,6 +39,14 @@ uniform vec3 glow_colour = vec3(0.31, 0.41, 0.75);
 uniform float rim = 0.9;
 uniform float grow = 1.0;
 uniform int debug_view = 0;
+// FLY (scripts/sources/bulb_fly.gd): the box a finer level of the stack draws, in model
+// (state) space. A vertex inside it goes to NaN, and the rasteriser drops every triangle
+// that touches it. Done here rather than with discard to keep early depth (see above).
+// hi below lo is no hole, the default.
+uniform vec3 hole_lo = vec3(1.0);
+uniform vec3 hole_hi = vec3(-1.0);
+// Harness only: FLY tints each level so a shot shows where the stack's seams fall.
+uniform vec3 tint = vec3(1.0);
 
 varying float v_trap;
 varying float v_ao;
@@ -80,6 +88,8 @@ vec3 keep_luma(vec3 c, float l0) {
 
 // After the ramp functions now, because CYCLE reads them here.
 void vertex() {
+	if (all(greaterThan(VERTEX, hole_lo)) && all(lessThan(VERTEX, hole_hi)))
+		VERTEX = vec3(uintBitsToFloat(0x7fc00000u));
 	v_trap = CUSTOM0.w;
 	v_ao = CUSTOM1.x;
 	v_sh = CUSTOM1.y;
@@ -128,7 +138,7 @@ void fragment() {
 	c += albedo * sheen * pow(ndh, shininess) * lit;
 	c += mix(albedo, vec3(1.0), 0.3) * gloss * pow(ndh, 90.0) * lit;
 	c += glow_colour * pow(1.0 - ndv, 3.0) * rim * v_ao;
-	ALBEDO = c * gain * grow;
+	ALBEDO = c * gain * grow * tint;
 	// Harness views of the baked terms (tools/solid_shot.sh): 1 AO, 2 shadow, 3 N.L.
 	if (debug_view == 1) ALBEDO = vec3(v_ao);
 	else if (debug_view == 2) ALBEDO = vec3(v_sh);

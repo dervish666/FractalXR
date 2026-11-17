@@ -34,6 +34,8 @@ var level := false
 const MIN_SPAN := 1e-4
 const MIN_SCALE := 0.02
 const MAX_SCALE := 60.0
+## FLY raises this while it is up: shrinking into the bulb takes the world far past 60.
+var max_scale := MAX_SCALE
 
 
 func _init(controllers: Array[XRController3D], target: Node3D) -> void:
@@ -80,7 +82,7 @@ func update(_delta: float) -> void:
 	# a tracking glitch that briefly collapses the span would otherwise send the
 	# cloud to infinity or invert it.
 	var s := out.basis.get_scale()
-	var uniform := clampf((s.x + s.y + s.z) / 3.0, MIN_SCALE, MAX_SCALE)
+	var uniform := clampf((s.x + s.y + s.z) / 3.0, MIN_SCALE, max_scale)
 	var rot := out.basis.orthonormalized()
 	var at := out.origin
 	if level:

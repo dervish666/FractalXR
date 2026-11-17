@@ -84,6 +84,18 @@ var max_slab_ms := 0.0
 var pass_ms := {"field": 0.0, "verts": 0.0, "quads": 0.0, "light": 0.0}
 ## Set when the mesh lands, cleared by whoever reads it.
 var just_ready := false
+## The brightness ramp a new mesh fades in on. FLY's levels rebuild as you move, and a
+## level that faded from black every time would flash.
+var grow_in := true
+
+## The cube the last request covered, in state units: minimum corner and cell size.
+var box_lo := Vector3.ZERO
+var box_h := 0.0
+## FLY: one trap equalisation for the whole stack, taken from the coarsest level, so a
+## finer level does not repaint the same surface in its own colours. Empty = measure own.
+var shared_cdf := PackedFloat32Array()
+## The equalisation this mesh was drawn with, for the stack to share.
+var cdf := PackedFloat32Array()
 
 var _mat: ShaderMaterial
 var _rd: RenderingDevice
@@ -167,6 +179,16 @@ func progress() -> float:
 ## Main thread. Snapshot the genome as it stands (the breath moves on, the mesh does not)
 ## and the key light in state space, then let step() run the passes.
 func request(src: BulbSource, n: int, light_state: Vector3) -> void:
+	var half := half_of(src)
+	request_box(src.march_params(), n, Vector3.ONE * -half, 2.0 * half / float(n), light_state,
+		AO_RADIUS * half, SHADOW_REACH * half)
+
+
+## FLY (scripts/sources/bulb_fly.gd): the same build over any cube, n cells of h from lo,
+## with the formula parameters given rather than read, so every level of the stack meshes
+## one frozen moment of the breath. AO and shadow reach are in state units.
+func request_box(mp: Dictionary, n: int, lo: Vector3, h: float, light_state: Vector3,
+		ao_radius: float, shadow_reach: float) -> void:
 	_gen += 1
 	grid = n
 	state = State.FIELD
@@ -186,15 +208,15 @@ func request(src: BulbSource, n: int, light_state: Vector3) -> void:
 	_want_data = false
 	_err = ""
 	_light = light_state.normalized() if light_state.length_squared() > 1e-8 else _light
-	_half = half_of(src)
+	_half = 0.5 * h * float(n)
+	box_lo = lo
+	box_h = h
 	_t_start = Time.get_ticks_usec()
-	var mp := src.march_params()
-	var h := 2.0 * _half / float(n)
 	_pc.resize(112)
 	_pc.encode_s32(0, n)
-	_pc.encode_float(16, -_half)
-	_pc.encode_float(20, -_half)
-	_pc.encode_float(24, -_half)
+	_pc.encode_float(16, lo.x)
+	_pc.encode_float(20, lo.y)
+	_pc.encode_float(24, lo.z)
 	_pc.encode_float(28, h)
 	_pc.encode_float(32, ISO_VOXELS * h)
 	_pc.encode_float(36, mp["power"])
@@ -211,12 +233,12 @@ func request(src: BulbSource, n: int, light_state: Vector3) -> void:
 	_pc.encode_float(76, mp["k_angle_a"])
 	_pc.encode_float(80, mp["k_angle_b"])
 	_pc.encode_float(84, inside_mode)
-	_pc.encode_float(88, AO_RADIUS * _half)
+	_pc.encode_float(88, ao_radius)
 	_pc.encode_float(92, SHADOW_K)
 	_pc.encode_float(96, _light.x)
 	_pc.encode_float(100, _light.y)
 	_pc.encode_float(104, _light.z)
-	_pc.encode_float(108, SHADOW_REACH * _half)
+	_pc.encode_float(108, shadow_reach)
 	_mat.set_shader_parameter("light_dir", _light)
 
 
@@ -428,7 +450,7 @@ func _finish(gen: int) -> void:
 	surf["vertex_count"] = vc
 	surf["index_data"] = idata
 	surf["index_count"] = tri_count * 3
-	surf["aabb"] = AABB(Vector3.ONE * -_half, Vector3.ONE * (2.0 * _half))
+	surf["aabb"] = AABB(box_lo, Vector3.ONE * (2.0 * _half))
 	var m := ArrayMesh.new()
 	m.set("_surfaces", [surf])
 	if m.get_surface_count() != 1:
@@ -444,7 +466,7 @@ func _finish(gen: int) -> void:
 	wall_ms = float(Time.get_ticks_usec() - _t_start) / 1000.0
 	state = State.READY
 	just_ready = true
-	_grow = 0.0
+	_grow = 0.0 if grow_in else 1.0
 	print("[solid] grid %d: %d verts, %d tris%s, gpu %.1f ms over %d of %d slabs (field %.1f verts %.1f quads %.1f light %.1f), %d frames, wall %.0f ms, upload %.1f ms" % [
 		grid, v, tri_count, " OVERFLOW" if overflow else "", gpu_ms, timed_slabs, slabs,
 		pass_ms["field"], pass_ms["verts"], pass_ms["quads"], pass_ms["light"], build_frames,
@@ -520,7 +542,11 @@ func _surface_template() -> Dictionary:
 ## Histogram equalisation of the trap, as the splat renderer does for its particles: the
 ## raw trap bunches up, and a palette across a bunched range is one colour.
 func _set_cdf() -> void:
-	var cdf := PackedFloat32Array()
+	if not shared_cdf.is_empty():
+		cdf = shared_cdf
+		_mat.set_shader_parameter("cdf", cdf)
+		return
+	cdf = PackedFloat32Array()
 	cdf.resize(65)
 	var total := 0
 	for i in _hist.size():
@@ -547,6 +573,21 @@ const _PAL_NAMES: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal
 func set_palette(pal: Array) -> void:
 	for i in mini(5, pal.size()):
 		_mat.set_shader_parameter(_PAL_NAMES[i], pal[i])
+
+
+## FLY: skip every triangle with a corner inside this box (state units), because a finer
+## level draws that part. Done in the vertex stage, not with discard (see the shader).
+func set_hole(lo: Vector3, hi: Vector3) -> void:
+	_mat.set_shader_parameter("hole_lo", lo)
+	_mat.set_shader_parameter("hole_hi", hi)
+
+
+func clear_hole() -> void:
+	set_hole(Vector3.ONE, -Vector3.ONE)
+
+
+func material() -> ShaderMaterial:
+	return _mat
 
 
 func set_gain(g: float) -> void:
