@@ -54,10 +54,30 @@ uniform vec3 sky_tint = vec3(1.0);
 uniform vec3 key_colour = vec3(1.0);
 uniform vec3 fog_colour = vec3(0.6, 0.7, 0.85);
 uniform float fog_density = 0.0;
+// FLY's SPIRES: the sun's shadow marched per pixel where the baked one cannot draw it.
+// The vertex shadow is right in bulk and wrong at its edges, where a hard penumbra
+// interpolated across triangles comes out as a staircase. So a pixel marches only when
+// its interpolated vertex shadow is partial: the triangles that straddle an edge. All in
+// state units (model space). 0 = off, SOLID as it was.
+uniform int pixel_shadow = 0;
+uniform float shadow_cell = 0.01;    // the level's cell size: step floor and hit margin
+uniform float shadow_iso = 0.0035;   // the level's extracted level set, DE = iso
+uniform float shadow_reach = 1.0;
+uniform float shadow_sharp = 12.0;   // Quilez's k
+uniform int shadow_steps = 40;
+// SPIRES's colour per pixel inside pixel_trap_m metres, easing back to the per-vertex
+// colour over the next half again: a hard-edged pattern sampled per pixel crawls once
+// its bands are thinner than a pixel. 0 = off.
+uniform int pixel_trap = 0;
+uniform float pixel_trap_m = 14.0;
+#include "res://shaders/spires_de.gdshaderinc"
 
 varying float v_trap;
 varying float v_ao;
 varying float v_sh;
+// Model-space (state) position and normal, for the per-pixel shadow.
+varying vec3 v_state;
+varying vec3 v_nstate;
 // CYCLE's colour, per vertex (see vertex()).
 varying vec3 v_cycled;
 
@@ -100,6 +120,8 @@ void vertex() {
 	v_trap = CUSTOM0.w;
 	v_ao = CUSTOM1.x;
 	v_sh = CUSTOM1.y;
+	v_state = VERTEX;
+	v_nstate = CUSTOM0.xyz;
 	// Model space in, view space out: Godot carries NORMAL through MODELVIEW.
 	NORMAL = CUSTOM0.xyz;
 	// CYCLE's colour per vertex: the scrolled ramp at the unscrolled one's luma. Per pixel it cost
@@ -121,10 +143,16 @@ void fragment() {
 	float ndv = clamp(dot(n, VIEW), 0.0, 1.0);
 
 	vec3 albedo;
+	float trap = v_trap;
+	if (pixel_trap > 0) {
+		float near = 1.0 - smoothstep(pixel_trap_m, pixel_trap_m * 1.5, length(VERTEX));
+		if (near > 0.0)
+			trap = mix(v_trap, spires_trap(v_state), near);
+	}
 	if (colour_cycle > 0.0 && palette_cycles < 1.5) {
 		albedo = v_cycled;
 	} else {
-		float eq = equalise(v_trap);
+		float eq = equalise(trap);
 		albedo = palette(cycle_u(eq));
 		if (colour_cycle > 0.0)
 			albedo = keep_luma(albedo, dot(palette(fract(eq * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
@@ -136,7 +164,21 @@ void fragment() {
 	albedo = max(mix(vec3(lum2), albedo, saturation), vec3(0.0));
 
 	float ao = v_ao * v_ao;   // a sharper falloff into the crevices, as AO strength 2.2 is
-	float lit = ndl * v_sh;
+	float sh = v_sh;
+	if (pixel_shadow > 0 && ndl > 0.0 && sh > 0.03 && sh < 0.97) {
+		vec3 o = v_state + normalize(v_nstate) * shadow_cell;
+		float vis = 1.0;
+		float t = 2.0 * shadow_cell;
+		for (int s = 0; s < shadow_steps; s++) {
+			float d = spires_de(o + light_dir * t) - shadow_iso;
+			vis = min(vis, shadow_sharp * d / t);
+			if (vis < 0.01 || t > shadow_reach) break;
+			t += max(d, 0.35 * shadow_cell);
+		}
+		sh = clamp(vis, 0.0, 1.0);
+	}
+	if (debug_view == 4) sh = (pixel_shadow > 0 && v_sh > 0.03 && v_sh < 0.97) ? 1.0 : 0.0;
+	float lit = ndl * sh;
 	vec3 c = albedo * (ambient * ao * sky_tint + key * lit * key_colour * mix(0.6, 1.0, v_ao));
 	// Metal, not plastic: a broad sheen tinted by the surface and a tight glint that stays
 	// mostly the surface's colour. Plastic's highlight is white.
@@ -153,6 +195,7 @@ void fragment() {
 	}
 	// Harness views of the baked terms (tools/solid_shot.sh): 1 AO, 2 shadow, 3 N.L.
 	if (debug_view == 1) ALBEDO = vec3(v_ao);
-	else if (debug_view == 2) ALBEDO = vec3(v_sh);
+	else if (debug_view == 2) ALBEDO = vec3(sh);
+	else if (debug_view == 5) ALBEDO = albedo;
 	else if (debug_view == 3) ALBEDO = vec3(ndl);
 }

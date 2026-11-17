@@ -288,6 +288,27 @@ func _spires() -> bool:
 				await process_frame
 			_shot("spires_x%d_%s.png" % [int(shrink), v[0]])
 		main.xr_camera.rotation = Vector3.ZERO
+		if shrink == 1.0:
+			# Per-pixel shadows off for the before, then which pixels march (debug 4), and
+			# with FLY_DRIVER=vulkan one Quest-sized eye's GPU time each way.
+			for on in [false, true]:
+				fly.pixel_shadows = on
+				for s in fly._chain():
+					s.material().set_shader_parameter("pixel_shadow", 1 if on else 0)
+				main.xr_camera.rotation_degrees = Vector3(-40.0, 0.0, 0.0)
+				for i in 3:
+					await process_frame
+				_shot("spires_x1_down_px%d.png" % int(on))
+				print("FLYSHOT spires eye pixel_shadow=%s ms=%.3f" % [str(on), await _time_eye_here()])
+			for dv in [[4, "marching"], [2, "shadow"], [5, "albedo"]]:
+				for s in fly._chain():
+					s.material().set_shader_parameter("debug_view", dv[0])
+				await process_frame
+				await process_frame
+				_shot("spires_x1_down_%s.png" % dv[1])
+			for s in fly._chain():
+				s.material().set_shader_parameter("debug_view", 0)
+			main.xr_camera.rotation = Vector3.ZERO
 		fly.tint_levels = true
 		for i in 3:
 			await process_frame
@@ -312,3 +333,27 @@ func _spires() -> bool:
 	print("FLYSHOT spires flight moved=%.2fm start_clear=%.2fm min_clear=%.3fm unsettled=%d/288 %s %s" % [
 		moved, start_clear, min_clear, unsettled, fly.describe(), "PASS" if ok_flight else "FAIL"])
 	return good and ok_flight
+
+
+## _time_eye without re-posing: the eye wherever the harness camera stands now.
+func _time_eye_here() -> float:
+	if eye_vp == null:
+		eye_vp = SubViewport.new()
+		eye_vp.size = EYE
+		eye_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		eye_vp.msaa_3d = Viewport.MSAA_4X
+		eye_cam = Camera3D.new()
+		eye_cam.fov = EYE_FOV
+		eye_cam.near = 0.05
+		eye_vp.add_child(eye_cam)
+		root.add_child(eye_vp)
+		RenderingServer.viewport_set_measure_render_time(eye_vp.get_viewport_rid(), true)
+	eye_cam.global_transform = main.xr_camera.global_transform
+	var best := INF
+	for w in 4:
+		var acc := 0.0
+		for i in 15:
+			await process_frame
+			acc += RenderingServer.viewport_get_measured_render_time_gpu(eye_vp.get_viewport_rid())
+		best = minf(best, acc / 15.0)
+	return snappedf(best, 0.001)

@@ -63,8 +63,10 @@ const SPIRES_PALETTE := [Vector3(0.06, 0.09, 0.17), Vector3(0.2, 0.31, 0.5),
 const SPIRES_SKY := Color(0.58, 0.7, 0.86)
 ## The sun, low and to one side, in state space (y up, as the world is).
 const SPIRES_SUN := Vector3(0.45, 0.55, 0.3)
-## SOLID's 10 made jagged white bands along the arches (harness, 2026-11-17).
-const SPIRES_SHADOW_K := 3.5
+## Penumbra sharpness, baked and per pixel. Baked alone at SOLID's 10 it drew jagged white
+## bands along the arches, and 3.5 only blurred them (harness, 2026-11-17); with the
+## per-pixel march fixing the edges the bake can stay sharp, so fewer triangles straddle one.
+const SPIRES_SHADOW_K := 12.0
 
 var active := false
 var world := World.BULB
@@ -97,6 +99,13 @@ var cap_levels := -1
 ## can be shot as plain SOLID; tint_levels colours each level to show the seams.
 var show_levels := true
 var tint_levels := false
+## SPIRES's per-pixel sun shadow (bulb_solid.gdshader), off for a before-and-after.
+## Default off: the jagged bands it was written for turned out to be colour (fixed by
+## pixel_trap), and on the Mac it doubled an eye's draw (2.5 to 4.5 ms) for a change the
+## harness shots barely show.
+var pixel_shadows := false
+## SPIRES's per-pixel colour reaches this many honeycomb cells from the eye.
+const PIXEL_TRAP_CELLS := 2.4
 const TINTS := [Color(1.0, 0.55, 0.55), Color(0.55, 1.0, 0.55), Color(0.55, 0.65, 1.0),
 	Color(1.0, 1.0, 0.5), Color(1.0, 0.55, 1.0), Color(0.5, 1.0, 1.0)]
 
@@ -149,11 +158,21 @@ func begin_spires(frame_center: Vector3, frame_fit: float) -> void:
 	_light = SPIRES_SUN.normalized()
 	_h0 = SPIRES_SIDE0 / float(N)
 	_own0.shared_cdf = PackedFloat32Array()
-	for s in _chain():
+	var chain := _chain()
+	for k in chain.size():
+		var s := chain[k]
 		s.shadow_k = SPIRES_SHADOW_K
 		s.set_palette(SPIRES_PALETTE)
 		s.set_palette_cycles(1.0)
 		_set_look(s, true)
+		var m := s.material()
+		m.set_shader_parameter("shadow_cell", cell(k))
+		m.set_shader_parameter("shadow_iso", BulbSolid.ISO_VOXELS * cell(k))
+		m.set_shader_parameter("shadow_reach", BulbSolid.SHADOW_REACH * side(k))
+		m.set_shader_parameter("shadow_sharp", SPIRES_SHADOW_K)
+		m.set_shader_parameter("de_r2", float(SPIRES_GENOME["scale"]))
+		m.set_shader_parameter("de_thick", float(SPIRES_GENOME["minR"]))
+		m.set_shader_parameter("de_spire", float(SPIRES_GENOME["fixedR"]))
 
 
 func end() -> void:
@@ -183,6 +202,8 @@ func _set_look(s: BulbSolid, on: bool) -> void:
 	m.set_shader_parameter("fog_colour", Vector3(SPIRES_SKY.r, SPIRES_SKY.g, SPIRES_SKY.b))
 	m.set_shader_parameter("fog_density", 0.0)
 	m.set_shader_parameter("flatten", 0.0 if on else 0.2)
+	m.set_shader_parameter("pixel_shadow", 1 if on and pixel_shadows else 0)
+	m.set_shader_parameter("pixel_trap", 1 if on else 0)
 	if not on:
 		s.shadow_k = BulbSolid.SHADOW_K
 
@@ -297,6 +318,8 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 		var edge_m := 0.5 * side(0) * s2w
 		for s in chain:
 			s.material().set_shader_parameter("fog_density", 1.8 / maxf(edge_m, 1e-3))
+			# Per-pixel colour within a few honeycomb cells, whatever size you are.
+			s.material().set_shader_parameter("pixel_trap_m", PIXEL_TRAP_CELLS * s2w)
 	for k in MAX_LEVELS + 1:
 		var s := chain[k]
 		if k > 0 and s.visible and not spires:
