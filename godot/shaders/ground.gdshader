@@ -77,6 +77,9 @@ uniform vec3 pal2;
 uniform vec3 pal3;
 uniform vec3 pal4;
 
+#define ART_GLOBAL
+#include "res://shaders/styles.gdshaderinc"
+
 varying vec3 v_world;
 
 // CYCLE (main.gd, the COLOUR card): Fractint's colour cycling, the ramp sliding along the count
@@ -404,6 +407,10 @@ void fragment() {
 	// Relief: a height from the data and its normal from the neighbouring texels of the
 	// level actually sampled, so slopes carry per-texel detail up close and coarsen with
 	// distance the way terrain does. Lit by one fixed directional light.
+	// STYLE's light: flat ground in a fixed sun unless relief says otherwise.
+	vec3 n_art = vec3(0.0, 1.0, 0.0);
+	float lit_art = 0.75;
+	float ao_art = 1.0;
 	if (relief_on) {
 		mat2 m = mat2(rot.xy, rot.zw);
 		vec3 n;
@@ -436,6 +443,9 @@ void fragment() {
 		// what stops a terrain read like a bas-relief with a torch on it.
 		float cavity = 1.0 - 0.4 * clamp(lap * 0.6, 0.0, 1.0);
 		col = (col * (0.25 + 0.75 * diff) + spec * (1.0 - inside)) * cavity;
+		n_art = n;
+		lit_art = diff;
+		ao_art = cavity;
 	}
 
 	// Contour lines at every whole iteration count, as a topographic map draws its
@@ -453,6 +463,15 @@ void fragment() {
 		col *= 1.0 - ink;
 	}
 
+	if (art_style > 0) {
+		// Neon's lines between whole counts, the topographic lines' places; none inside the
+		// set, where the count is flat. Toon's colours by palette band. Strokes and traces
+		// lie in world metres, so they hold still as you walk (a zoom slides them).
+		float fc = inside > 0.5 ? 0.25 : s.r + 0.5;
+		// Facing 1: a plane seen at a grazing angle is not a silhouette, or the whole far
+		// field would ink in.
+		col = art_colour(fc, fract(v) * 3.999, v_world, n_art, lit_art, ao_art, 1.0, dist);
+	}
 	col *= brightness;
 	float fog = smoothstep(fog_end * 0.55, fog_end, dist);
 	if (!valid) fog = 1.0;

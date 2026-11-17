@@ -86,11 +86,15 @@ vec3 hue_turn(vec3 c, float a) {
 	return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca);
 }
 
+#define ART_GLOBAL
+#include "res://shaders/styles.gdshaderinc"
+
 varying float v_u;
 varying vec3 v_normal_w;
 varying vec3 v_world;
 varying flat float v_phase;
 varying flat float v_bark_hue;
+varying vec3 v_tpos;   // STYLE's frame: the unbent, grown point, from the tree's foot
 varying vec3 v_bark;   // BARK's coordinate, in pattern units (see the uniforms)
 
 // BARK's two patterns, each scaled to 0..1, and their means over branches 2-10 cm thick and 3 m of
@@ -194,6 +198,7 @@ void vertex() {
 	vec3 w0 = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	float h01 = clamp(dot(w0 - tree_origin, tree_up) / max(th * tree_scale, 1e-3), 0.0, 1.0);
 	v_u = mix(level, h01, colour_height);
+	v_tpos = w0 - tree_origin;
 	v_bark = vec3(0.0);
 	if (bark_style > 0 && !batch) {
 		// The basis is (r, len, r) times the node's scale; tree_scale takes the node back out.
@@ -232,4 +237,9 @@ void fragment() {
 	float diff = 0.6 * max(dot(n, key), 0.0) + 0.4 * ndv;
 	float rim = pow(1.0 - ndv, 3.0);
 	ALBEDO = (base * (0.25 + 0.75 * diff) + pal3 * rim * 0.35 * u) * brightness;
+	if (art_style > 0) {
+		// Rings up the tree for neon's lines, and toon's colours by height.
+		ALBEDO = art_colour(u * neon_bands + 0.5, u * 3.999, v_tpos, n, diff, 1.0, ndv,
+			length(v_world - CAMERA_POSITION_WORLD)) * brightness;
+	}
 }

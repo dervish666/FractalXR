@@ -61,8 +61,16 @@ uniform float swap_s = 1.6;        // seconds for one generation to fold or grow
 uniform float swap_span = 2.4;     // seconds between the outermost generation and the root
 uniform float echo_glow = 1.5;     // gain swing per unit of breathe, so a swell also brightens
 
+#define ART_GLOBAL
+#include "res://shaders/styles.gdshaderinc"
+
 varying float v_u;
 varying float v_shade;
+// STYLE's inputs: the frame's mesh-space position and normal (fixed to the frame, whatever its
+// size, so a pattern sits on it) and the axis shade alone, as STYLE's sun.
+varying vec3 v_pos;
+varying vec3 v_n;
+varying float v_axis;
 
 void vertex() {
 	float level = INSTANCE_CUSTOM.x;
@@ -110,10 +118,22 @@ void vertex() {
 	// Its own line: FractalIFS._variant anchors on the one above, whole.
 	v_u += colour_cycle;
 	v_shade = UV.x * echo_gain * (1.0 + echo_glow * swell);
+	v_pos = VERTEX;
+	v_n = NORMAL;
+	v_axis = UV.x;
 }
 
 void fragment() {
 	// fract() keeps the drifting coordinate precise after minutes of scrolling; the ramp is
 	// built cyclic, first colour repeated at 1.0, so the wrap is not a seam.
-	ALBEDO = texture(ramp, vec2(fract(v_u), 0.5)).rgb * v_shade * brightness;
+	if (art_style > 0) {
+		float u = fract(v_u);
+		// AXIS_SHADE runs 0.66 to 1.0: the brightest axis is in the sun.
+		float lit = clamp((v_axis - 0.6) / 0.4, 0.0, 1.0);
+		float ndv = clamp(dot(normalize(NORMAL), VIEW), 0.0, 1.0);
+		ALBEDO = art_colour(u * neon_bands + 0.5, u * 3.999, v_pos, v_n, lit, 1.0, ndv, length(VERTEX))
+			* (v_shade / max(v_axis, 1e-3)) * brightness;
+	} else {
+		ALBEDO = texture(ramp, vec2(fract(v_u), 0.5)).rgb * v_shade * brightness;
+	}
 }

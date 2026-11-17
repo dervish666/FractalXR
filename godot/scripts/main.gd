@@ -175,9 +175,10 @@ var fly := BulbFly.new()
 ## Mandelbox walked from inside). In BulbFly.World order.
 const FLY_WORLD_NAMES := ["this bulb", "spires", "vault"]
 var fly_world := BulbFly.World.BULB
-## STYLE under FLY's own worlds: how the world is drawn (BulbFly.art).
-const FLY_STYLE_NAMES := ["natural", "neon", "toon", "pencil", "circuit"]
-var fly_style := 0
+## STYLE: how GROUND, IFS, TREES and FLY's own worlds are drawn (styles.gdshaderinc). The
+## global shader parameter art_style carries it to every shader but FLY's, which BulbFly.art sets.
+const ART_NAMES := ["natural", "neon", "toon", "pencil", "circuit"]
+var art := 0
 ## Fastest apparent flight, and the share of the clearance covered a second below it.
 const FLY_MAX_MPS := 1.0
 const FLY_CLEARANCE_PER_S := 0.8
@@ -819,6 +820,7 @@ func _set_mode(kind: String) -> void:
 		_set_ifs_mode(true)
 	help.set_mode(kind)
 	menu.set_mode(kind)
+	_art_sky()
 
 
 ## The tree stands on the floor in front of you and grows. The cloud underneath keeps
@@ -3002,7 +3004,7 @@ func _apply_solid() -> void:
 			spin = false
 		_solid_key = "%s/fly" % FLY_WORLD_NAMES[fly_world]
 		solid.clear()
-		fly.art = fly_style
+		fly.art = art
 		fly.begin_world(fly_world, cloud.center, cloud.fit)
 		_world_place()
 		_world_sky(true)
@@ -3099,11 +3101,29 @@ func _set_fly_world(w: int) -> void:
 
 
 ## STYLE, from the menu. The sky follows the style.
-func _set_fly_style(st: int) -> void:
-	fly_style = st
+func _set_art(st: int) -> void:
+	art = st
+	RenderingServer.global_shader_parameter_set(&"art_style", st)
 	fly.set_art(st)
 	if _in_own_world():
 		_world_sky(true)
+	else:
+		_art_sky()
+
+
+## A STYLE's sky in the modes it dresses, out of passthrough, and GROUND's fog to match; black
+## (or the room) otherwise. FLY's own worlds set theirs in _world_sky.
+func _art_sky() -> void:
+	var env: Environment = $WorldEnvironment.environment
+	var styled := art > 0 and (ground_mode or tree_mode or ifs_mode)
+	var sky: Color = BulbFly.STYLE_SKY.get(art, Color.BLACK) if styled else Color.BLACK
+	ground.set_fog_colour(sky if styled else FractalGround.FOG_COLOUR)
+	if env == null or _in_own_world():
+		return
+	if passthrough:
+		env.background_color = Color(0, 0, 0, 0)
+	else:
+		env.background_color = sky
 
 
 ## Stand the head where the world says it opens (BulbFly.start_pose), level with the floor:

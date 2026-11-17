@@ -42,6 +42,16 @@ static func home(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		false, vis).hinted("Brings it back in front of you")
 
 
+## STYLE: how the world is drawn, natural or one of the art styles (main.gd ART_NAMES).
+static func art(m: FractalMain, vis: Callable) -> WristMenu.Item:
+	return WristMenu.Item.new("look", "STYLE",
+		func(): return FractalMain.ART_NAMES[m.art],
+		func(): m._set_art((m.art + 1) % FractalMain.ART_NAMES.size()),
+		false, vis).stepping(
+		func(d: int): m._set_art(wrapi(m.art + d, 0, FractalMain.ART_NAMES.size()))).hinted(
+		"How the world is drawn")
+
+
 ## SKY hangs or hides the baked sky in every mode (BULB keeps its own switch as well).
 static func sky(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("scene", "SKY",

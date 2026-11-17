@@ -120,6 +120,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		MenuShared.fovea(m, vis),
 		MenuShared.glow(m, vis),
 
+		MenuShared.art(m, vis),
 		MenuShared.theme(m, vis),
 		MenuShared.cycle(m, vis),
 		MenuShared.bands(m, vis),

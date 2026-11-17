@@ -1038,6 +1038,15 @@ func set_sky(height: float) -> void:
 	_sky.position.y = height
 
 
+## Fog's colour: the shader's default, or a STYLE's sky (main.gd _art_sky).
+const FOG_COLOUR := Color(0.02, 0.02, 0.04)
+
+
+func set_fog_colour(c: Color) -> void:
+	if _material != null:
+		_material.set_shader_parameter(&"fog_colour", Vector3(c.r, c.g, c.b))
+
+
 func set_palette(pal: Array) -> void:
 	for i in mini(5, pal.size()):
 		_material.set_shader_parameter(_PAL_NAMES[i], pal[i])

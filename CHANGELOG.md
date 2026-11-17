@@ -21,6 +21,10 @@ All notable changes to FractalXR are documented here. Format based on
   pencil (graphite hatching on paper, crossed in the shade) and circuit (copper traces, pads
   and the odd lit LED on a green board). Patterns stick to the fractal and keep their size
   on screen as you shrink.
+- STYLE is now a tile in GROUND, TREES and IFS too, one setting across modes. GROUND's
+  neon glows along its topographic lines; IFS frames get outlines and per-frame colour.
+  Strokes and traces on GROUND lie in world metres: they hold still as you walk and slide
+  during a zoom. Pencil trees draw without leaves (the leaves add light, and paper is white).
 
 ### Store readiness, 2026-11-13
 
