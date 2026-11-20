@@ -1,7 +1,7 @@
 extends SceneTree
 
 ## Cross-checks BulbSource's CPU distance estimates against the march shader's own
-## code. The shader's DE section is cut out of march.gdshader verbatim and compiled as
+## code. The DE section is cut out of bulb_de.gdshaderinc verbatim and compiled as
 ## a canvas shader that writes de(p) for 64 points into a 64x1 viewport, 24 bits per
 ## value; the CPU side evaluates the same points and the difference is reported per
 ## formula. A control with a deliberately wrong parameter must FAIL, and pixel 63
@@ -26,17 +26,15 @@ func _init() -> void:
 		print("DECHECK FAIL presets: %s" % _lib.load_error)
 		quit(1)
 		return
-	var src := FileAccess.get_file_as_string("res://shaders/march.gdshader")
+	# The marcher and SOLID's PIXEL include the DEs from one file; check that file.
+	var src := FileAccess.get_file_as_string("res://shaders/bulb_de.gdshaderinc")
 	var u0 := src.find("uniform float power")
-	var u1 := src.find("varying mat4")
-	var d0 := src.find("// --- distance estimators")
 	var d1 := src.find("vec3 deGrad")
-	if u0 < 0 or u1 < 0 or d0 < 0 or d1 < 0:
-		print("DECHECK FAIL could not cut the DE section out of march.gdshader")
+	if u0 < 0 or d1 < 0:
+		print("DECHECK FAIL could not cut the DE section out of bulb_de.gdshaderinc")
 		quit(1)
 		return
-	var code := "shader_type canvas_item;\n" + src.substr(u0, u1 - u0) + "\n" \
-		+ src.substr(d0, d1 - d0) + """
+	var code := "shader_type canvas_item;\n" + src.substr(u0, d1 - u0) + """
 uniform vec3 pts[64];
 void fragment() {
 	int i = int(UV.x * 64.0);

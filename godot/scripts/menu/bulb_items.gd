@@ -4,6 +4,8 @@ extends RefCounted
 
 enum {SPLATS, LINES, SOLID, MARCHED, FLY}
 const STYLE_NAMES := ["splats", "lines", "solid", "marched", "fly"]
+## PIXEL steps, as BulbSolid.pixel_detail counts them.
+const PIXEL_NAMES := ["off", "shape", "+ colour", "+ march"]
 const QUALITY_WORDS := ["low", "mid", "high"]
 
 
@@ -68,6 +70,14 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, func(): return vis.call() and style(m) != SPLATS and style(m) != FLY).stepping(
 			func(d: int): step_quality(m, mem, d)).minor().hinted(
 			"Finer surface, more frame time"),
+		# SOLID's per-pixel surface (bulb_solid.gdshader, PIXEL): off, then each step adds work.
+		WristMenu.Item.new("look", "PIXEL",
+			func(): return PIXEL_NAMES[m.solid.pixel_detail],
+			func(): m.solid.set_pixel_detail((m.solid.pixel_detail + 1) % PIXEL_NAMES.size()),
+			false, func(): return vis.call() and style(m) == SOLID).stepping(
+			func(d: int): m.solid.set_pixel_detail(wrapi(m.solid.pixel_detail + d, 0, PIXEL_NAMES.size()))
+			).slider(func(): return m.solid.pixel_detail, PIXEL_NAMES.size()).hinted(
+			"Shades every pixel from the true surface"),
 		MenuShared.splat(m, vis),
 		MenuShared.adapt(m, vis),
 		MenuShared.opacity(m, vis),

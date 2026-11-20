@@ -77,6 +77,22 @@ uniform int shadow_steps = 40;
 uniform int pixel_trap = 0;
 uniform float pixel_trap_m = 14.0;
 #include "res://shaders/fly_de.gdshaderinc"
+// PIXEL (scripts/sources/bulb_solid.gd; option S6 in the vault's bulb display notes): the
+// mesh sits within a cell of the true surface, so a pixel can afford the last stretch of the
+// march itself and shade from the DE there: the normal, the colour's trap and a short AO probe
+// per pixel, where the vertices carry them a cell (about 6 mm on a hand-sized bulb) apart.
+// Nothing is kept between frames and both eyes march the same surface, so it cannot ghost
+// or disagree in stereo. Depth stays the mesh's (the march moves the point well under a cell),
+// which keeps early depth. Fades back to the vertex terms once a pixel spans a cell.
+//   0 off, 1 normal and AO probe, 2 and the colour's trap, 3 and the march onto the surface.
+// The trap per pixel draws fine agate rings the vertices smoothed over (a four-tap mean half a
+// cell wide); its own step so the headset can say whether they read as detail or crawl.
+uniform int pixel_detail = 0;
+uniform float solid_iso = 0.0;     // the extracted level set, DE = iso, state units
+uniform float solid_cell = 0.01;   // the build's cell size, state units
+uniform float inside_mode = 1.0;   // BulbSolid.inside_mode: a point that never escaped is solid
+uniform int detail_steps = 8;
+#include "res://shaders/bulb_de.gdshaderinc"
 
 varying float v_trap;
 varying float v_ao;
@@ -86,6 +102,30 @@ varying vec3 v_state;
 varying vec3 v_nstate;
 // CYCLE's colour, per vertex (see vertex()).
 varying vec3 v_cycled;
+// Key light direction in view space, constant per eye/draw.
+varying flat vec3 v_light;
+
+// bulb.glsl deSolid(): the escape-time families are loose inside, so with inside_mode a point
+// that never escaped counts as on the surface whatever its DE says.
+float de_solid(vec3 q, float lod, out vec4 r) {
+	r = de(q, lod);
+	bool signed_de = (formula > 1.5 && formula < 2.5) || formula > 3.5;
+	if (signed_de || inside_mode < 0.5) return r.x;
+	return (r.w > 0.5) ? r.x : 0.0;
+}
+
+// The DE's gradient from four taps and, averaged over them, its other channels: the same
+// trick as bulb.glsl's solidGrad, here at the pixel's footprint, so the trap is filtered over
+// the pixel and needs no fifth evaluation.
+vec3 grad_mean(vec3 q, float e, float lod, out vec4 mean) {
+	vec2 k = vec2(1.0, -1.0);
+	vec4 a = de(q + k.xyy * e, lod);
+	vec4 b = de(q + k.yyx * e, lod);
+	vec4 c = de(q + k.yxy * e, lod);
+	vec4 d = de(q + k.xxx * e, lod);
+	mean = 0.25 * (a + b + c + d);
+	return normalize(k.xyy * a.x + k.yyx * b.x + k.yxy * c.x + k.xxx * d.x);
+}
 
 float equalise(float x) {
 	float f = clamp(x, 0.0, 1.0) * 64.0;
@@ -128,6 +168,7 @@ void vertex() {
 	v_sh = CUSTOM1.y;
 	v_state = VERTEX;
 	v_nstate = CUSTOM0.xyz;
+	v_light = normalize((MODELVIEW_MATRIX * vec4(light_dir, 0.0)).xyz);
 	// Model space in, view space out: Godot carries NORMAL through MODELVIEW.
 	NORMAL = CUSTOM0.xyz;
 	// CYCLE's colour per vertex: the scrolled ramp at the unscrolled one's luma. Per pixel it cost
@@ -144,32 +185,57 @@ void vertex() {
 
 void fragment() {
 	vec3 n = normalize(NORMAL);
-	vec3 l = normalize((VIEW_MATRIX * MODEL_MATRIX * vec4(light_dir, 0.0)).xyz);
+	float trap = v_trap;
+	float ao_px = 1.0;
+	if (pixel_detail > 0) {
+		// State units a pixel spans here: the DE's detail cutoff and the fade.
+		float fp = length(fwidth(v_state));
+		float near_px = 1.0 - smoothstep(0.6 * solid_cell, 1.5 * solid_cell, fp);
+		if (near_px > 0.0) {
+			float lod = 0.5 * fp;
+			float eps = max(lod, 0.02 * solid_cell);
+			vec3 p = v_state;
+			vec4 r;
+			if (pixel_detail >= 3) {
+				// From a cell and a half back toward the eye, sphere-trace forward. The model
+				// matrix is a similarity, so its transpose turns a world direction into state.
+				vec3 rd = normalize(transpose(mat3(MODEL_MATRIX)) * (mat3(INV_VIEW_MATRIX) * normalize(VERTEX)));
+				vec3 o = v_state - rd * 1.5 * solid_cell;
+				float t = 0.0;
+				for (int i = 0; i < detail_steps; i++) {
+					float d = de_solid(o + rd * t, lod, r) - solid_iso;
+					if (d < eps) { p = o + rd * t; break; }
+					t += d;
+					if (t > 3.0 * solid_cell) break;
+				}
+			}
+			vec4 mean;
+			vec3 nm = grad_mean(p, eps, lod, mean);
+			n = normalize(mix(n, normalize(mat3(VIEW_MATRIX * MODEL_MATRIX) * nm), near_px));
+			// The colour key bulb.glsl's VERTS pass stores.
+			if (pixel_detail >= 2)
+				trap = mix(v_trap, clamp((mean.y * 0.7 + mean.z * 0.5) * 0.45, 0.0, 1.0), near_px);
+			{
+				// Three probes out along the normal at 1, 2 and 4 cells: what a crevice the
+				// vertex AO rays straddle looks like up close.
+				float occ = 0.0;
+				float h = solid_cell;
+				float w = 1.0;
+				for (int i = 0; i < 3; i++) {
+					float d = de(p + nm * h, lod).x - solid_iso;
+					occ += w * clamp((h - d) / h, 0.0, 1.0);
+					h *= 2.0;
+					w *= 0.5;
+				}
+				ao_px = mix(1.0, clamp(1.0 - 0.55 * occ, 0.0, 1.0), near_px);
+			}
+		}
+	}
+	vec3 l = v_light;
 	float ndl = max(dot(n, l), 0.0);
 	float ndv = clamp(dot(n, VIEW), 0.0, 1.0);
 
-	vec3 albedo;
-	float trap = v_trap;
-	if (pixel_trap > 0) {
-		float near = 1.0 - smoothstep(pixel_trap_m, pixel_trap_m * 1.5, length(VERTEX));
-		if (near > 0.0)
-			trap = mix(v_trap, fly_trap(v_state), near);
-	}
-	if (colour_cycle > 0.0 && palette_cycles < 1.5) {
-		albedo = v_cycled;
-	} else {
-		float eq = equalise(trap);
-		albedo = palette(cycle_u(eq));
-		if (colour_cycle > 0.0)
-			albedo = keep_luma(albedo, dot(palette(fract(eq * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
-	}
-	float lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-	albedo *= mix(lum, 0.5, flatten) / max(lum, 0.03);
-	// The tonemapper bleaches what the key lifts; push chroma back so gold stays gold.
-	float lum2 = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
-	albedo = max(mix(vec3(lum2), albedo, saturation), vec3(0.0));
-
-	float ao = v_ao * v_ao;   // a sharper falloff into the crevices, as AO strength 2.2 is
+	float ao = v_ao * v_ao * ao_px;   // a sharper falloff into the crevices, as AO strength 2.2 is
 	float sh = v_sh;
 	if (pixel_shadow > 0 && ndl > 0.0 && sh > 0.03 && sh < 0.97) {
 		vec3 o = v_state + normalize(v_nstate) * shadow_cell;
@@ -185,28 +251,58 @@ void fragment() {
 	}
 	if (debug_view == 4) sh = (pixel_shadow > 0 && v_sh > 0.03 && v_sh < 0.97) ? 1.0 : 0.0;
 	float lit = ndl * sh;
-	vec3 c = albedo * (ambient * ao * sky_tint + key * lit * key_colour * mix(0.6, 1.0, v_ao));
-	// Metal, not plastic: a broad sheen tinted by the surface and a tight glint that stays
-	// mostly the surface's colour. Plastic's highlight is white.
-	vec3 hv = normalize(l + VIEW);
-	float ndh = max(dot(n, hv), 0.0);
-	c += albedo * sheen * pow(ndh, shininess) * lit;
-	c += mix(albedo, vec3(1.0), 0.3) * gloss * pow(ndh, 90.0) * lit;
-	c += glow_colour * pow(1.0 - ndv, 3.0) * rim * v_ao;
-	if (head_light > 0.0) {
-		float fall = lamp_m * lamp_m / (lamp_m * lamp_m + dot(VERTEX, VERTEX));
-		c += albedo * key_colour * head_light * ndv * fall * mix(0.4, 1.0, v_ao);
-	}
-	ALBEDO = c * gain * grow * tint;
-	if (art_style > 0) {
+
+	vec3 albedo = vec3(0.0);
+	if (art_style > 0 && debug_view == 0) {
 		float dist = length(VERTEX);
 		float near = 1.0 - smoothstep(0.5 * neon_far, neon_far, dist);
+		if (pixel_trap > 0) {
+			float near_t = 1.0 - smoothstep(pixel_trap_m, pixel_trap_m * 1.5, dist);
+			if (near_t > 0.0)
+				trap = mix(v_trap, fly_trap(v_state), near_t);
+		}
 		// Neon's contours come from the key per pixel near the eye; toon's colours only where
 		// the per-pixel key is clean (SPIRES), else by facing (VAULT's per-vertex key is confetti).
 		float key_raw = art_style == 1 && trap_family > 0 && near > 0.0 ? fly_trap(v_state) : trap;
 		float f = equalise(key_raw) * neon_bands + 0.5;
 		float toon_e = pixel_trap > 0 ? equalise(trap) * 3.999 : -1.0;
 		ALBEDO = art_colour(f, toon_e, v_state, v_nstate, lit, ao, ndv, dist) * gain * tint;
+	} else {
+		if (pixel_trap > 0) {
+			float near = 1.0 - smoothstep(pixel_trap_m, pixel_trap_m * 1.5, length(VERTEX));
+			if (near > 0.0)
+				trap = mix(v_trap, fly_trap(v_state), near);
+		}
+		if (colour_cycle > 0.0 && palette_cycles < 1.5) {
+			albedo = v_cycled;
+		} else {
+			float eq = equalise(trap);
+			albedo = palette(cycle_u(eq));
+			if (colour_cycle > 0.0)
+				albedo = keep_luma(albedo, dot(palette(fract(eq * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
+		}
+		float lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+		albedo *= mix(lum, 0.5, flatten) / max(lum, 0.03);
+		// The tonemapper bleaches what the key lifts; push chroma back so gold stays gold.
+		float lum2 = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+		albedo = max(mix(vec3(lum2), albedo, saturation), vec3(0.0));
+
+		vec3 c = albedo * (ambient * ao * sky_tint + key * lit * key_colour * mix(0.6, 1.0, v_ao));
+		// Metal, not plastic: a broad sheen tinted by the surface and a tight glint that stays
+		// mostly the surface's colour. Plastic's highlight is white.
+		if (lit > 0.0) {
+			vec3 hv = normalize(l + VIEW);
+			float ndh = max(dot(n, hv), 0.0);
+			c += albedo * sheen * pow(ndh, shininess) * lit;
+			c += mix(albedo, vec3(1.0), 0.3) * gloss * pow(ndh, 90.0) * lit;
+		}
+		float f1 = 1.0 - ndv;
+		c += glow_colour * (f1 * f1 * f1) * rim * v_ao;
+		if (head_light > 0.0) {
+			float fall = lamp_m * lamp_m / (lamp_m * lamp_m + dot(VERTEX, VERTEX));
+			c += albedo * key_colour * head_light * ndv * fall * mix(0.4, 1.0, v_ao);
+		}
+		ALBEDO = c * gain * grow * tint;
 	}
 	// Squared, so the near city keeps its colour and the haze gathers toward the edge.
 	if (fog_density > 0.0) {
@@ -218,4 +314,5 @@ void fragment() {
 	else if (debug_view == 2) ALBEDO = vec3(sh);
 	else if (debug_view == 5) ALBEDO = albedo;
 	else if (debug_view == 3) ALBEDO = vec3(ndl);
+	else if (debug_view == 6) ALBEDO = vec3(ao_px);
 }

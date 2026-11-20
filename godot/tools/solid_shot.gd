@@ -14,6 +14,7 @@ extends SceneTree
 ##   SOLID_DRIVER=vulkan tools/solid_shot.sh            everything
 ##   SOLID_DRIVER=vulkan tools/solid_shot.sh -- quick   Classic at 192, shots only
 ##   SOLID_DRIVER=vulkan tools/solid_shot.sh -- base    the calibration timings only
+##   SOLID_DRIVER=vulkan tools/solid_shot.sh -- pixel   PIXEL off and on at 128 and 192 (the QUALITY steps), timed
 
 const OUT := "res://.spike-out/solid/"
 const GRIDS := [128, 192, 256]
@@ -31,6 +32,10 @@ var rows: Array = []
 func _init() -> void:
 	var quick := OS.get_cmdline_user_args().has("quick")
 	var base_only := OS.get_cmdline_user_args().has("base")
+	# PIXEL across mesh resolutions: off and on at each grid, timed, with close-ups.
+	var pixel_grids := OS.get_cmdline_user_args().has("pixel")
+	if pixel_grids:
+		quick = true
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var scene: PackedScene = load("res://main.tscn")
 	main = scene.instantiate()
@@ -55,11 +60,14 @@ func _init() -> void:
 		# re-home from the measured fit, and the mesh is drawn through the eased one.
 		for i in 400:
 			await process_frame
-		for n in ([192] if quick else GRIDS):
+		for n in ([128, 192] if pixel_grids else [192] if quick else GRIDS):
 			ok = await _build(bname, n) and ok
 			_shot("%s_solid_%d.png" % [bname.to_lower(), n])
-			if n == 192:
+			if pixel_grids:
+				ok = await _pixel_views(bname, n) and ok
+			elif n == 192:
 				await _debug_views(bname, n)
+				ok = await _pixel_views(bname, n) and ok
 			if not quick:
 				rows[-1]["eye_ms_msaa4"] = await _time_eye()
 				main._set_solid_msaa(false)
@@ -187,6 +195,49 @@ func _debug_views(bname: String, n: int) -> void:
 			await process_frame
 		_shot("%s_solid_%d_%s.png" % [bname.to_lower(), n, ["", "ao", "shadow", "ndl"][dv]])
 	m.set_shader_parameter("debug_view", 0)
+
+
+## PIXEL: each level at the taste-test framing, then off and the full level through a long
+## lens, where a pixel is a fraction of a cell and the per-pixel surface has something to add.
+## Control: the close-ups must differ, or PIXEL drew nothing.
+func _pixel_views(bname: String, n: int) -> bool:
+	var stem := "%s_solid_%d" % [bname.to_lower(), n]
+	for lvl in [1, 2, 3]:
+		main.solid.set_pixel_detail(lvl)
+		for i in 3:
+			await process_frame
+		_shot("%s_px%d.png" % [stem, lvl])
+	# The cost, where timestamps exist (MoltenVK): one Quest-sized eye at this framing.
+	var ms := []
+	for lvl in [0, 1, 2, 3]:
+		main.solid.set_pixel_detail(lvl)
+		ms.append(await _time_eye())
+	print("SOLIDSHOT %s pixel eye_ms off/shape/colour/march %s" % [bname,
+		", ".join(ms.map(func(v): return "%.2f" % v))])
+	var fov: float = main.xr_camera.fov
+	main.xr_camera.fov = 12.0
+	var shots: Array[Image] = []
+	for lvl in [0, 3]:
+		main.solid.set_pixel_detail(lvl)
+		for i in 3:
+			await process_frame
+		_shot("%s_close_px%d.png" % [stem, lvl])
+		shots.append(root.get_viewport().get_texture().get_image())
+	main.xr_camera.fov = fov
+	main.solid.set_pixel_detail(0)
+	var moved := 0
+	var total := 0
+	for y in range(0, shots[0].get_height(), 8):
+		for x in range(0, shots[0].get_width(), 8):
+			var a := shots[0].get_pixel(x, y)
+			var b := shots[1].get_pixel(x, y)
+			total += 1
+			if absf(a.get_luminance() - b.get_luminance()) > 0.04:
+				moved += 1
+	var share := float(moved) / float(maxi(1, total))
+	var good := share > 0.02
+	print("SOLIDSHOT %s pixel %s close-up moved %.3f" % [bname, "PASS" if good else "FAIL", share])
+	return good
 
 
 func _shot(file: String) -> void:

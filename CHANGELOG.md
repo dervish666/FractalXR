@@ -5,6 +5,25 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Sky and coast, 2026-11-18
+
+- RELIEF on GROUND gains COAST: the contour lines become heights. Each line out from the
+  set's edge climbs a step (the count falls by one each time the distance to the set
+  doubles), so the open exterior rises into hills and uplands, every pocket between
+  filaments is a hill with its ridge down the middle, and the filaments themselves lie flat
+  as a beach beside the set's dark sea. Picking COAST with HEIGHT flat lifts HEIGHT to 1x.
+  tools/coast_shot.sh renders it against TERRAIN. Untested on a headset.
+- SKY PICK on GROUND gains MANDEL: the current family over the whole sky, with the plane on
+  the Riemann sphere and infinity under your feet, coloured by the ground's palette. Point
+  above the horizon and hold a trigger to zoom the sky there, right in and left out; HOME
+  resets it. A SKY GLOW tile sets its brightness. While the trigger is held the sky refills
+  at low resolution every few frames, then at 3k once you stop, so a zoom no longer smears.
+  The zoom stops at about 1000x (float32).
+- BULB SOLID gains PIXEL (off by default): per-pixel normals, crevice shading and trap colour
+  from the distance estimate on top of the mesh, optionally a short march. It looks clearly
+  better, but Mac timings scale to about 20 ms a frame on the Quest at grid 128. Unmeasured
+  on a headset.
+
 ### FLY spike, 2026-11-17
 
 - GROUND gains NEAR (look card, off by default): where a texel of the ground's data spans

@@ -170,6 +170,7 @@ float flutter_phase(vec3 w0) {
 }
 
 vec3 sway(vec3 w, float phase) {
+	if (wind <= 0.0 || sway_gain <= 0.0) return w;
 	float h = clamp(dot(w - tree_origin, tree_up) / max(tree_height * tree_scale, 1e-3), 0.0, 1.5);
 	float t = TIME + sway_phase;
 	float g = sin(t * 0.7) * 0.6 + sin(t * 1.9 + h * 2.0) * 0.25 + sin(t * 3.1 + phase) * 0.15;
@@ -217,29 +218,33 @@ void vertex() {
 
 void fragment() {
 	float u = clamp(v_u, 0.0, 1.0);
-	vec3 root = mix(pal0, pal1, trunk_lift);
-	float phase = (batch ? v_phase : palette_phase) + colour_cycle;
-	float bh = batch ? v_bark_hue : bark_hue;
-	vec3 tip = mix(pal2, pal3, 1.0 - abs(fract(phase) * 2.0 - 1.0));
-	vec3 base = (u < 0.5) ? mix(root, pal1, u * 2.0) : mix(pal1, tip, (u - 0.5) * 2.0);
-	if (bark_mix > 0.0 || bh != 0.0) {
-		base = max(hue_turn(base, bh), vec3(0.0));
-		float luma = dot(base, vec3(0.299, 0.587, 0.114));
-		base = mix(base, bark_tint * max(luma * 1.6, 0.05), bark_mix);
-	}
-	if (bark_style > 0 && !batch) {
-		base = bark(base, v_bark, tip);
-	}
 	vec3 n = normalize(v_normal_w);
-	vec3 key = normalize(vec3(0.5, 0.8, 0.3));
-	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
+	const vec3 KEY = vec3(0.505076, 0.808122, 0.303046);   // normalize(0.5, 0.8, 0.3)
+	vec3 to_cam = CAMERA_POSITION_WORLD - v_world;
+	float cam_dist = length(to_cam);
+	vec3 V = to_cam / max(cam_dist, 1e-6);
 	float ndv = max(dot(n, V), 0.0);
-	float diff = 0.6 * max(dot(n, key), 0.0) + 0.4 * ndv;
-	float rim = pow(1.0 - ndv, 3.0);
-	ALBEDO = (base * (0.25 + 0.75 * diff) + pal3 * rim * 0.35 * u) * brightness;
+	float diff = 0.6 * max(dot(n, KEY), 0.0) + 0.4 * ndv;
 	if (art_style > 0) {
 		// Rings up the tree for neon's lines, and toon's colours by height.
 		ALBEDO = art_colour(u * neon_bands + 0.5, u * 3.999, v_tpos, n, diff, 1.0, ndv,
-			length(v_world - CAMERA_POSITION_WORLD)) * brightness;
+			cam_dist) * brightness;
+	} else {
+		vec3 root = mix(pal0, pal1, trunk_lift);
+		float phase = (batch ? v_phase : palette_phase) + colour_cycle;
+		float bh = batch ? v_bark_hue : bark_hue;
+		vec3 tip = mix(pal2, pal3, 1.0 - abs(fract(phase) * 2.0 - 1.0));
+		vec3 base = (u < 0.5) ? mix(root, pal1, u * 2.0) : mix(pal1, tip, (u - 0.5) * 2.0);
+		if (bark_mix > 0.0 || bh != 0.0) {
+			base = max(hue_turn(base, bh), vec3(0.0));
+			float luma = dot(base, vec3(0.299, 0.587, 0.114));
+			base = mix(base, bark_tint * max(luma * 1.6, 0.05), bark_mix);
+		}
+		if (bark_style > 0 && !batch) {
+			base = bark(base, v_bark, tip);
+		}
+		float f1 = 1.0 - ndv;
+		float rim = f1 * f1 * f1;
+		ALBEDO = (base * (0.25 + 0.75 * diff) + pal3 * rim * 0.35 * u) * brightness;
 	}
 }

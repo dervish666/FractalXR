@@ -12,18 +12,9 @@ render_mode unshaded, cull_front, depth_draw_always, fog_disabled, shadows_disab
 // MODELVIEW in the vertex stage: that matrix is per eye under multiview, so the two
 // eyes get their own origins with nothing left to guess about CAMERA_POSITION_WORLD.
 //
-// The DE functions are a straight port of bulb.glsl; keep them in step.
+// The DE functions are in bulb_de.gdshaderinc, a straight port of bulb.glsl; keep them in step.
 
-uniform float power = 8.0;
-uniform vec3 julia_c = vec3(0.0);
-uniform float mandelbulb = 1.0;   // 1 = c is the point, 0 = Julia constant
-uniform float formula = 0.0;      // 0 bulb, 1 box, 2 kifs, 3 quat, 4 sierpinski
-uniform float scale = 2.0;
-uniform float min_r = 0.5;
-uniform float fixed_r = 1.0;
 uniform float bound = 1.3;
-uniform float k_angle_a = 0.0;
-uniform float k_angle_b = 0.0;
 
 uniform vec3 cloud_center = vec3(0.0);
 uniform float cloud_fit = 1.0;
@@ -39,8 +30,10 @@ uniform float gain = 1.0;
 uniform int max_steps = 64;
 
 // Fragment VERTEX is view-space in Godot's spatial pipeline. Keep the per-eye inverse
-// model-view matrix from the vertex stage to turn that view ray into state/local space.
-varying mat4 v_inv_mv;
+// model-view rotation, state-space ray origin and scale flat from the vertex stage.
+varying flat mat3 v_inv_mv3;
+varying flat vec3 v_ro;
+varying flat float v_mscale;
 
 // Metres from the eye the box's vertices are pulled in to. ENTER scales the cloud by
 // up to 60x, which puts the box's back faces a kilometre out, past the camera's far
@@ -51,140 +44,17 @@ varying mat4 v_inv_mv;
 const float VERTEX_REACH = 90.0;
 
 void vertex() {
-	v_inv_mv = inverse(MODELVIEW_MATRIX);
-	vec3 eye_l = (v_inv_mv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	mat4 inv_mv = inverse(MODELVIEW_MATRIX);
+	vec3 eye_l = inv_mv[3].xyz;
+	v_inv_mv3 = mat3(inv_mv);
+	v_ro = eye_l / cloud_fit + cloud_center;
+	v_mscale = 1.0 / max(length(inv_mv[0].xyz), 1e-9);
 	vec3 to_v = VERTEX - eye_l;
 	float d = length((MODELVIEW_MATRIX * vec4(to_v, 0.0)).xyz);
 	if (d > VERTEX_REACH) { VERTEX = eye_l + to_v * (VERTEX_REACH / d); }
 }
 
-// --- distance estimators, ported from bulb.glsl -------------------------------
-
-vec4 mandelbulbDE(vec3 q, float lod) {
-	vec3 z = q;
-	vec3 c = (mandelbulb > 0.5) ? q : julia_c;
-	float dr = 1.0;
-	float r = length(z);
-	float trapR = 1e10, trapY = 1e10, esc = 0.0;
-	for (int i = 0; i < 8; i++) {
-		r = length(z);
-		if (r > 2.0) { esc = 1.0; break; }
-		float rr = max(r, 1e-9);
-		float theta = acos(clamp(z.z / rr, -1.0, 1.0));
-		float phi = atan(z.y, z.x);
-		// dc/dp is 1 only when c is the point; a Julia constant adds nothing to the derivative.
-		dr = pow(rr, power - 1.0) * power * dr + mandelbulb;
-		float zr = pow(rr, power);
-		theta *= power; phi *= power;
-		z = zr * vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + c;
-		trapR = min(trapR, length(z));
-		trapY = min(trapY, abs(z.y));
-		if (lod > 0.0 && i >= 3) { float est = 0.5 * log(max(length(z), 1e-9)) * length(z) / max(dr, 1e-6); if (est > 0.0 && est < lod) { r = length(z); break; } }
-	}
-	return vec4(0.5 * log(max(r, 1e-9)) * r / max(dr, 1e-6), trapR, trapY, esc);
-}
-
-vec4 mandelboxDE(vec3 q, float lod) {
-	vec3 offset = (mandelbulb > 0.5) ? q : julia_c;
-	vec3 z = q;
-	float dr = 1.0;
-	float trapR = 1e10, trapY = 1e10, esc = 0.0;
-	float minR2 = min_r * min_r;
-	float fixedR2 = fixed_r * fixed_r;
-	for (int i = 0; i < 10; i++) {
-		z = clamp(z, -1.0, 1.0) * 2.0 - z;
-		float r2 = dot(z, z);
-		if (r2 < minR2) { float t = fixedR2 / minR2; z *= t; dr *= t; }
-		else if (r2 < fixedR2) { float t = fixedR2 / r2; z *= t; dr *= t; }
-		z = scale * z + offset;
-		dr = dr * abs(scale) + mandelbulb;   // + dc/dp, 0 for a Julia constant
-		// Bailout at |z|=100, not 6: length(z)/dr is only a distance bound once z has
-		// escaped far, and at 36 it overestimated at 97% of sampled points (the marcher
-		// stepped through walls and painted noise). Ten iterations still reach it.
-		if (dot(z, z) > 1e4) { esc = 1.0; break; }
-		trapR = min(trapR, length(z));
-		trapY = min(trapY, abs(z.y));
-		// Detail cutoff: once the estimate is under the pixel footprint the remaining
-		// folds only add dust finer than the screen can show, and that dust is what
-		// speckled the marched surface at every distance. The fewer-iteration set
-		// contains the true set, so its estimate is still a valid lower bound.
-		if (lod > 0.0 && i >= 3 && dot(z, z) < lod * lod * dr * dr) { break; }
-	}
-	return vec4(length(z) / max(abs(dr), 1e-6), trapR, trapY, esc);
-}
-
-void kRotX(inout vec3 z, float a) { float s = sin(a), c = cos(a); z.yz = vec2(c * z.y - s * z.z, s * z.y + c * z.z); }
-void kRotZ(inout vec3 z, float a) { float s = sin(a), c = cos(a); z.xy = vec2(c * z.x - s * z.y, s * z.x + c * z.y); }
-
-vec4 kifsDE(vec3 q, float lod) {
-	vec3 z = q;
-	vec3 off = julia_c;
-	float s = scale;
-	float dr = 1.0;
-	float trapR = 1e10, trapY = 1e10;
-	bool tetra = formula > 3.5;
-	for (int i = 0; i < 12; i++) {
-		kRotX(z, k_angle_a);
-		if (tetra) {
-			if (z.x + z.y < 0.0) z.xy = -z.yx;
-			if (z.x + z.z < 0.0) z.xz = -z.zx;
-			if (z.y + z.z < 0.0) z.yz = -z.zy;
-		} else {
-			z = abs(z);
-			if (z.x - z.y < 0.0) z.xy = z.yx;
-			if (z.x - z.z < 0.0) z.xz = z.zx;
-			if (z.y - z.z < 0.0) z.yz = z.zy;
-		}
-		kRotZ(z, k_angle_b);
-		z = z * s - off * (s - 1.0);
-		dr *= s;
-		trapR = min(trapR, length(z));
-		trapY = min(trapY, abs(z.y));
-		if (lod > 0.0 && i >= 3) { float est = (length(z) - fixed_r) / abs(dr); if (est > 0.0 && est < lod) { break; } }
-	}
-	return vec4((length(z) - fixed_r) / abs(dr), trapR, trapY, 0.0);
-}
-
-vec4 quatSqr(vec4 q) { return vec4(q.x * q.x - dot(q.yzw, q.yzw), 2.0 * q.x * q.yzw); }
-
-vec4 quatDE(vec3 pos, float lod) {
-	vec4 z = vec4(pos, 0.0);
-	vec4 c = (mandelbulb > 0.5) ? z : vec4(julia_c, 0.0);
-	float md2 = 1.0;
-	float m2 = dot(z, z);
-	float trapR = 1e10, trapY = 1e10, esc = 0.0;
-	for (int i = 0; i < 11; i++) {
-		// |dz'| <= 2|z||dz| + dc/dp; with a Julia constant this is the old 4 m2 md2.
-		md2 = pow(2.0 * sqrt(m2 * md2) + mandelbulb, 2.0);
-		z = quatSqr(z) + c;
-		m2 = dot(z, z);
-		trapR = min(trapR, length(z.xyz));
-		trapY = min(trapY, abs(z.y));
-		if (m2 > 256.0) { esc = 1.0; break; }
-		if (lod > 0.0 && i >= 3) { float est = 0.25 * log(m2) * sqrt(m2 / md2); if (est > 0.0 && est < lod) { break; } }
-	}
-	// At the origin a Julia's md2 is 0 (z = 0 is a critical point) and a Mandelbrot's m2
-	// stays 0: inf or 0/0. BulbSource.de reads that as 0, inside the set; match it.
-	// Self-compare for NaN, because mobile isnan is unreliable.
-	float dist = 0.25 * log(m2) * sqrt(m2 / md2);
-	if (dist != dist || abs(dist) > 1e30) dist = 0.0;
-	return vec4(dist, trapR, trapY, esc);
-}
-
-// lod: detail cutoff in state units, 0 for every iteration.
-vec4 de(vec3 q, float lod) {
-	if (formula > 3.5) return kifsDE(q, lod);
-	if (formula > 2.5) return quatDE(q, lod);
-	if (formula > 1.5) return kifsDE(q, lod);
-	return (formula > 0.5) ? mandelboxDE(q, lod) : mandelbulbDE(q, lod);
-}
-
-vec3 deGrad(vec3 q, float e, float lod) {
-	vec2 k = vec2(1.0, -1.0);
-	return normalize(
-		k.xyy * de(q + k.xyy * e, lod).x + k.yyx * de(q + k.yyx * e, lod).x +
-		k.yxy * de(q + k.yxy * e, lod).x + k.xxx * de(q + k.xxx * e, lod).x);
-}
+#include "res://shaders/bulb_de.gdshaderinc"
 
 vec3 palette(float u) {
 	u = clamp(u, 0.0, 1.0) * 4.0;
@@ -216,9 +86,9 @@ void fragment() {
 	// Ray in the cloud's local space, then into state (DE) space. State space is a
 	// uniform scale and offset of local, so directions carry over unchanged. In the
 	// fragment stage VERTEX is already the eye-to-fragment direction in VIEW space.
-	vec3 ro_l = (v_inv_mv * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	vec3 rd = normalize((v_inv_mv * vec4(normalize(VERTEX), 0.0)).xyz);
-	vec3 ro = ro_l / cloud_fit + cloud_center;
+	vec3 vdir = normalize(VERTEX);
+	vec3 rd = normalize(v_inv_mv3 * vdir);
+	vec3 ro = v_ro;
 
 	// Start at the bounding sphere, or at the eye when the head is inside it. `bound` is
 	// already march_bound(), 8-15% past the measured extent, and the extra 1.15 looks
@@ -286,8 +156,8 @@ void fragment() {
 	// lighting consistent rather than leaving one formula lit from behind.
 	if (dot(n, v) < 0.0) n = -n;
 	float ndv = max(dot(n, v), 0.0);
-	vec3 key = normalize(vec3(0.5, 0.85, 0.3));
-	float ndk = max(dot(n, key), 0.0);
+	const vec3 KEY = vec3(0.485643, 0.825593, 0.291386);   // normalize(0.5, 0.85, 0.3)
+	float ndk = max(dot(n, KEY), 0.0);
 	// Depth complexity as a second occlusion cue: rays that crawled in took many steps.
 	float crawl = 1.0 - 0.5 * float(steps) / float(max_steps);
 	// The crawl term is a free, stable cavity cue. An additional DE probe here was a
@@ -305,15 +175,15 @@ void fragment() {
 	vec3 albedo = palette(cycle_u(col));
 	if (colour_cycle > 0.0)
 		albedo = keep_luma(albedo, dot(palette(fract(col * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
-	float fres = pow(1.0 - ndv, 3.0);
+	float f1 = 1.0 - ndv;
+	float fres = f1 * f1 * f1;
 	vec3 c = albedo * (0.16 + 0.6 * ndv + 0.4 * ndk) * ao * crawl
 		+ pal4 * fres * 0.3 * ao;
 	ALBEDO = c * gain;
 
 	// VERTEX is the view-space ray. t is in state units, so apply the state/local fit
 	// and the cloud's uniform node scale before writing its real depth.
-	float mscale = 1.0 / max(length(v_inv_mv[0].xyz), 1e-9);
-	vec3 hit_view = normalize(VERTEX) * (t * cloud_fit * mscale);
+	vec3 hit_view = vdir * (t * cloud_fit * v_mscale);
 	vec4 clip = PROJECTION_MATRIX * vec4(hit_view, 1.0);
 	DEPTH = clip.z / clip.w;
 }

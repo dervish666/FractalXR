@@ -20,6 +20,13 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).hinted("Back to where this family opened"),
 		MenuShared.sky(m, vis),
 		MenuShared.sky_pick(m, vis),
+		# MANDEL (mandel_sky.gd): how bright it stands against the floor. Only while it is picked.
+		WristMenu.Item.new("scene", "SKY GLOW",
+			func(): return m.flame_sky.mandel.gain_name(),
+			func(): m.flame_sky.mandel.step_gain(1),
+			false, func(): return vis.call() and m.flame_sky.is_mandel()).stepping(
+			func(d: int): m.flame_sky.mandel.step_gain(d)).minor().hinted(
+			"How bright the Mandelbrot sky shines"),
 		MenuShared.turn(m, vis),
 		MenuShared.vignette(m, vis),
 
@@ -47,12 +54,8 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			"Detail at deep zoom, slower to fill"),
 		WristMenu.Item.new("look", "RELIEF",
 			func(): return FractalMain.GROUND_RELIEF[m.ground_relief_idx],
-			func():
-				m.ground_relief_idx = (m.ground_relief_idx + 1) % FractalMain.GROUND_RELIEF.size()
-				m._apply_ground_look(),
-			false, vis).stepping(func(d: int):
-				m.ground_relief_idx = wrapi(m.ground_relief_idx + d, 0, FractalMain.GROUND_RELIEF.size())
-				m._apply_ground_look()).hinted("How the height is shaped"),
+			func(): m._step_ground_relief(1),
+			false, vis).stepping(func(d: int): m._step_ground_relief(d)).hinted("How the height is shaped"),
 		WristMenu.Item.new("look", "HEIGHT",
 			func():
 				var h: float = FractalMain.GROUND_HEIGHT[m.ground_height_idx]

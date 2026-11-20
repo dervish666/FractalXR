@@ -169,9 +169,9 @@ vec4 escape(vec2 c, vec2 z0) {
 		if (p.tex_on > 0.5 && i > 1) {
 			minAxis = min(minAxis, min(abs(z.x), abs(z.y)));
 			// Triangle inequality on z = f(zp) + c: | |f(zp)| - |c| | <= |z| <= |f(zp)| + |c|.
-			// |f(zp)| is |zp|^degree (the folds keep |zp|). Using |zp|^2 for every family
-			// pinned t to 0 or 1 on the cubic and quartic, and their texture came out flat.
-			float azp2 = pow(dot(zp, zp), 0.5 * degree_of(p.formula));
+			// |f(zp)| is |zp|^degree (the folds keep |zp|). Avoid pow() inside the hot loop.
+			float zp2 = dot(zp, zp);
+			float azp2 = p.formula == F_CUBIC ? zp2 * sqrt(zp2) : (p.formula == F_QUARTIC ? zp2 * zp2 : zp2);
 			float lo = abs(azp2 - ac);
 			float hi = azp2 + ac;
 			float t = (sqrt(m2) - lo) / max(1e-12, hi - lo);
@@ -359,7 +359,8 @@ vec4 escape_df(vec2 cx, vec2 cy, vec2 x0, vec2 y0) {
 		n = i + 1;
 		if (p.tex_on > 0.5 && i > 1) {
 			minAxis = min(minAxis, min(abs(x.x), abs(y.x)));
-			float azp2 = pow(dot(zp, zp), 0.5 * degree_of(p.formula));
+			float zp2 = dot(zp, zp);
+			float azp2 = p.formula == F_CUBIC ? zp2 * sqrt(zp2) : (p.formula == F_QUARTIC ? zp2 * zp2 : zp2);
 			float lo = abs(azp2 - ac);
 			float hi = azp2 + ac;
 			float t = (sqrt(m2) - lo) / max(1e-12, hi - lo);

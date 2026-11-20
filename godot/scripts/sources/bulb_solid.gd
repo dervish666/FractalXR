@@ -53,6 +53,13 @@ const ISO_VOXELS := 0.35
 ## 1 = a point that never escaped counts as solid (the note's escape test), 0 = the DE's
 ## level set alone. Per-family results are in the spike report.
 var inside_mode := 1.0
+## PIXEL: 0 off, 1 the normal and an AO probe per pixel, 2 and the colour, 3 and a short march
+## onto the true surface (bulb_solid.gdshader says how). Off for FLY's worlds, whose DEs the
+## spatial include does not have.
+var pixel_detail := 0
+## The genome the mesh on show was built from, held until it lands so the per-pixel DE matches
+## the triangles under it rather than the build in flight.
+var _de_build := {}
 ## AO reach as a fraction of the grid's half-width, shadow reach as a multiple of it.
 const AO_RADIUS := 0.15
 const SHADOW_REACH := 2.2
@@ -101,6 +108,8 @@ var shared_cdf := PackedFloat32Array()
 var cdf := PackedFloat32Array()
 
 var _mat: ShaderMaterial
+## PIXEL's depth prepass (bulb_solid_pre.gdshader), with _mat as its next pass while PIXEL is on.
+var _pre: ShaderMaterial
 var _rd: RenderingDevice
 var _shaders := {}
 var _pipes := {}
@@ -135,6 +144,10 @@ func _init() -> void:
 	_mat = ShaderMaterial.new()
 	_mat.shader = load("res://shaders/bulb_solid.gdshader")
 	material_override = _mat
+	_pre = ShaderMaterial.new()
+	_pre.shader = load("res://shaders/bulb_solid_pre.gdshader")
+	# Drawn before the default priority, so its depth is down when the shaded pass runs.
+	_pre.render_priority = 1
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	visible = false
 
@@ -243,6 +256,10 @@ func request_box(mp: Dictionary, n: int, lo: Vector3, h: float, light_state: Vec
 	_pc.encode_float(104, _light.z)
 	_pc.encode_float(108, shadow_reach)
 	_mat.set_shader_parameter("light_dir", _light)
+	_de_build = mp.duplicate()
+	_de_build["solid_iso"] = ISO_VOXELS * h
+	_de_build["solid_cell"] = h
+	_de_build["inside_mode"] = inside_mode
 
 
 ## Drop the mesh and abandon any build in flight. Its readbacks are tagged with the old
@@ -463,6 +480,9 @@ func _finish(gen: int) -> void:
 		return
 	mesh = m
 	_set_cdf()
+	for k in _de_build:
+		if k != "bound":
+			_mat.set_shader_parameter(k, _de_build[k])
 	if OS.has_feature("editor"):   # desktop harness runs only, never the headset
 		_debug_sample(vdata, adata, idata)
 	upload_ms = float(Time.get_ticks_usec() - t0) / 1000.0
@@ -581,6 +601,8 @@ func set_palette(pal: Array) -> void:
 ## FLY: skip every triangle with a corner inside this box (state units), because a finer
 ## level draws that part. Done in the vertex stage, not with discard (see the shader).
 func set_hole(lo: Vector3, hi: Vector3) -> void:
+	_pre.set_shader_parameter("hole_lo", lo)
+	_pre.set_shader_parameter("hole_hi", hi)
 	_mat.set_shader_parameter("hole_lo", lo)
 	_mat.set_shader_parameter("hole_hi", hi)
 
@@ -591,6 +613,13 @@ func clear_hole() -> void:
 
 func material() -> ShaderMaterial:
 	return _mat
+
+
+func set_pixel_detail(level: int) -> void:
+	pixel_detail = clampi(level, 0, 3)
+	_mat.set_shader_parameter("pixel_detail", pixel_detail)
+	_pre.next_pass = _mat if pixel_detail > 0 else null
+	material_override = _pre if pixel_detail > 0 else _mat
 
 
 func set_gain(g: float) -> void:

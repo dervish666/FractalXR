@@ -46,8 +46,19 @@ uniform float colour_freq = 1.0;        // palette repeats per doubling of itera
 uniform float colour_offset = 0.0;      // slides the palette along the count
 uniform float palette_cycles = 1.0;
 uniform float texture_strength = 0.6;   // how much the orbit texture modulates brightness
-uniform int relief_mode = 3;            // 0 flat, 1 terraces (iteration height), 2 ridges (distance), 3 terrain (terraces + contours)
+uniform int relief_mode = 3;            // 0 flat, 1 terraces (iteration height), 2 ridges (distance), 3 terrain (terraces + contours), 4 coast
 uniform float relief_scale = 1.0;
+// COAST: the contour lines are heights. The escape count falls by one each time the distance
+// to the set doubles (s ~ c - log2 DE, since DE = G / |grad G|), so the lines TERRAIN draws
+// at whole counts sit at doubling distances from the shore, crowded at the edge and spreading
+// out across the open exterior. COAST climbs coast_step metres at each one: the land rises
+// away from the set and keeps rising, the far exterior stands as the high ground on the
+// horizon, and every pocket between filaments is a hill whose ridge runs along its middle.
+// Inside coast_beach metres of the set the lines crowd past a step a texel, and climbing
+// all of them made the coast a wall of spikes: there the land eases flat instead, a beach
+// for the fractal's edge, and the set's interior is the sea at the same level.
+uniform float coast_step = 0.8;
+uniform float coast_beach = 0.6;
 // Slope exaggeration for the lighting only: the normal is built from the true height
 // gradient times this, so a shallow terrace still reads as a step. Hillshade maps do
 // the same; a 1:1 gradient looks flat from head height.
@@ -118,12 +129,11 @@ int layer_of(int level) {
 
 // Unpacks ground.glsl's encode(): count as float32, distance as half, texture as 15-bit
 // unorm, inside flag as the low bit. Keep the two in step.
-vec4 fetch(int level, ivec2 a) {
+vec4 fetch_layer(int layer, int mask, ivec2 a) {
 	// tex_size is a power of two (1024, 2048), so the torus wrap is a mask: two's
-	// complement makes it the positive modulo for negative indices too. Two integer
-	// modulos here ran on every one of the ~70 fetches a pixel makes.
-	ivec2 slot = a & ivec2(tex_size - 1);
-	uvec4 u = texelFetch(levels, ivec3(slot, layer_of(level)), 0);
+	// complement makes it the positive modulo for negative indices too.
+	ivec2 slot = a & ivec2(mask);
+	uvec4 u = texelFetch(levels, ivec3(slot, layer), 0);
 	return vec4(uintBitsToFloat(u.x | (u.y << 16u)), unpackHalf2x16(u.z).x,
 		float(u.w & 1u), float(u.w >> 1u) / 32767.0);
 }
@@ -142,11 +152,16 @@ bool in_window(int level, vec2 e0) {
 }
 
 // The finest level from `level` up whose sample at the point is usable, or max_level if
-// none is (the caller then finds that one unusable too).
-int usable_level(int level, vec2 e0) {
+// none is. `ok` reports whether the returned level is usable, avoiding a duplicate check.
+int usable_level(int level, vec2 e0, out bool ok) {
 	int l = level;
+	ok = false;
 	for (int i = 0; i < 9; i++) {
-		if (l >= max_level || in_window(l, e0)) {
+		if (in_window(l, e0)) {
+			ok = true;
+			break;
+		}
+		if (l >= max_level) {
 			break;
 		}
 		l++;
@@ -164,22 +179,26 @@ vec4 sample_level(int level, vec2 e0, out bool inside_window) {
 	float sc = float(1 << level);
 	vec2 f = (vec2(rem) + view_frac0 + e0) / sc - 0.5;   // -0.5: texel centres
 	vec2 fl = floor(f);
-	// Smoothstep the weights rather than interpolate linearly. Close to your feet the
-	// pixel is finer than the finest texel that exists, so four corners get magnified
-	// over many pixels; an escape count is a step function and mixing two of them
-	// linearly draws the diamond facets that read as blockiness. The smooth weights
-	// carry no more information, but they are C1 at the texel boundaries, so the
-	// facet EDGES go. sample_level and relief_heights must use the same weights or
-	// the normal and the colour disagree about where the surface is.
 	vec2 wl = f - fl;
 	vec2 w = wl * wl * (3.0 - 2.0 * wl);
 	ivec2 base = vt + ivec2(fl);
 	inside_window = in_window(level, e0);
-	vec4 s00 = fetch(level, base);
-	vec4 s10 = fetch(level, base + ivec2(1, 0));
-	vec4 s01 = fetch(level, base + ivec2(0, 1));
-	vec4 s11 = fetch(level, base + ivec2(1, 1));
+	int layer = layer_of(level);
+	int mask = tex_size - 1;
+	vec4 s00 = fetch_layer(layer, mask, base);
+	vec4 s10 = fetch_layer(layer, mask, base + ivec2(1, 0));
+	vec4 s01 = fetch_layer(layer, mask, base + ivec2(0, 1));
+	vec4 s11 = fetch_layer(layer, mask, base + ivec2(1, 1));
 	return mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
+}
+
+// COAST's height in metres, before HEIGHT. A texel mixed with the set's interior carries its
+// log2 DE of -40 in the mix, so the shore falls to 0 by itself and the interior is sea level.
+// log2(1 + (d/b)^2) / 2 is log2(d/b) once d is a few beaches out, one step a line, and
+// eases to flat with no crease at the shore; its steepest is 0.72 step/beach, at d = beach.
+float coast_height(vec4 s) {
+	float d = exp2(s.g) * wpu / coast_beach;
+	return coast_step * 0.5 * log2(1.0 + d * d);
 }
 
 // Relief height in metres. The big shape is scaled by the finest texel so it looks the
@@ -193,6 +212,7 @@ float height_of(vec4 s, int level, bool with_grain) {
 	float h = 0.0;
 	if (relief_mode == 1 || relief_mode == 3) h = -log2(1.0 + s.r) * 48.0 * relief_scale * unit0;
 	else if (relief_mode == 2) h = clamp(s.g - log2(texel0), 0.0, 16.0) * 12.0 * relief_scale * unit0;
+	else if (relief_mode == 4) h = coast_height(s) * relief_scale;
 	// Two grains: the orbit texture (broad, marbled) and the iteration bands themselves,
 	// a sawtooth with a cliff at every whole count, which is the terraced Frax look.
 	float grain = (s.a - 0.5) * 4.0 + (fract(s.r) - 0.5) * 1.5 * (1.0 - clamp(s.b, 0.0, 1.0));
@@ -206,9 +226,9 @@ float height_at(int level, vec2 e0) {
 }
 
 // The relief normal needs the bilinear sample one texel either side of the point in x
-// and z. Those four and the centre share one 4x4 block of texels, so fetch the block
-// once (16 fetches) instead of five separate bilinears (20). Same arithmetic, same
-// result: each height is height_of() of the bilinear vec4, as before.
+// and z. Those four and the centre share a 12-texel cross inside the 4x4 block (the four
+// corners are never read). Streaming row-by-row avoids a 16-vec4 local array (keeping
+// Adreno register occupancy high) and hoists layer_of(level) out of every fetch.
 void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float hz0, out float hz1,
 		out vec4 centre) {
 	ivec2 vt = view_texel0 >> level;
@@ -216,34 +236,43 @@ void relief_heights(int level, vec2 e0, out float hx0, out float hx1, out float 
 	float sc = float(1 << level);
 	vec2 f = (vec2(rem) + view_frac0 + e0) / sc - 0.5;
 	vec2 fl = floor(f);
-	// Smoothstep the weights rather than interpolate linearly. Close to your feet the
-	// pixel is finer than the finest texel that exists, so four corners get magnified
-	// over many pixels; an escape count is a step function and mixing two of them
-	// linearly draws the diamond facets that read as blockiness. The smooth weights
-	// carry no more information, but they are C1 at the texel boundaries, so the
-	// facet EDGES go. sample_level and relief_heights must use the same weights or
-	// the normal and the colour disagree about where the surface is.
 	vec2 wl = f - fl;
 	vec2 w = wl * wl * (3.0 - 2.0 * wl);
 	ivec2 base = vt + ivec2(fl);
-	vec4 t[16];
-	for (int j = 0; j < 4; j++) {
-		for (int i = 0; i < 4; i++) {
-			t[j * 4 + i] = fetch(level, base + ivec2(i - 1, j - 1));
-		}
-	}
-	// Bilinear over the cell whose lower-left texel is block (1+dx, 1+dz).
-	vec4 sx0 = mix(mix(t[5 - 1], t[6 - 1], w.x), mix(t[9 - 1], t[10 - 1], w.x), w.y);
-	vec4 sx1 = mix(mix(t[5 + 1], t[6 + 1], w.x), mix(t[9 + 1], t[10 + 1], w.x), w.y);
-	vec4 sz0 = mix(mix(t[5 - 4], t[6 - 4], w.x), mix(t[9 - 4], t[10 - 4], w.x), w.y);
-	vec4 sz1 = mix(mix(t[5 + 4], t[6 + 4], w.x), mix(t[9 + 4], t[10 + 4], w.x), w.y);
-	hx0 = height_of(sx0, level, true);
-	hx1 = height_of(sx1, level, true);
-	hz0 = height_of(sz0, level, true);
-	hz1 = height_of(sz1, level, true);
-	// The centre bilinear is the same four texels and weights sample_level uses, so the
-	// fragment takes its colour sample from here rather than fetching them again.
-	centre = mix(mix(t[5], t[6], w.x), mix(t[9], t[10], w.x), w.y);
+	int layer = layer_of(level);
+	int mask = tex_size - 1;
+
+	// Row j=0 (y = base.y - 1): only columns 0 and 1 are used (for sz0).
+	vec4 m01 = mix(fetch_layer(layer, mask, base + ivec2(0, -1)),
+		fetch_layer(layer, mask, base + ivec2(1, -1)), w.x);
+
+	// Row j=1 (y = base.y): all 4 columns.
+	vec4 r10 = fetch_layer(layer, mask, base + ivec2(-1, 0));
+	vec4 r11 = fetch_layer(layer, mask, base + ivec2(0, 0));
+	vec4 r12 = fetch_layer(layer, mask, base + ivec2(1, 0));
+	vec4 r13 = fetch_layer(layer, mask, base + ivec2(2, 0));
+	vec4 m10 = mix(r10, r11, w.x);
+	vec4 m11 = mix(r11, r12, w.x);
+	vec4 m12 = mix(r12, r13, w.x);
+
+	// Row j=2 (y = base.y + 1): all 4 columns.
+	vec4 r20 = fetch_layer(layer, mask, base + ivec2(-1, 1));
+	vec4 r21 = fetch_layer(layer, mask, base + ivec2(0, 1));
+	vec4 r22 = fetch_layer(layer, mask, base + ivec2(1, 1));
+	vec4 r23 = fetch_layer(layer, mask, base + ivec2(2, 1));
+	vec4 m20 = mix(r20, r21, w.x);
+	vec4 m21 = mix(r21, r22, w.x);
+	vec4 m22 = mix(r22, r23, w.x);
+
+	// Row j=3 (y = base.y + 2): only columns 0 and 1 are used (for sz1).
+	vec4 m31 = mix(fetch_layer(layer, mask, base + ivec2(0, 2)),
+		fetch_layer(layer, mask, base + ivec2(1, 2)), w.x);
+
+	hx0 = height_of(mix(m10, m20, w.y), level, true);
+	hx1 = height_of(mix(m12, m22, w.y), level, true);
+	hz0 = height_of(mix(m01, m11, w.y), level, true);
+	hz1 = height_of(mix(m21, m31, w.y), level, true);
+	centre = mix(m11, m21, w.y);
 }
 
 // The displaced big shape at a level-0 texel offset from the viewer, at a fractional level
@@ -256,7 +285,8 @@ float shape_height(vec2 e0p, float lod, out bool inside) {
 	float lc = clamp(lod, float(min_level), float(max_level));
 	int la = int(lc);
 	float k = lc - float(la);
-	int lu = usable_level(la, e0p);
+	bool dummy_ok;
+	int lu = usable_level(la, e0p, dummy_ok);
 	if (lu != la) k = 0.0;
 	la = lu;
 	int lb = min(la + 1, max_level);
@@ -324,7 +354,10 @@ void vertex() {
 void relief_normal(mat2 m, int level, float hx0, float hx1, float hz0, float hz1, float hc,
 		out vec3 n, out float lap) {
 	float tm = float(1 << level) * texel0 * wpu;   // one texel of that level, in metres
-	vec2 g = transpose(m) * vec2(hx1 - hx0, hz1 - hz0) * relief_contrast / (2.0 * tm);
+	// COAST's slopes are real metres of hillside, and 2.5x of them turned every hill face
+	// black or white: 1.3 keeps a little hillshade emphasis.
+	float con = relief_mode == 4 ? 1.3 : relief_contrast;
+	vec2 g = transpose(m) * vec2(hx1 - hx0, hz1 - hz0) * con / (2.0 * tm);
 	n = normalize(vec3(-g.x, 1.0, -g.y));
 	lap = (hx1 + hx0 + hz1 + hz0 - 4.0 * hc) / tm;
 }
@@ -401,7 +434,8 @@ vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok) {
 		n = i + 1;
 		if (near_tex_on > 0.5 && i > 1) {
 			minAxis = min(minAxis, min(abs(z.x), abs(z.y)));
-			float azp2 = pow(dot(zp, zp), 0.5 * deg);
+			float zp2 = dot(zp, zp);
+			float azp2 = near_formula == 6 ? zp2 * sqrt(zp2) : (near_formula == 7 ? zp2 * zp2 : zp2);
 			float lo = abs(azp2 - ac);
 			float hi = azp2 + ac;
 			float t = (sqrt(m2) - lo) / max(1e-12, hi - lo);
@@ -588,14 +622,14 @@ void fragment() {
 	// window or another scale in those slots. Pass over it to the next coarser level that is
 	// filled, without a blend: a patch a level blurrier until the fill lands, never one of
 	// somewhere else. Same for l1, which then drops out of the blend.
-	int lu = usable_level(l0, e0);
+	bool in0;
+	int lu = usable_level(l0, e0, in0);
 	if (lu != l0) k = 0.0;
 	l0 = lu;
 	int l1 = min(l0 + 1, max_level);
-	bool in0 = in_window(l0, e0);
 	bool in1 = l1 != l0 && in_window(l1, e0);
 	if (!in1) k = 0.0;
-	// Relief needs a 4x4 block at l0 that contains this sample: fetch it once, up front.
+	// Relief needs a 12-texel cross at l0 that contains this sample: fetch it once, up front.
 	bool relief_on = relief_mode != 0 || bump_strength > 0.0;
 	float hx0 = 0.0;
 	float hx1 = 0.0;
@@ -608,9 +642,15 @@ void fragment() {
 		bool d0;
 		sa = sample_level(l0, e0, d0);
 	}
-	// Without a usable l1 (or at the coarsest level) k is 0: the same sample, not a second.
+	// When blending normals to l1 (kn > 0), fetch l1's relief block once and reuse its centre
+	// as sb instead of calling sample_level(l1) and then re-fetching the same 4 texels later.
+	float kn = relief_on ? smoothstep(0.75, 1.0, k) : 0.0;
+	bool need_n1 = kn > 0.0 && l1 != l0 && in1;
+	float a0 = 0.0, a1 = 0.0, b0 = 0.0, b1 = 0.0;
 	vec4 sb = sa;
-	if (k > 0.0) {
+	if (need_n1) {
+		relief_heights(l1, e0, a0, a1, b0, b1, sb);
+	} else if (k > 0.0) {
 		bool d1;
 		sb = sample_level(l1, e0, d1);
 	}
@@ -676,29 +716,24 @@ void fragment() {
 		vec3 n;
 		float lap;
 		relief_normal(m, l0, hx0, hx1, hz0, hz1, height_of(sa, l0, true), n, lap);
-		// Colour cross-fades l0 -> l1 over the whole of fract(lod), but the relief is built
-		// from l0 alone, so where lod crossed a whole number the normal changed texel pattern
-		// in one step: a lighting ring at every level boundary. Fading to l1's normal over
-		// the last quarter before the switch removes the step for 16 more fetches on a
-		// quarter of the pixels, rather than 16 more everywhere.
-		float kn = smoothstep(0.75, 1.0, k);
-		if (kn > 0.0 && l1 != l0 && in1) {
-			vec4 c1;
-			float a0; float a1; float b0; float b1;
-			relief_heights(l1, e0, a0, a1, b0, b1, c1);
+		if (need_n1) {
 			vec3 n1;
 			float lap1;
-			relief_normal(m, l1, a0, a1, b0, b1, height_of(c1, l1, true), n1, lap1);
+			relief_normal(m, l1, a0, a1, b0, b1, height_of(sb, l1, true), n1, lap1);
 			n = normalize(mix(n, n1, kn));
 			lap = mix(lap, lap1, kn);
 		}
 		vec3 L = normalize(light_dir);
 		float diff = max(dot(n, L), 0.0);
-		vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
-		// 0.12, not 0.25: broad glossy patches were reading as wet rock. And no specular
-		// at all once the normal is built from texels finer than the pixel, or the distance
-		// sparkles.
-		float spec = pow(max(dot(normalize(L + V), n), 0.0), 24.0) * 0.12 * sharp;
+		float spec = 0.0;
+		if (sharp > 0.0 && inside < 1.0) {
+			vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
+			float ndh = max(dot(normalize(L + V), n), 0.0);
+			float s2 = ndh * ndh;
+			float s4 = s2 * s2;
+			float s8 = s4 * s4;
+			spec = (s8 * s8 * s8) * 0.12 * sharp;
+		}
 		// Cavity: a positive Laplacian is a hollow, and hollows sit in shade. This is
 		// what stops a terrain read like a bas-relief with a torch on it.
 		float cavity = 1.0 - 0.4 * clamp(lap * 0.6, 0.0, 1.0);
@@ -720,6 +755,21 @@ void fragment() {
 		float fade = 1.0 - smoothstep(0.12, 0.35, wd);
 		float ink = clamp(0.45 * line + 0.35 * heavy, 0.0, 0.7) * fade * (1.0 - inside);
 		col *= 1.0 - ink;
+	}
+
+	// COAST: a contour line at every step of height, heavier every fourth, as TERRAIN draws
+	// one at every count: the same lines, now true to the ground's height. The beach and the
+	// sea carry none.
+	if (relief_mode == 4) {
+		float hc = coast_height(s);
+		float band = hc / coast_step;
+		float wd = fwidth(band);
+		float f = min(fract(band), 1.0 - fract(band));
+		float line = 1.0 - smoothstep(0.0, wd * 1.2 + 0.01, f);
+		float f4 = min(fract(band * 0.25), 1.0 - fract(band * 0.25)) * 4.0;
+		float heavy = 1.0 - smoothstep(0.0, wd * 2.0 + 0.02, f4);
+		float fade = (1.0 - smoothstep(0.15, 0.4, wd)) * smoothstep(0.1, 0.5, band);
+		col *= 1.0 - clamp(0.35 * line + 0.3 * heavy, 0.0, 0.6) * fade * (1.0 - inside);
 	}
 
 	if (art_style > 0) {

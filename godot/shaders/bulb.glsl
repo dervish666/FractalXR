@@ -153,20 +153,34 @@ vec4 mandelbulbDE(vec3 q) {
 	vec3 z = q;
 	vec3 c = (p.mandelbulb > 0.5) ? q : p.julia_c.xyz;
 	float dr = 1.0;
-	float r = length(z);
+	float lz = length(z);
+	float r = lz;
 	float trapR = 1e10, trapY = 1e10, esc = 0.0;
+	bool pow8 = abs(p.power - 8.0) < 1e-4;
 	for (int i = 0; i < 8; i++) {
-		r = length(z);
+		r = lz;
 		if (r > 2.0) { esc = 1.0; break; }
 		float rr = max(r, 1e-9);
 		float theta = acos(clamp(z.z / rr, -1.0, 1.0));
 		float phi = atan(z.y, z.x);
+		float r_pm1;
+		float zr;
+		if (pow8) {
+			float r2 = rr * rr;
+			float r4 = r2 * r2;
+			r_pm1 = r4 * r2 * rr;
+			zr = r4 * r4;
+		} else {
+			r_pm1 = pow(rr, p.power - 1.0);
+			zr = r_pm1 * rr;
+		}
 		// dc/dp is 1 only when c is the point; a Julia constant adds nothing to the derivative.
-		dr = pow(rr, p.power - 1.0) * p.power * dr + p.mandelbulb;
-		float zr = pow(rr, p.power);
+		dr = r_pm1 * p.power * dr + p.mandelbulb;
 		theta *= p.power; phi *= p.power;
-		z = zr * vec3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + c;
-		trapR = min(trapR, length(z));
+		float st = sin(theta);
+		z = zr * vec3(st * cos(phi), st * sin(phi), cos(theta)) + c;
+		lz = length(z);
+		trapR = min(trapR, lz);
 		trapY = min(trapY, abs(z.y));
 	}
 	return vec4(0.5 * log(max(r, 1e-9)) * r / max(dr, 1e-6), trapR, trapY, esc);
@@ -179,37 +193,41 @@ vec4 mandelboxDE(vec3 q) {
 	float trapR = 1e10, trapY = 1e10, esc = 0.0;
 	float minR2 = p.min_r * p.min_r;
 	float fixedR2 = p.fixed_r * p.fixed_r;
+	float invMinR2 = fixedR2 / minR2;
+	float absScale = abs(p.scale);
+	float z2 = dot(z, z);
 	for (int i = 0; i < 10; i++) {
 		z = clamp(z, -1.0, 1.0) * 2.0 - z;                                  // box fold
 		float r2 = dot(z, z);
-		if (r2 < minR2) { float t = fixedR2 / minR2; z *= t; dr *= t; }     // sphere fold, inner
+		if (r2 < minR2) { z *= invMinR2; dr *= invMinR2; }                  // sphere fold, inner
 		else if (r2 < fixedR2) { float t = fixedR2 / r2; z *= t; dr *= t; } // sphere fold, shell
 		z = p.scale * z + offset;
-		dr = dr * abs(p.scale) + p.mandelbulb;   // + dc/dp, 0 for a Julia constant
+		dr = dr * absScale + p.mandelbulb;   // + dc/dp, 0 for a Julia constant
+		z2 = dot(z, z);
 		// The distance needs the far bailout (see march.gdshader: 36 is not a bound), but
 		// the escape flag feeds the interior reseed below and must keep the old threshold:
 		// flagged at 1e4, shell points rarely escaped in ten folds and 74-90% of the cloud
 		// was reseeded to ball noise every update.
-		if (dot(z, z) > 36.0) esc = 1.0;
-		if (dot(z, z) > 1e4) break;
-		trapR = min(trapR, length(z));
+		if (z2 > 36.0) esc = 1.0;
+		if (z2 > 1e4) break;
+		trapR = min(trapR, sqrt(z2));
 		trapY = min(trapY, abs(z.y));
 	}
-	return vec4(length(z) / max(abs(dr), 1e-6), trapR, trapY, esc);
+	return vec4(sqrt(z2) / max(abs(dr), 1e-6), trapR, trapY, esc);
 }
-
-void kRotX(inout vec3 z, float a) { float s = sin(a), c = cos(a); z.yz = vec2(c * z.y - s * z.z, s * z.y + c * z.z); }
-void kRotZ(inout vec3 z, float a) { float s = sin(a), c = cos(a); z.xy = vec2(c * z.x - s * z.y, s * z.x + c * z.y); }
 
 vec4 kifsDE(vec3 q) {
 	vec3 z = q;
-	vec3 off = p.julia_c.xyz;
+	vec3 off = p.julia_c.xyz * (p.scale - 1.0);
 	float s = p.scale;
 	float dr = 1.0;
 	float trapR = 1e10, trapY = 1e10;
 	bool tetra = p.formula > 3.5;
+	float sa = sin(p.k_angle_a), ca = cos(p.k_angle_a);
+	float sb = sin(p.k_angle_b), cb = cos(p.k_angle_b);
+	float lz = 0.0;
 	for (int i = 0; i < 12; i++) {
-		kRotX(z, p.k_angle_a);
+		z.yz = vec2(ca * z.y - sa * z.z, sa * z.y + ca * z.z);
 		if (tetra) {
 			if (z.x + z.y < 0.0) z.xy = -z.yx;
 			if (z.x + z.z < 0.0) z.xz = -z.zx;
@@ -220,13 +238,14 @@ vec4 kifsDE(vec3 q) {
 			if (z.x - z.z < 0.0) z.xz = z.zx;
 			if (z.y - z.z < 0.0) z.yz = z.zy;
 		}
-		kRotZ(z, p.k_angle_b);
-		z = z * s - off * (s - 1.0);
+		z.xy = vec2(cb * z.x - sb * z.y, sb * z.x + cb * z.y);
+		z = z * s - off;
 		dr *= s;
-		trapR = min(trapR, length(z));
+		lz = length(z);
+		trapR = min(trapR, lz);
 		trapY = min(trapY, abs(z.y));
 	}
-	return vec4((length(z) - p.fixed_r) / abs(dr), trapR, trapY, 0.0);
+	return vec4((lz - p.fixed_r) / abs(dr), trapR, trapY, 0.0);
 }
 
 vec4 quatSqr(vec4 q) { return vec4(q.x * q.x - dot(q.yzw, q.yzw), 2.0 * q.x * q.yzw); }
@@ -234,13 +253,19 @@ vec4 quatSqr(vec4 q) { return vec4(q.x * q.x - dot(q.yzw, q.yzw), 2.0 * q.x * q.
 vec4 quatDE(vec3 pos) {
 	vec4 z = vec4(pos, 0.0);
 	vec4 c = (p.mandelbulb > 0.5) ? z : vec4(p.julia_c.xyz, 0.0);
+	bool is_m = p.mandelbulb > 0.5;
 	float md2 = 1.0;
 	float m2 = dot(z, z);
 	float trapR = 1e10, trapY = 1e10, esc = 0.0;
 	for (int i = 0; i < 11; i++) {
 		// |dz'| <= 2|z||dz| + dc/dp. The +1 matters when c is the point; with a Julia constant
 		// this is the old 4 m2 md2 exactly.
-		md2 = pow(2.0 * sqrt(m2 * md2) + p.mandelbulb, 2.0);
+		if (is_m) {
+			float t = 2.0 * sqrt(m2 * md2) + p.mandelbulb;
+			md2 = t * t;
+		} else {
+			md2 = 4.0 * m2 * md2;
+		}
 		z = quatSqr(z) + c;
 		m2 = dot(z, z);
 		trapR = min(trapR, length(z.xyz));

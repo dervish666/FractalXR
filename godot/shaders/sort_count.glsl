@@ -32,13 +32,15 @@ layout(push_constant, std430) uniform PC {
 } p;
 
 int depth_key(uint i) {
-	ivec2 ip = ivec2(int(i) % p.tex_size, int(i) / p.tex_size);
+	ivec2 ip = ((p.tex_size & (p.tex_size - 1)) == 0)
+		? ivec2(int(i) & (p.tex_size - 1), int(i) >> findMSB(p.tex_size))
+		: ivec2(int(i) % p.tex_size, int(i) / p.tex_size);
 	vec3 pos = imageLoad(state_img, ip).xyz;
 	// A NaN particle still needs a slot, or the permutation has holes and the vertex
 	// shader draws stale ids twice. Send it to the last bucket; it culls itself anyway.
 	if (!(pos.x == pos.x) || !(pos.y == pos.y) || !(pos.z == pos.z)) return p.buckets - 1;
 	vec3 local = (pos - p.centre_fit.xyz) * p.centre_fit.w;
-	float d = -(p.mv * vec4(local, 1.0)).z;
+	float d = -(p.mv[0].z * local.x + p.mv[1].z * local.y + p.mv[2].z * local.z + p.mv[3].z);
 	float nd = clamp((d - p.d0) * p.inv_range, 0.0, 1.0);   // 0 near, 1 far
 	// Far first: bucket 0 is the farthest, so slot order is back-to-front draw order.
 	return clamp(int((1.0 - nd) * float(p.buckets)), 0, p.buckets - 1);

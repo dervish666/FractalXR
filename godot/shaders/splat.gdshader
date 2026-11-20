@@ -199,169 +199,184 @@ vec3 palette(float t) {
 }
 
 void vertex() {
-	int slot = VERTEX_ID / 4;   // indexed draw: four corners per splat
+	int slot = VERTEX_ID >> 2;   // indexed draw: four corners per splat
+	bool pow2 = (tex_size & (tex_size - 1)) == 0;
+	int tex_mask = tex_size - 1;
+	int tex_shift = findMSB(tex_size);
 	int pid = slot;
 	if (use_sort) {
-		int pw = textureSize(perm_tex, 0).x;
-		pid = int(texelFetch(perm_tex, ivec2(slot % pw, slot / pw), 0).r + 0.5);
+		ivec2 su = pow2 ? ivec2(slot & tex_mask, slot >> tex_shift) : ivec2(slot % tex_size, slot / tex_size);
+		pid = int(texelFetch(perm_tex, su, 0).r + 0.5);
 	}
-	v_off = CORNERS[VERTEX_ID % 4];
+	vec2 corner = CORNERS[VERTEX_ID & 3];
+	v_off = corner;
 
-	vec4 s = texelFetch(state_tex, ivec2(pid % tex_size, pid / tex_size), 0);
+	ivec2 pid_uv = pow2 ? ivec2(pid & tex_mask, pid >> tex_shift) : ivec2(pid % tex_size, pid / tex_size);
+	vec4 s = texelFetch(state_tex, pid_uv, 0);
 	bool bad = !(s.x == s.x) || !(s.y == s.y) || !(s.z == s.z);
 	vec3 p = (s.xyz - cloud_center) * cloud_fit;
 
 	vec3 vc = (MODELVIEW_MATRIX * vec4(p, 1.0)).xyz;
-	float mscale = length(MODELVIEW_MATRIX[0].xyz);   // carry the cloud's own scale
-	// Local (model-space) radius for the surface axes, which MODELVIEW scales on the way to
-	// view space; the isotropic axes are written in view space, so they take mscale here.
-	// Multiplying mscale into both applied the cloud's scale twice to a bulb's splats.
-	float r_local = splat_radius * perf_scale;
-	float r = r_local * mscale;
-
-	// --- the splat's three axes, in VIEW space -----------------------------------
-	// Together they are the RS matrix of 3D Gaussian splatting: cov3D = RS * RS^T.
-	vec3 a1, a2, a3;
+	vec4 clip = PROJECTION_MATRIX * vec4(vc, 1.0);
+	// Early frustum cull with generous margin (> MAX_PIXEL_RADIUS) so off-screen splats skip
+	// normal/bake/density fetches, palette lookup and covariance projection completely.
+	bool cull = bad || vc.z >= 0.0 || abs(clip.x) > clip.w * 1.4 || abs(clip.y) > clip.w * 1.4;
+	float alpha = 0.0;
 	float shade = 1.0;
-	bool hidden = false;
-	float line_fade = 1.0;
-	if (use_normals) {
-		// The tangent frame is built in LOCAL space, from the same formula
-		// bake_shape.glsl uses, which is what lets the bake send an angle instead of
-		// two vectors.
-		vec4 n4 = texelFetch(normal_tex, ivec2(pid % tex_size, pid / tex_size), 0);
-		// bulb.glsl's LINES flag: a particle that has not reached a ring. Always 0 otherwise.
-		hidden = n4.w > 0.5;
-		vec3 nl = n4.xyz;
-		nl = (dot(nl, nl) > 1e-12) ? normalize(nl) : vec3(0.0, 0.0, 1.0);
-		vec3 t1 = normalize(cross(nl, abs(nl.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
-		vec3 t2 = cross(nl, t1);
-
-		float l1 = r_local;
-		float l2 = r_local;
-		float thin = splat_thin;
-		vec3 lax = line_axis;
-		if (line_families > 1) {
-			int fam = pid % line_families;
-			lax = (fam == 1) ? line_axis.yzx : ((fam == 2) ? line_axis.zxy : line_axis);
-		}
-		vec3 ring = cross(nl, lax);
-		float ring_l = length(ring);
-		if (ring_l > 1e-4) {
-			t1 = ring / ring_l;
-			t2 = cross(nl, t1);
-			float len = r_local;
-			if (use_bake) {
-				len = texelFetch(bake_tex, ivec2(pid % tex_size, pid / tex_size), 0).z
-					* bake_scale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
-			}
-			float w = line_width * cloud_fit * perf_scale;
-			l1 = min(len * line_stretch, line_cap * cloud_fit * perf_scale);
-			l2 = min(l1, w);
-			thin = l2 / max(l1, 1e-9);
-			vec3 nv = normalize((MODELVIEW_MATRIX * vec4(nl, 0.0)).xyz);
-			line_fade = smoothstep(-0.05, 0.3, dot(nv, -normalize(vc)));
-			// Where the plane grazes the surface the ring's direction is the small in-plane
-			// part of a noisy fractal normal, and the strokes point anywhere.
-			line_fade *= smoothstep(0.2, 0.45, ring_l);
-		} else if (use_bake) {
-			vec4 bk = texelFetch(bake_tex, ivec2(pid % tex_size, pid / tex_size), 0);
-			// Rotate the frame into the neighbourhood's own principal axes.
-			vec3 e1 = t1 * bk.x + t2 * bk.y;
-			vec3 e2 = t2 * bk.x - t1 * bk.y;
-			t1 = e1;
-			t2 = e2;
-			float bs = bake_scale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
-			l1 = bk.z * bs;
-			l2 = bk.w * bs;
-		} else if (density_strength > 0.01) {
-			vec3 gn = ((s.xyz - density_centre) / density_extent) * 0.5 + 0.5;
-			ivec3 gc = ivec3(clamp(gn * float(density_grid), vec3(0.0), vec3(float(density_grid) - 1.0)));
-			int flat_i = (gc.z * density_grid + gc.y) * density_grid + gc.x;
-			int w = textureSize(density_tex, 0).x;
-			float n_here = max(1.0, texelFetch(density_tex, ivec2(flat_i % w, flat_i / w), 0).r);
-			float rel = clamp(pow(density_nominal / n_here, density_exponent), 0.4, 2.5);
-			l1 *= rel;
-			l2 *= rel;
-		}
-		// Flat along the normal, so a splat lies IN the surface. Spark's source cloud
-		// uses THIN = 0.16 for exactly this.
-		a1 = (MODELVIEW_MATRIX * vec4(t1 * l1, 0.0)).xyz;
-		a2 = (MODELVIEW_MATRIX * vec4(t2 * l2, 0.0)).xyz;
-		a3 = (MODELVIEW_MATRIX * vec4(nl * (thin * l1), 0.0)).xyz;
-		// The key is in WORLD space, not view space: a light welded to the head would
-		// slide across the surface as you looked around, and would land differently in
-		// each eye. The cloud's basis is uniformly scaled, so the model matrix carries
-		// the normal without needing its inverse transpose.
-		vec3 nw = normalize((MODEL_MATRIX * vec4(nl, 0.0)).xyz);
-		// A high, slightly-to-the-right key, and a 0.45 floor so a face turned away goes
-		// dim rather than black: the recesses have to keep their colour.
-		shade = mix(1.0, 0.45 + 0.55 * max(dot(nw, KEY_DIR), 0.0), splat_light);
-	} else {
-		// No surface to lie in: an isotropic Gaussian, already in view space.
-		a1 = vec3(r, 0.0, 0.0);
-		a2 = vec3(0.0, r, 0.0);
-		a3 = vec3(0.0, 0.0, r);
-	}
-
-	float alpha = splat_opacity * line_fade;
 	vec2 pixel_off = vec2(0.0);
-	bool cull = bad || hidden || vc.z >= 0.0;
 
 	if (!cull) {
-		mat3 rs = mat3(a1, a2, a3);
-		mat3 cov3 = rs * transpose(rs);
+		float mscale = length(MODELVIEW_MATRIX[0].xyz);   // carry the cloud's own scale
+		// Local (model-space) radius for the surface axes, which MODELVIEW scales on the way to
+		// view space; the isotropic axes are written in view space, so they take mscale here.
+		// Multiplying mscale into both applied the cloud's scale twice to a bulb's splats.
+		float r_local = splat_radius * perf_scale;
+		float r = r_local * mscale;
 
-		// Jacobian of the perspective projection at this point, in pixels.
-		vec2 focal = 0.5 * VIEWPORT_SIZE * vec2(PROJECTION_MATRIX[0][0], PROJECTION_MATRIX[1][1]);
-		float inv_z = 1.0 / vc.z;
-		vec2 j1 = focal * inv_z;
-		vec2 j2 = -(j1 * vc.xy) * inv_z;
-		mat3 jm = mat3(
-			vec3(j1.x, 0.0, j2.x),
-			vec3(0.0, j1.y, j2.y),
-			vec3(0.0, 0.0, 0.0));
-		mat3 cov2 = transpose(jm) * cov3 * jm;
+		// --- the splat's three axes, in VIEW space -----------------------------------
+		// Together they are the RS matrix of 3D Gaussian splatting: cov3D = RS * RS^T.
+		vec3 a1, a2, a3;
+		bool hidden = false;
+		float line_fade = 1.0;
+		if (use_normals) {
+			// The tangent frame is built in LOCAL space, from the same formula
+			// bake_shape.glsl uses, which is what lets the bake send an angle instead of
+			// two vectors.
+			vec4 n4 = texelFetch(normal_tex, pid_uv, 0);
+			// bulb.glsl's LINES flag: a particle that has not reached a ring. Always 0 otherwise.
+			hidden = n4.w > 0.5;
+			vec3 nl = n4.xyz;
+			nl = (dot(nl, nl) > 1e-12) ? normalize(nl) : vec3(0.0, 0.0, 1.0);
+			vec3 t1 = normalize(cross(nl, abs(nl.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+			vec3 t2 = cross(nl, t1);
 
-		float ca = cov2[0][0];
-		float cd = cov2[1][1];
-		float cb = cov2[0][1];
-		float det_orig = ca * cd - cb * cb;
-		ca += BLUR_PX2;
-		cd += BLUR_PX2;
-		float det = ca * cd - cb * cb;
-		// Dilating the footprint spreads the same energy over more pixels, so the alpha
-		// has to come down to match or every distant splat quietly gets brighter.
-		alpha *= sqrt(max(0.0, det_orig / max(1e-12, det)));
+			float l1 = r_local;
+			float l2 = r_local;
+			float thin = splat_thin;
+			vec3 lax = line_axis;
+			if (line_families > 1) {
+				int fam = pid % line_families;
+				lax = (fam == 1) ? line_axis.yzx : ((fam == 2) ? line_axis.zxy : line_axis);
+			}
+			vec3 ring = cross(nl, lax);
+			float ring_l = length(ring);
+			if (ring_l > 1e-4) {
+				t1 = ring / ring_l;
+				t2 = cross(nl, t1);
+				float len = r_local;
+				if (use_bake) {
+					len = texelFetch(bake_tex, pid_uv, 0).z
+						* bake_scale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
+				}
+				float w = line_width * cloud_fit * perf_scale;
+				l1 = min(len * line_stretch, line_cap * cloud_fit * perf_scale);
+				l2 = min(l1, w);
+				thin = l2 / max(l1, 1e-9);
+				vec3 nv = normalize((MODELVIEW_MATRIX * vec4(nl, 0.0)).xyz);
+				line_fade = smoothstep(-0.05, 0.3, dot(nv, -normalize(vc)));
+				// Where the plane grazes the surface the ring's direction is the small in-plane
+				// part of a noisy fractal normal, and the strokes point anywhere.
+				line_fade *= smoothstep(0.2, 0.45, ring_l);
+			} else if (use_bake) {
+				vec4 bk = texelFetch(bake_tex, pid_uv, 0);
+				// Rotate the frame into the neighbourhood's own principal axes.
+				vec3 e1 = t1 * bk.x + t2 * bk.y;
+				vec3 e2 = t2 * bk.x - t1 * bk.y;
+				t1 = e1;
+				t2 = e2;
+				float bs = bake_scale * perf_scale * (bake_in_cloud_units ? cloud_fit : 1.0);
+				l1 = bk.z * bs;
+				l2 = bk.w * bs;
+			} else if (density_strength > 0.01) {
+				vec3 gn = ((s.xyz - density_centre) / density_extent) * 0.5 + 0.5;
+				ivec3 gc = ivec3(clamp(gn * float(density_grid), vec3(0.0), vec3(float(density_grid) - 1.0)));
+				int flat_i = (gc.z * density_grid + gc.y) * density_grid + gc.x;
+				float n_here = max(1.0, texelFetch(density_tex, ivec2(flat_i & 511, flat_i >> 9), 0).r);
+				float rel = clamp(pow(density_nominal / n_here, density_exponent), 0.4, 2.5);
+				l1 *= rel;
+				l2 *= rel;
+			}
+			// Flat along the normal, so a splat lies IN the surface. Spark's source cloud
+			// uses THIN = 0.16 for exactly this.
+			a1 = (MODELVIEW_MATRIX * vec4(t1 * l1, 0.0)).xyz;
+			a2 = (MODELVIEW_MATRIX * vec4(t2 * l2, 0.0)).xyz;
+			a3 = (MODELVIEW_MATRIX * vec4(nl * (thin * l1), 0.0)).xyz;
+			// The key is in WORLD space, not view space: a light welded to the head would
+			// slide across the surface as you looked around, and would land differently in
+			// each eye. The cloud's basis is uniformly scaled, so the model matrix carries
+			// the normal without needing its inverse transpose.
+			vec3 nw = normalize((MODEL_MATRIX * vec4(nl, 0.0)).xyz);
+			// A high, slightly-to-the-right key, and a 0.45 floor so a face turned away goes
+			// dim rather than black: the recesses have to keep their colour.
+			shade = mix(1.0, 0.45 + 0.55 * max(dot(nw, KEY_DIR), 0.0), splat_light);
+		} else {
+			// No surface to lie in: an isotropic Gaussian, already in view space.
+			a1 = vec3(r, 0.0, 0.0);
+			a2 = vec3(0.0, r, 0.0);
+			a3 = vec3(0.0, 0.0, r);
+		}
 
-		float eig_avg = 0.5 * (ca + cd);
-		float eig_del = sqrt(max(0.0, eig_avg * eig_avg - det));
-		float eig1 = eig_avg + eig_del;
-		float eig2 = max(0.0, eig_avg - eig_del);
-		// (cb, eig1 - ca) is the eigenvector; it vanishes only for an isotropic footprint, where
-		// any axis will do. The old cb ~ 0 fallback of (1, eig1 - ca) pointed 45 degrees off
-		// when cd > ca. Same guard as bake_shape.glsl.
-		vec2 ev_e = vec2(cb, eig1 - ca);
-		vec2 ev1 = dot(ev_e, ev_e) > 1e-12 ? normalize(ev_e) : vec2(1.0, 0.0);
-		vec2 ev2 = vec2(ev1.y, -ev1.x);
-		float sc1 = min(MAX_PIXEL_RADIUS, sqrt(MAX_STDDEV2) * sqrt(eig1));
-		float sc2 = min(MAX_PIXEL_RADIUS, sqrt(MAX_STDDEV2) * sqrt(eig2));
-		pixel_off = v_off.x * ev1 * sc1 + v_off.y * ev2 * sc2;
-		if (alpha < 0.002) cull = true;
+		alpha = splat_opacity * line_fade;
+		if (near_fade > 0.0) {
+			alpha *= smoothstep(near_fade * 0.4, near_fade, length(vc));
+		}
+		cull = hidden || alpha < 0.002;
+
+		if (!cull) {
+			// Direct 2x3 Jacobian projection of RS = (a1, a2, a3):
+			// cov2 = (J^T * RS) * (J^T * RS)^T, mathematically identical to J^T * cov3 * J
+			// with 15 multiplies instead of 81.
+			vec2 focal = 0.5 * VIEWPORT_SIZE * vec2(PROJECTION_MATRIX[0][0], PROJECTION_MATRIX[1][1]);
+			float inv_z = 1.0 / vc.z;
+			vec2 j1 = focal * inv_z;
+			vec2 j2 = -(j1 * vc.xy) * inv_z;
+			vec2 p1 = j1 * a1.xy + j2 * a1.z;
+			vec2 p2 = j1 * a2.xy + j2 * a2.z;
+			vec2 p3 = j1 * a3.xy + j2 * a3.z;
+
+			float ca = p1.x * p1.x + p2.x * p2.x + p3.x * p3.x;
+			float cd = p1.y * p1.y + p2.y * p2.y + p3.y * p3.y;
+			float cb = p1.x * p1.y + p2.x * p2.y + p3.x * p3.y;
+			float det_orig = ca * cd - cb * cb;
+			ca += BLUR_PX2;
+			cd += BLUR_PX2;
+			float det = ca * cd - cb * cb;
+			// Dilating the footprint spreads the same energy over more pixels, so the alpha
+			// has to come down to match or every distant splat quietly gets brighter.
+			alpha *= sqrt(max(0.0, det_orig / max(1e-12, det)));
+
+			if (alpha < 0.002) {
+				cull = true;
+			} else {
+				// Tight opacity-aware quad bound: trim outer skirt where alpha * fall < 1/250,
+				// scaling v_off by the same ratio so the Gaussian at every drawn pixel is identical.
+				float sigma2_cut = min(MAX_STDDEV2, 2.0 * log(alpha * 250.0) * (3.0 / max(sharpness, 0.1)));
+				if (sigma2_cut <= 0.0) {
+					cull = true;
+				} else {
+					float s_frac = sqrt(sigma2_cut / MAX_STDDEV2);
+					v_off = corner * s_frac;
+					float eig_avg = 0.5 * (ca + cd);
+					float eig_del = sqrt(max(0.0, eig_avg * eig_avg - det));
+					float eig1 = eig_avg + eig_del;
+					float eig2 = max(0.0, eig_avg - eig_del);
+					vec2 ev_e = vec2(cb, eig1 - ca);
+					vec2 ev1 = dot(ev_e, ev_e) > 1e-12 ? normalize(ev_e) : vec2(1.0, 0.0);
+					vec2 ev2 = vec2(ev1.y, -ev1.x);
+					float sc1 = min(MAX_PIXEL_RADIUS, sqrt(sigma2_cut * eig1));
+					float sc2 = min(MAX_PIXEL_RADIUS, sqrt(sigma2_cut * eig2));
+					pixel_off = corner.x * ev1 * sc1 + corner.y * ev2 * sc2;
+				}
+			}
+		}
 	}
 
-	if (near_fade > 0.0) {
-		alpha *= smoothstep(near_fade * 0.4, near_fade, length(vc));
-		// Fully faded costs nothing: cull it before it spends fill on a transparent quad.
-		if (alpha < 0.002) cull = true;
-	}
 	v_alpha = alpha;
-	v_col = palette(s.w) * brightness * shade;
+	v_col = cull ? vec3(0.0) : palette(s.w) * brightness * shade;
 
 	if (cull) {
 		POSITION = vec4(2.0, 2.0, 2.0, 1.0);   // outside the clip volume
 	} else {
-		vec4 clip = PROJECTION_MATRIX * vec4(vc, 1.0);
 		vec2 ndc_off = (2.0 / VIEWPORT_SIZE) * pixel_off;
 		POSITION = vec4(clip.xy + ndc_off * clip.w, clip.z, clip.w);
 	}
@@ -374,7 +389,7 @@ void fragment() {
 	if (r2 > 1.0) discard;
 	// The quad spans MAX_STDDEV2 in squared standard deviations, so this is the real
 	// Gaussian: exp(-0.5 * sigma^2). `sharpness` scales it for taste.
-	float fall = exp(-0.5 * MAX_STDDEV2 * r2 * (sharpness / 3.0));
+	float fall = exp2(r2 * (-0.5 * MAX_STDDEV2 * 1.44269504 / 3.0) * sharpness);
 	float a = fall * v_alpha;
 	// Premultiplied: the blend is src + dst * (1 - a), so the colour arrives pre-scaled.
 	ALBEDO = v_col * a;

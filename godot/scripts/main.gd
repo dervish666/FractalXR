@@ -330,7 +330,9 @@ const IFS_DEPTH := [1.0, 1.5, 2.0, 0.25, 0.5]
 var ifs_depth_idx := 0
 const GROUND_ITER := [256, 512, 1024, 2048, 4096, 128]
 var ground_iter_idx := 0
-const GROUND_RELIEF := ["terrain", "terraces", "ridges", "flat"]
+const GROUND_RELIEF := ["terrain", "terraces", "ridges", "flat", "coast"]
+## relief_mode in ground.gdshader for each GROUND_RELIEF entry.
+const GROUND_RELIEF_MODE := [3, 1, 2, 0, 4]
 ## Vertical exaggeration of the displaced terrain. 0 keeps the lit relief but leaves the
 ## mesh flat: the shading is anchored to the world by construction, the displacement
 ## re-levels under the viewer and bobs as you walk, so flat is the default.
@@ -1179,8 +1181,7 @@ func _step_specimen(d: int) -> void:
 	elif tree_mode:
 		_cycle_tree_shape(d)
 	elif ground_mode:
-		ground_relief_idx = wrapi(ground_relief_idx + d, 0, GROUND_RELIEF.size())
-		_apply_ground_look()
+		_step_ground_relief(d)
 	elif bulb_mode:
 		_load_bulb(bulb_idx + d)
 	else:
@@ -1345,6 +1346,31 @@ func _ground_teleport(hand: XRController3D) -> void:
 		ground.glide_to(hit)
 
 
+## MANDEL in GROUND: a trigger held with the hand pointing above the horizon zooms the sky
+## about the spot it points at, right in and left out, faster the further it is squeezed. The
+## floor has those triggers below the horizon (_ground_teleport); a ray there never reaches
+## this. The whole sky streaming is optic flow on every side, so it gets the walk's tunnel.
+func _sky_zoom(delta: float) -> void:
+	if not (ground_mode and flame_sky.is_mandel() and flame_sky.is_shown()) or _menu_active \
+			or _trig_owned or help.is_open():
+		return
+	var hands: Array[XRController3D] = [left_hand, right_hand]
+	var amount := 0.0
+	for i in 2:
+		if not (_trig_held[i] or _key(KEY_RIGHT if i == 1 else KEY_LEFT)):
+			continue
+		var d := -hands[i].global_transform.basis.z
+		if d.y < 0.05:
+			continue
+		var squeeze := hands[i].get_float("trigger") if xr != null else 1.0
+		squeeze = clampf(squeeze, 0.3, 1.0)
+		flame_sky.mandel.zoom_toward(d.normalized(),
+			(1.0 if i == 1 else -1.0) * MandelSky.ZOOM_RATE * squeeze, delta, ground._m)
+		amount = maxf(amount, squeeze)
+	if amount > 0.0:
+		_want_vignette(ComfortVignette.WALK, amount)
+
+
 ## Where the hand's ray meets the floor, as world xz, or null when there is no tracked
 ## hand or it points at the sky. On the desktop (no XR) the controller node's own
 ## transform stands in, which is what the shot harness poses.
@@ -1456,8 +1482,17 @@ func _set_render_hq(on: bool) -> void:
 		RenderingServer.call_on_render_thread(ground.set_quality.bind(1024))
 
 
+## RELIEF one step. COAST is hills you look up at, so arriving on it with HEIGHT flat lifts
+## HEIGHT to 1x: a flat mesh would leave it a shaded map of hills.
+func _step_ground_relief(d: int) -> void:
+	ground_relief_idx = wrapi(ground_relief_idx + d, 0, GROUND_RELIEF.size())
+	if GROUND_RELIEF[ground_relief_idx] == "coast" and GROUND_HEIGHT[ground_height_idx] == 0.0:
+		ground_height_idx = GROUND_HEIGHT.find(1.0)
+	_apply_ground_look()
+
+
 func _apply_ground_look() -> void:
-	ground.set_look(&"relief_mode", [3, 1, 2, 0][ground_relief_idx])
+	ground.set_look(&"relief_mode", GROUND_RELIEF_MODE[ground_relief_idx])
 	var h: float = GROUND_HEIGHT[ground_height_idx]
 	ground.set_look(&"displace", 1.0 if h > 0.0 else 0.0)
 	ground.set_look(&"relief_scale", h if h > 0.0 else 1.0)
@@ -1936,6 +1971,9 @@ func _tick_flame_scale(delta: float) -> void:
 	# stands in front of it. BULB has its own switch, off until pressed there: its splats were
 	# measured at 13.9 ms, at the line already, and a baked sky is one fetch per background
 	# pixel on top (under 1 ms, a guess). Passthrough always wins: the room is the sky.
+	# MANDEL fills before sync() looks for something to show, so its first fill can land.
+	flame_sky.mandel.tick(ground, _sky_switch() and flame_sky.is_mandel() and not passthrough,
+		ground_mode)
 	flame_sky.sync(_sky_switch() and not passthrough, delta)
 
 
@@ -2019,7 +2057,7 @@ func _step_sky_pick(d: int) -> void:
 	flame_sky.set_pick(flame_sky.pick + d)
 	if flame_sky.pick > 0 and not _sky_switch():
 		_toggle_sky()
-	elif flame_sky.pick == 0 and _sky_switch() and not flame_sky.has_sky() and not flame_sky.baking:
+	elif _sky_switch() and flame_sky.needs_flame_bake():
 		_bake_sky()
 
 
@@ -2038,7 +2076,8 @@ func _toggle_sky() -> void:
 		sky_bulb_on = not sky_bulb_on
 	else:
 		sky_on = not sky_on
-	if _sky_switch() and not flame_sky.has_sky() and not flame_sky.baking:
+	# Only the live pick bakes; a preset is there already and MANDEL fills itself.
+	if _sky_switch() and flame_sky.needs_flame_bake():
 		_bake_sky()
 
 
@@ -2052,6 +2091,11 @@ func _sky_label() -> String:
 		return "baking %d%%" % int(flame_sky.progress * 100.0)
 	if not _sky_switch():
 		return "off"
+	if flame_sky.is_mandel():
+		var ms := flame_sky.mandel
+		if not ms.has_data():
+			return "drawing %d%%" % int(ms.progress * 100.0)
+		return "on" if ms.zoom < 1.05 else "on, %s" % _zoom_text(ms.zoom)
 	return "on" if flame_sky.has_sky() else "no flame"
 
 
@@ -2154,6 +2198,10 @@ func _request_refresh_rate() -> void:
 	if rates.has(TARGET_HZ) and not is_equal_approx(xr.get_display_refresh_rate(), TARGET_HZ):
 		xr.set_display_refresh_rate(TARGET_HZ)
 		print("[fractal] refresh rate set to %.0f" % TARGET_HZ)
+	# Ask Horizon OS for sustained high GPU/CPU clocks (XR_EXT_performance_settings)
+	# instead of waiting for dynamic clock throttling to react after dropped frames.
+	xr.set_cpu_level(OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_HIGH)
+	xr.set_gpu_level(OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_HIGH)
 
 
 ## Directly in front of the viewer, at their eye height, using only the yaw of their
@@ -2759,6 +2807,7 @@ func _handle_input(delta: float) -> void:
 			_load_bulb(bulb_idx - 1)
 		else:
 			_morph_to_preset(preset_idx - 1)
+	_sky_zoom(delta)
 	# The fixed keys. Each one means the same thing in every mode; the noun changes with
 	# the mode, the verb never does. They used to be a different set of tuning dials per
 	# mode (leaves here, brightness there, julia somewhere else), so there was nothing
@@ -2842,6 +2891,7 @@ func _want_vignette(profile: Dictionary, m: float) -> void:
 func _go_home() -> void:
 	if ground_mode:
 		ground.home()
+		flame_sky.mandel.home()
 	elif ifs_mode:
 		_recenter()
 	else:
@@ -2890,6 +2940,8 @@ func _apply_palette() -> void:
 		pal = mixed
 	_pal_shown = pal
 	cloud.override_palette(pal)
+	# MANDEL hangs in every mode, so it follows the theme in every mode.
+	flame_sky.mandel.set_palette(pal)
 	_push_menu_palette(pal)
 	march.set_palette(pal)
 	# SOLID on THEME "preset" wears the Mandelbulber echo instead of the bulb's own ramp.

@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode unshaded, cull_back, fog_disabled, shadows_disabled;
+render_mode unshaded, cull_back, fog_disabled, shadows_disabled, skip_vertex_transform;
 
 // The IFS sculpture's frames: one instanced seed polyhedron per node of the assembly.
 // Two things move here so the script never rewrites the instance buffer for either of them,
@@ -86,20 +86,24 @@ void vertex() {
 	g = g * g * (3.0 - 2.0 * g);
 	// A shape swap: the old shape folds back into its parents outermost generation first,
 	// then the new one grows out root first, the hero's own grow-in run at an echo's pace.
-	float g_out = 1.0 - clamp((echo_t - echo_swap.x - (1.0 - birth) * swap_span) / swap_s, 0.0, 1.0);
-	float g_in = clamp((echo_t - echo_swap.y - birth * swap_span) / swap_s, 0.0, 1.0);
-	float gs = min(g_out, g_in);
-	g *= gs * gs * (3.0 - 2.0 * gs);
-	vec3 parent = (COLOR.rgb * 2.0 - 1.0) * origin_span;
-	VERTEX *= UV.y < 0.5 ? seed_scale0 : seed_scale1;
-	VERTEX = mix(parent, VERTEX, g);
-	float swell = 0.0;
-	float t = echo_t + echo_life.x;
 	if (echo_live > 0.5) {
-		// In world space about the echo's centre, so every bound is in metres and none of it
-		// depends on the echo's random orientation or the instance's depth in the tree. Then
-		// back into the instance's mesh space for the model matrix to carry out again.
-		vec3 w = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		float g_out = 1.0 - clamp((echo_t - echo_swap.x - (1.0 - birth) * swap_span) / swap_s, 0.0, 1.0);
+		float g_in = clamp((echo_t - echo_swap.y - birth * swap_span) / swap_s, 0.0, 1.0);
+		float gs = min(g_out, g_in);
+		g *= gs * gs * (3.0 - 2.0 * gs);
+	}
+	vec3 parent = (COLOR.rgb * 2.0 - 1.0) * origin_span;
+	vec3 local_v = VERTEX * (UV.y < 0.5 ? seed_scale0 : seed_scale1);
+	local_v = mix(parent, local_v, g);
+	v_pos = local_v;
+	v_n = NORMAL;
+	v_axis = UV.x;
+	float swell = 0.0;
+	vec3 w = (MODEL_MATRIX * vec4(local_v, 1.0)).xyz;
+	if (echo_live > 0.5) {
+		// In world space about the echo's centre, avoiding inverse(mat3(MODEL_MATRIX)) via
+		// skip_vertex_transform.
+		float t = echo_t + echo_life.x;
 		swell = echo_life.y * sin(echo_life.z * t);
 		vec3 rel = (w - echo_centre) * (1.0 + swell);
 		vec3 k = echo_spin.xyz;
@@ -109,7 +113,6 @@ void vertex() {
 		rel = rel * c + cross(k, rel) * s + k * dot(k, rel) * (1.0 - c);
 		vec3 wob = echo_wander.xyz * sin(echo_wander.w * t * vec3(1.0, 1.37, 0.71) + vec3(0.0, 2.1, 4.2));
 		w = echo_centre + rel + wob;
-		VERTEX = inverse(mat3(MODEL_MATRIX)) * (w - MODEL_MATRIX[3].xyz);
 	}
 	// Level and radius together. Level alone bands the palette by generation with a hard
 	// line between bands, radius alone ignores the recursion that built the shape.
@@ -118,9 +121,10 @@ void vertex() {
 	// Its own line: FractalIFS._variant anchors on the one above, whole.
 	v_u += colour_cycle;
 	v_shade = UV.x * echo_gain * (1.0 + echo_glow * swell);
-	v_pos = VERTEX;
-	v_n = NORMAL;
-	v_axis = UV.x;
+	vec3 view_v = (VIEW_MATRIX * vec4(w, 1.0)).xyz;
+	VERTEX = view_v;
+	NORMAL = normalize((MODELVIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	POSITION = PROJECTION_MATRIX * vec4(view_v, 1.0);
 }
 
 void fragment() {

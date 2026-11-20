@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://delfebw2n4l62"
+path="res://.godot/imported/mandel_sky.glsl-af96c736a8c04d95fd07b5fbe6e7237f.res"
+
+[deps]
+
+source_file="res://shaders/mandel_sky.glsl"
+dest_files=["res://.godot/imported/mandel_sky.glsl-af96c736a8c04d95fd07b5fbe6e7237f.res"]
+
+[params]
+

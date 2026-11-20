@@ -69,8 +69,7 @@ vec3 hue_turn(vec3 c, float a) {
 }
 
 varying vec2 v_uv;
-varying float v_hue;
-varying flat float v_leaf_hue;
+varying flat vec3 v_col;
 
 // The flutter phase comes from the point's place in the tree, not from its branch: with a
 // phase per branch, a parent's tip ring and its child's base ring fluttered apart by up to
@@ -80,6 +79,7 @@ float flutter_phase(vec3 w0) {
 }
 
 vec3 sway(vec3 w, float phase) {
+	if (wind <= 0.0 || sway_gain <= 0.0) return w;
 	float h = clamp(dot(w - tree_origin, tree_up) / max(tree_height * tree_scale, 1e-3), 0.0, 1.5);
 	float t = TIME + sway_phase;
 	float g = sin(t * 0.7) * 0.6 + sin(t * 1.9 + h * 2.0) * 0.25 + sin(t * 3.1 + phase) * 0.15;
@@ -91,34 +91,48 @@ vec3 sway(vec3 w, float phase) {
 
 void vertex() {
 	float birth = INSTANCE_CUSTOM.x;
-	float phase = INSTANCE_CUSTOM.w;
 	float phase_t = (batch ? INSTANCE_CUSTOM.y : palette_phase) + colour_cycle;
-	v_hue = 1.0 - abs(fract(COLOR.r * 0.5 + phase_t) * 2.0 - 1.0);
-	v_leaf_hue = INSTANCE_CUSTOM.z;
-	// Leaves open after their branch has finished extending.
-	float g = clamp((grow_t - (birth * grow_s + 0.8)) / 1.2, 0.0, 1.0);
-	g = g * g * (3.0 - 2.0 * g);
+	float hue = 1.0 - abs(fract(COLOR.r * 0.5 + phase_t) * 2.0 - 1.0);
+	vec3 c = (hue < 0.5) ? mix(pal2, pal3, hue * 2.0) : mix(pal3, pal4, (hue - 0.5) * 2.0);
+	float lh = batch ? INSTANCE_CUSTOM.z : leaf_hue;
+	if (leaf_mix > 0.0 || lh != 0.0) {
+		c = max(hue_turn(c, lh), vec3(0.0));
+		float luma = dot(c, vec3(0.299, 0.587, 0.114));
+		c = mix(c, leaf_tint * max(luma * 1.4, 0.08), leaf_mix);
+	}
+	v_col = c * brightness * leaf_gain * (litter > 0.5 ? litter_gain : 1.0);
+
 	vec3 center = MODEL_MATRIX[3].xyz;
-	float size = length(MODEL_MATRIX[0].xyz) * g;
-	vec3 right = INV_VIEW_MATRIX[0].xyz;
-	vec3 up = INV_VIEW_MATRIX[1].xyz;
-	float a = sin(TIME * 2.7 + phase) * 0.4 * (0.3 + wind);
-	vec2 q = vec2(VERTEX.x * cos(a) - VERTEX.y * sin(a), VERTEX.x * sin(a) + VERTEX.y * cos(a));
-	vec3 w = sway(center, flutter_phase(center)) + right * (q.x * size) + up * (q.y * size);
+	vec3 w;
 	if (litter > 0.5) {
 		float lg = clamp((grow_t - grow_s - 0.2 - birth) / 0.8, 0.0, 1.0);
 		lg *= 1.0 - smoothstep(litter_fade.x, litter_fade.y, distance(center, CAMERA_POSITION_WORLD));
 		w = center + (MODEL_MATRIX[0].xyz * VERTEX.x + MODEL_MATRIX[2].xyz * VERTEX.y) * lg;
+	} else {
+		// Leaves open after their branch has finished extending.
+		float g = clamp((grow_t - (birth * grow_s + 0.8)) / 1.2, 0.0, 1.0);
+		g = g * g * (3.0 - 2.0 * g);
+		float size = length(MODEL_MATRIX[0].xyz) * g;
+		vec3 right = INV_VIEW_MATRIX[0].xyz;
+		vec3 up = INV_VIEW_MATRIX[1].xyz;
+		float a = sin(TIME * 2.7 + INSTANCE_CUSTOM.w) * 0.4 * (0.3 + wind);
+		float ca = cos(a), sa = sin(a);
+		vec2 q = vec2(VERTEX.x * ca - VERTEX.y * sa, VERTEX.x * sa + VERTEX.y * ca);
+		w = sway(center, flutter_phase(center)) + right * (q.x * size) + up * (q.y * size);
 	}
 	v_uv = VERTEX.xy;
 	POSITION = PROJECTION_MATRIX * (VIEW_MATRIX * vec4(w, 1.0));
 }
 
 void fragment() {
-	// The outline scales the disc's radius by direction; the falloff inside is the disc's.
-	float edge = 1.0;
-	if (leaf_shape > 0.5) {
+	float r2 = dot(v_uv, v_uv);
+	float d;
+	if (leaf_shape <= 0.5) {
+		if (r2 > 0.25) { discard; }
+		d = sqrt(r2) * 2.0;
+	} else {
 		float th = atan(v_uv.y, v_uv.x);
+		float edge;
 		if (leaf_shape < 1.5) {
 			edge = 0.5 + 0.5 * abs(cos(2.5 * th));              // five petals
 		} else if (leaf_shape < 2.5) {
@@ -126,23 +140,10 @@ void fragment() {
 		} else {
 			edge = 0.22 + 0.78 * pow(abs(cos(2.0 * th)), 6.0);  // four-point sparkle
 		}
+		d = sqrt(r2) * 2.0 / edge;
+		if (d > 1.0) { discard; }
 	}
-	float d = length(v_uv) * 2.0 / edge;
-	if (d > 1.0) { discard; }
 	float a = pow(1.0 - d, 1.6);
-	// Across the top three stops, not the top two. pal3..pal4 is a narrow bright band:
-	// every leaf came out nearly the same colour, so a cluster had no internal contrast
-	// to survive the additive stacking. pal2 gives the canopy somewhere darker to sit.
-	vec3 c = (v_hue < 0.5) ? mix(pal2, pal3, v_hue * 2.0) : mix(pal3, pal4, (v_hue - 0.5) * 2.0);
-	float lh = batch ? v_leaf_hue : leaf_hue;
-	if (leaf_mix > 0.0 || lh != 0.0) {
-		c = max(hue_turn(c, lh), vec3(0.0));
-		float luma = dot(c, vec3(0.299, 0.587, 0.114));
-		c = mix(c, leaf_tint * max(luma * 1.4, 0.08), leaf_mix);
-	}
-	ALBEDO = c * a * brightness * leaf_gain;
+	ALBEDO = v_col * a;
 	ALPHA = a;
-	if (litter > 0.5) {
-		ALBEDO *= litter_gain;
-	}
 }

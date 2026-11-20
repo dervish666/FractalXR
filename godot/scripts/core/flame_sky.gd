@@ -34,7 +34,11 @@ class_name FlameSky
 ## PRESETS. art/skies/ holds skies baked offline on the Mac through this same bake (8192 wide,
 ## many times the samples) and resampled to compressed cubemaps by tools/sky_cube.py: sharper
 ## and cleaner than the live bake, no wait and no stutter, and there in BULB before any flame
-## has been baked. Their colours are baked in. SKY PICK steps live / the presets.
+## has been baked. Their colours are baked in. SKY PICK steps live / the presets / mandel.
+##
+## MANDEL (scripts/core/mandel_sky.gd) is the last pick: GROUND's family over the whole sky,
+## its own Sky resource swapped onto the environment while it is picked. This class keeps the
+## showing, hiding and fade for all of them.
 
 ## Equirect width of the live bake, by the SKY RES step; the height is half. 2560 across is 7.1
 ## texels a degree against the eye buffer's 17-21 pixels a degree, and Sam asked for it
@@ -88,6 +92,8 @@ var rounds_per_frame := ROUNDS_PER_FRAME
 const PRESET_DIR := "res://art/skies/"
 var presets: Array = []
 var pick := 0
+## The last SKY PICK entry, after the presets.
+var mandel := MandelSky.new()
 ## An imported cube is a CompressedCubemap, which is a TextureLayered and not a Cubemap.
 var _cube: TextureLayered = null
 
@@ -183,18 +189,33 @@ func _load_presets() -> void:
 
 ## What SKY PICK shows: "live" or the preset's name.
 func pick_name() -> String:
+	if is_mandel():
+		return "mandel"
 	return "live" if pick == 0 else str(presets[pick - 1]["name"])
+
+
+func is_mandel() -> bool:
+	return pick == presets.size() + 1
+
+
+## Whether the live flame bake is what SKY wants and there is none yet.
+func needs_flame_bake() -> bool:
+	return pick == 0 and not ready and not baking
+
+
+func _active_sky() -> Sky:
+	return mandel.sky if is_mandel() else _sky
 
 
 ## Choose the live bake (0) or a preset (1..). A preset loads on demand and the previous one is
 ## dropped, so only the sky on show holds memory. It fades in again when it changes on screen.
 func set_pick(i: int) -> void:
-	i = wrapi(i, 0, presets.size() + 1)
+	i = wrapi(i, 0, presets.size() + 2)
 	if i == pick:
 		return
 	pick = i
 	_cube = null
-	if pick > 0:
+	if pick > 0 and not is_mandel():
 		_cube = load(presets[pick - 1]["path"]) as TextureLayered
 		# An image imported as a plain texture or an array would bind as garbage, silently.
 		if _cube != null and _cube.get_layered_type() != TextureLayered.LAYERED_TYPE_CUBEMAP:
@@ -204,13 +225,16 @@ func set_pick(i: int) -> void:
 			pick = 0
 	_mat.set_shader_parameter(&"sky_cube", _cube)
 	_mat.set_shader_parameter(&"use_cube", _cube != null)
-	_mat.set_shader_parameter(&"cube_gain", float(presets[pick - 1]["gain"]) if pick > 0 else 1.0)
+	_mat.set_shader_parameter(&"cube_gain", float(presets[pick - 1]["gain"]) if _cube != null else 1.0)
 	if _shown:
+		_env.sky = _active_sky()
 		_fade = 0.0
 
 
 ## True when there is something to hang: a preset, or a finished live bake.
 func has_sky() -> bool:
+	if is_mandel():
+		return mandel.has_data()
 	return _cube != null or ready
 
 
@@ -262,7 +286,7 @@ func _set_shown(on: bool) -> void:
 		_saved_energy = _env.background_energy_multiplier
 		_env.ambient_light_source = Environment.AMBIENT_SOURCE_DISABLED
 		_env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
-		_env.sky = _sky
+		_env.sky = _active_sky()
 		_env.background_mode = Environment.BG_SKY
 		_fade = 0.0
 		_env.background_energy_multiplier = 0.0
@@ -535,6 +559,7 @@ func _read_timestamp() -> void:
 
 ## Render thread, once, at exit.
 func cleanup() -> void:
+	mandel.cleanup()
 	if _rd == null:
 		return
 	_sky_texture.texture_rd_rid = RID()

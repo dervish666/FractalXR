@@ -90,7 +90,10 @@ vec3 applyVars(int j, vec3 q) {
 void main() {
 	uint idx = gl_GlobalInvocationID.x;
 	if (idx >= uint(p.count)) return;
-	ivec2 ip = ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);
+	bool pow2 = (p.tex_size & (p.tex_size - 1)) == 0;
+	int mask = p.tex_size - 1;
+	int shift = findMSB(p.tex_size);
+	ivec2 ip = pow2 ? ivec2(int(idx) & mask, int(idx) >> shift) : ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);
 
 	// Same seed expression as the web build: texel index folded with the frame number.
 	if (p.do_seed != 0) {
@@ -116,7 +119,7 @@ void main() {
 		if (idx >= slab * k) return;
 		idx = ((uint(p.update_phase) + idx / slab) % uint(p.update_mod)) * slab + idx % slab;
 		if (idx >= uint(p.count)) return;
-		ip = ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);
+		ip = pow2 ? ivec2(int(idx) & mask, int(idx) >> shift) : ivec2(int(idx) % p.tex_size, int(idx) / p.tex_size);
 	}
 	uint seed = idx * 747796405u + uint(p.frame) * 2654435761u + 1u;
 

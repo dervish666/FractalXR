@@ -85,9 +85,8 @@ instance uniform int echo_offset = 0;
 instance uniform float echo_gain = 1.0;
 
 varying vec3 v_col;
-// Sprite size and the area kernel's square side, in pixels.
-varying flat float v_px;
-varying flat float v_side;
+// Area kernel constants precomputed per vertex: (px, 0.5 * (1 + side), min(1, side), 1 / side).
+varying flat vec4 v_area;
 
 // Piecewise-linear ramp as a mix chain. The previous local vec3[5] with a dynamic
 // index is the pattern Adreno spills to scratch memory, in a shader that runs once
@@ -134,7 +133,10 @@ void vertex() {
 	if (echo_stride > 1) {
 		i = (i >> 6) * (echo_stride << 6) + (i & 63) + (echo_offset << 6);
 	}
-	vec4 s = texelFetch(state_tex, ivec2(i % tex_size, i / tex_size), 0);
+	ivec2 ip = ((tex_size & (tex_size - 1)) == 0)
+		? ivec2(i & (tex_size - 1), i >> findMSB(tex_size))
+		: ivec2(i % tex_size, i / tex_size);
+	vec4 s = texelFetch(state_tex, ip, 0);
 	// self-compare NaN check; mobile isnan() is unreliable
 	bool bad = !(s.x == s.x) || !(s.y == s.y) || !(s.z == s.z);
 	vec3 p = (s.xyz - cloud_center) * cloud_fit;
@@ -147,19 +149,19 @@ void vertex() {
 
 	// The area kernel's sprite covers every pixel its square can touch: side + 1. The floor
 	// keeps the division below finite; the sprite grows with it, so the shares still sum to one.
-	v_side = max(1e-3, aa_width + point_size - 1.0);
-	float px = point_kernel == 0 ? point_size : 1.0 + v_side;
+	float side = max(1e-3, aa_width + point_size - 1.0);
+	float px = point_kernel == 0 ? point_size : 1.0 + side;
 	if (splat_mode) {
 		// Perspective size of a world-space radius: r * focal / depth, where the focal
 		// length in pixels is PROJECTION_MATRIX[1][1] * viewport_height / 2.
 		float depth = max(0.05, -(MODELVIEW_MATRIX * vec4(p, 1.0)).z);
 		px = splat_radius * PROJECTION_MATRIX[1][1] * VIEWPORT_SIZE.y * 0.5 / depth;
 		px = clamp(px, 1.0, splat_max_px);
-		v_side = max(1e-3, px - 1.0);
-		px = point_kernel == 0 ? px : 1.0 + v_side;
+		side = max(1e-3, px - 1.0);
+		px = point_kernel == 0 ? px : 1.0 + side;
 	}
 	POINT_SIZE = bad ? 0.0 : px;
-	v_px = px;
+	v_area = vec4(px, 0.5 * (1.0 + side), min(1.0, side), 1.0 / side);
 }
 
 void fragment() {
@@ -179,9 +181,11 @@ void fragment() {
 		// square: u is the pixel centre's distance from the point centre. Separable, and each
 		// axis sums to one over the pixels the sprite covers, so the product does too. A side
 		// near zero is the limit, one pixel at full weight.
-		vec2 u = abs(d) * v_px;
-		vec2 k = clamp(0.5 * (1.0 + v_side) - u, vec2(0.0), vec2(min(1.0, v_side))) / v_side;
-		s = sqrt(energy_gain * k.x * k.y);
+		vec2 u = abs(d) * v_area.x;
+		vec2 k = clamp(v_area.y - u, vec2(0.0), vec2(v_area.z)) * v_area.w;
+		float kk = k.x * k.y;
+		if (kk <= 0.0) discard;
+		s = sqrt(energy_gain * kk);
 	}
 	ALBEDO = v_col * s;
 	ALPHA = s;
