@@ -702,7 +702,8 @@ void fragment() {
 	vec3 col = palette(v);
 	col *= mix(1.0, 0.45 + 1.1 * s.a, texture_strength * sharp);
 	float inside = clamp(s.b, 0.0, 1.0);
-	if (inside_passthrough > 0.5 && inside > 0.5) discard;
+	// PASSTHROUGH_DISCARD (injected by FractalGround only when inside_passthrough is active,
+	// keeping discard out of the default shader so Adreno Early-Z/LRZ stays enabled).
 	col = mix(col, inside_colour * (0.4 + 1.2 * s.a), inside);
 
 	// Relief: a height from the data and its normal from the neighbouring texels of the

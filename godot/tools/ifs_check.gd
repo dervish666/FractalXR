@@ -22,9 +22,24 @@ const PRESET_COUNTS := {
 	"STAR": [1, 13, 157, 1885],
 	"CROSS": [1, 9, 73, 585],
 	"TWIST": [1, 9, 73, 585],
+	"MONOLITH": [1, 9, 73, 585],
+	"PAGODA": [1, 9, 73, 585],
+	"ORBIT": [1, 9, 73, 585],
+	"CATHEDRAL": [1, 9, 73, 585],
+	"FERN": [1, 9, 73, 585],
+	"SNOWFLAKE": [1, 9, 73, 585],
+	"CRYSTAL": [1, 9, 73, 585],
 }
-const PRESET_CAP := {"FRAMES": 4681, "TETRA": 4681, "STAR": 1885, "CROSS": 4681, "TWIST": 4681}
-const PRESET_TRIS := {"FRAMES": 144, "TETRA": 72, "STAR": 144, "CROSS": 72, "TWIST": 144}
+const PRESET_CAP := {
+	"FRAMES": 4681, "TETRA": 4681, "STAR": 1885, "CROSS": 4681, "TWIST": 4681,
+	"MONOLITH": 4681, "PAGODA": 4681, "ORBIT": 4681, "CATHEDRAL": 4681,
+	"FERN": 4681, "SNOWFLAKE": 4681, "CRYSTAL": 4681,
+}
+const PRESET_TRIS := {
+	"FRAMES": 144, "TETRA": 72, "STAR": 144, "CROSS": 72, "TWIST": 144,
+	"MONOLITH": 48, "PAGODA": 96, "ORBIT": 96, "CATHEDRAL": 72,
+	"FERN": 48, "SNOWFLAKE": 72, "CRYSTAL": 48,
+}
 ## FRAMES' eight children, written from the rule in the plan and not read back from the table:
 ## contract by 0.35 into a corner, then mirror. The second vector is the sign of each basis
 ## column, which is what says which of {I, R1, R2, R2*R1} produced that child. This is the
@@ -1198,7 +1213,13 @@ static func _check_syms(ifs: FractalIFS) -> Array[Transform3D]:
 	var r1 := FractalIFS.reflection(FractalIFS.DEFAULT_N1, 0.0)
 	var r2 := FractalIFS.reflection(FractalIFS.DEFAULT_N2, 0.0)
 	var maps := ifs.child_maps_now(false)
-	var verts: Array = FractalIFS.FRAME_VERTS[String(FractalIFS.PRESETS[ifs.preset]["seed"])]
+	var kind := String(FractalIFS.PRESETS[ifs.preset]["seed"])
+	var verts: Array = []
+	if FractalIFS.FRAME_VERTS.has(kind):
+		verts = FractalIFS.FRAME_VERTS[kind]
+	else:
+		for v in (ifs.seed_mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX] as PackedVector3Array):
+			verts.append(v)
 	var out: Array[Transform3D] = [Transform3D.IDENTITY]
 	for s in [r1, r2, r2 * r1]:
 		var ok := true

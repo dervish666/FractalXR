@@ -215,7 +215,9 @@ static func fovea(m: FractalMain, vis: Callable) -> WristMenu.Item:
 static func glow(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("look", "GLOW",
 		func(): return "on" if m._env().glow_enabled else "off",
-		func(): m._env().glow_enabled = not m._env().glow_enabled,
+		func():
+			m._glow_override = 0 if m._env().glow_enabled else 1
+			m._sync_glow(),
 		false, dev_only(vis)).toggle(func(): return m._env().glow_enabled).minor().hinted(
 		"Soft glow round bright parts")
 

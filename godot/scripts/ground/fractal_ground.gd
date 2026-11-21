@@ -1325,7 +1325,27 @@ func set_palette_cycles(n: float) -> void:
 	_material.set_shader_parameter("palette_cycles", n)
 
 
+var _ground_shader: Shader
+var _ground_shader_pt: Shader
+var _passthrough_discard := false
+
 func set_look(name: StringName, v: Variant) -> void:
+	if name == &"inside_passthrough":
+		var want := float(v) > 0.5
+		if want != _passthrough_discard:
+			_passthrough_discard = want
+			if _ground_shader == null:
+				_ground_shader = _material.shader
+			if want:
+				if _ground_shader_pt == null:
+					var s := Shader.new()
+					s.code = _ground_shader.code.replace(
+						"\t// PASSTHROUGH_DISCARD",
+						"\tif (inside_passthrough > 0.5 && inside > 0.5) discard;\n\t// PASSTHROUGH_DISCARD")
+					_ground_shader_pt = s
+				_material.shader = _ground_shader_pt
+			else:
+				_material.shader = _ground_shader
 	_material.set_shader_parameter(name, v)
 
 

@@ -840,6 +840,7 @@ func _set_mode(kind: String) -> void:
 	help.set_mode(kind)
 	menu.set_mode(kind)
 	_art_sky()
+	_sync_glow()
 
 
 ## The tree stands on the floor in front of you and grows. The cloud underneath keeps
@@ -3082,6 +3083,7 @@ func _apply_surface() -> void:
 	if not ground_mode:
 		# A solid still growing leaves the splats up until it lands (_tick_solid).
 		cloud.set_visible_cloud(not marching and not solid.visible and not _in_own_world())
+	_sync_glow()
 
 
 ## SOLID on, off, or at a new grid. Entering it re-homes the bulb to the render's framing;
@@ -3218,6 +3220,26 @@ func _set_art(st: int) -> void:
 		_world_sky(true)
 	else:
 		_art_sky()
+	_sync_glow()
+
+
+## Manual override from the debug GLOW tile (-1 = automatic per mode/style, 0 = off, 1 = on).
+var _glow_override := -1
+
+
+## Auto-disable Glow in non-HDR modes to save the stereo downsample/blur/upsample pass on Quest.
+## FLAME, TREE (additive points/leaves) and neon/circuit styles (albedo > 1.0) keep glow on;
+## natural/toon/pencil GROUND, BULB and IFS disable it unless overridden.
+func _sync_glow() -> void:
+	var env := _env()
+	if env == null:
+		return
+	if _glow_override >= 0:
+		env.glow_enabled = _glow_override > 0
+		return
+	var flame_or_tree := not bulb_mode and not ground_mode and not ifs_mode
+	var hdr_style := (art == 1 or art == 4) and (ground_mode or ifs_mode or tree_mode or _in_own_world() or surface_idx == SURFACE_FLY_IDX)
+	env.glow_enabled = flame_or_tree or hdr_style
 
 
 ## A STYLE's sky in the modes it dresses, out of passthrough, and GROUND's fog to match; black

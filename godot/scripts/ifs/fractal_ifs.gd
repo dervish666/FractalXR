@@ -159,6 +159,35 @@ const PRESETS := [
 	{"name": "TWIST", "seed": "cube", "detail": 3, "drag": 3,
 		"maps": [[0.4, Vector3(0.62, 0.62, 0.62), Vector3(0.0, 34.0, 0.0)],
 			[0.4, Vector3(0.62, 0.62, -0.62), Vector3(0.0, 34.0, 0.0)]]},
+	# Solid architectural pillars cantilevered from the corners with rotated diamond buttresses:
+	# reads as a Monument-Valley / Brutalist temple rather than a wireframe cage (48 tris/copy).
+	{"name": "MONOLITH", "seed": "block", "detail": 3, "drag": 3,
+		"maps": [[0.36, Vector3(0.74, 0.72, 0.62)],
+			[0.36, Vector3(0.74, 0.68, -0.62), Vector3(0.0, 0.0, 45.0)]]},
+	# Floating horizontal terrace balconies climbing and spiralling into a tiered pavilion.
+	{"name": "PAGODA", "seed": "slab", "detail": 3, "drag": 3,
+		"maps": [[0.42, Vector3(0.72, 0.58, 0.42), Vector3(0.0, 32.0, 8.0)],
+			[0.40, Vector3(0.48, 0.68, -0.62), Vector3(8.0, -28.0, 0.0)]]},
+	# Polygonal hoops tilted into interlocking fractal armillary spheres.
+	{"name": "ORBIT", "seed": "ring", "detail": 3, "drag": 3,
+		"maps": [[0.44, Vector3(0.66, 0.42, 0.46), Vector3(58.0, 26.0, 0.0)],
+			[0.44, Vector3(0.42, 0.66, -0.46), Vector3(-26.0, 58.0, 0.0)]]},
+	# Tall vaulted gothic arches crossing at right angles into nested nave portals.
+	{"name": "CATHEDRAL", "seed": "arch", "detail": 3, "drag": 3,
+		"maps": [[0.46, Vector3(0.66, 0.48, 0.44), Vector3(0.0, 24.0, 0.0)],
+			[0.46, Vector3(0.56, 0.22, -0.62), Vector3(0.0, 90.0, 0.0)]]},
+	# Sweeping chevron vanes curving outward into 3D Barnsley-style botanical plumes.
+	{"name": "FERN", "seed": "wing", "detail": 3, "drag": 3,
+		"maps": [[0.44, Vector3(0.64, 0.64, 0.36), Vector3(14.0, 22.0, -24.0)],
+			[0.40, Vector3(0.76, 0.26, -0.44), Vector3(-16.0, -26.0, 24.0)]]},
+	# Delicate 3D orthogonal frost spikes branching into a crystalline snowflake dendrite.
+	{"name": "SNOWFLAKE", "seed": "jack", "detail": 3, "drag": 3,
+		"maps": [[0.38, Vector3(0.76, 0.36, 0.36), Vector3(0.0, 0.0, 30.0)],
+			[0.38, Vector3(0.36, 0.76, -0.36), Vector3(30.0, 0.0, 0.0)]]},
+	# Chunky solid interlocking crystal shards sprouting like bismuth / quartz geodes.
+	{"name": "CRYSTAL", "seed": "prism", "detail": 3, "drag": 3,
+		"maps": [[0.38, Vector3(0.68, 0.62, 0.56), Vector3(28.0, 35.0, 18.0)],
+			[0.38, Vector3(0.62, 0.68, -0.56), Vector3(-24.0, 18.0, 35.0)]]},
 ]
 
 var plane1_normal := DEFAULT_N1
@@ -1166,12 +1195,96 @@ func _variant(clip: bool, nocull: bool) -> Shader:
 	return s
 
 
-## [centre, half-extents, frame] for every edge of a seed polyhedron. The frame's z column is
-## the edge direction and the other two are the cross-section, so one beam shape serves a cube
-## edge and a tetrahedron edge alike.
+## [centre, half-extents, frame] for every beam of a seed shape. The frame's z column is
+## the beam's long axis and the other two are its cross-section. Polyhedron frames read
+## FRAME_VERTS/FRAME_EDGES; sculptural seeds (block, slab, ring, arch, wing, jack, prism)
+## build solid blocks, floating plates, hoops, arches, vanes and crystal clusters.
 static func _frame_beams(kind: String) -> Array:
-	var verts: Array = FRAME_VERTS[kind]
 	var out: Array = []
+	match kind:
+		"block":
+			# Four solid Brutalist monolith pillars framing an open temple courtyard.
+			# Long axis along beam Z so clear_radius_at's capsule matches the pillar cross-section.
+			var b_up := _beam_basis(Vector3.UP)
+			for sx in [-1.0, 1.0]:
+				for sz in [-1.0, 1.0]:
+					out.append([Vector3(0.84 * sx, 0.0, 0.84 * sz),
+						Vector3(0.15, 0.15, 0.96), b_up])
+			return out
+		"slab":
+			# Floating wide balcony rings at floor and canopy height, open in the middle.
+			var b_x := _beam_basis(Vector3.RIGHT)
+			for sy in [-1.0, 1.0]:
+				var y := 0.82 * float(sy)
+				out.append([Vector3(0.0, y, 0.84), Vector3(0.05, 0.14, 0.98), b_x])
+				out.append([Vector3(0.0, y, -0.84), Vector3(0.05, 0.14, 0.98), b_x])
+				out.append([Vector3(0.84, y, 0.0), Vector3(0.14, 0.05, 0.70), Basis.IDENTITY])
+				out.append([Vector3(-0.84, y, 0.0), Vector3(0.14, 0.05, 0.70), Basis.IDENTITY])
+			return out
+		"ring":
+			var segs := 8
+			for i in segs:
+				var a0 := TAU * float(i) / float(segs)
+				var a1 := TAU * float(i + 1) / float(segs)
+				var p0 := Vector3(cos(a0), sin(a0), 0.0)
+				var p1 := Vector3(cos(a1), sin(a1), 0.0)
+				var d := p1 - p0
+				out.append([(p0 + p1) * 0.5, Vector3(0.055, 0.055, d.length() * 0.5 + 0.045),
+					_beam_basis(d.normalized())])
+			return out
+		"arch":
+			var pts := [
+				Vector3(-0.78, -1.0, 0.0), Vector3(-0.78, 0.15, 0.0),
+				Vector3(-0.42, 0.72, 0.0), Vector3(0.0, 1.0, 0.0),
+				Vector3(0.42, 0.72, 0.0), Vector3(0.78, 0.15, 0.0),
+				Vector3(0.78, -1.0, 0.0),
+			]
+			for i in pts.size() - 1:
+				var a: Vector3 = pts[i]
+				var b: Vector3 = pts[i + 1]
+				var d := b - a
+				out.append([(a + b) * 0.5, Vector3(0.065, 0.09, d.length() * 0.5 + 0.05),
+					_beam_basis(d.normalized())])
+			return out
+		"wing":
+			# Twin sweeping chevron vanes flanking an open central corridor (X-mirror symmetric).
+			var segs := [
+				[Vector3(0.56, -0.78, 0.0), Vector3(0.98, 0.25, 0.16), Vector2(0.075, 0.03)],
+				[Vector3(0.98, 0.25, 0.16), Vector3(0.58, 0.96, 0.0), Vector2(0.06, 0.03)],
+				[Vector3(-0.56, -0.78, 0.0), Vector3(-0.98, 0.25, 0.16), Vector2(0.075, 0.03)],
+				[Vector3(-0.98, 0.25, 0.16), Vector3(-0.58, 0.96, 0.0), Vector2(0.06, 0.03)],
+			]
+			for s in segs:
+				var a: Vector3 = s[0]
+				var b: Vector3 = s[1]
+				var w: Vector2 = s[2]
+				var d := b - a
+				out.append([(a + b) * 0.5, Vector3(w.x, w.y, d.length() * 0.5 + 0.03),
+					_beam_basis(d.normalized())])
+			return out
+		"jack":
+			# Six radiating frost spikes from an open core out to +-1 on each axis.
+			for s in [-1.0, 1.0]:
+				out.append([Vector3(0.74 * s, 0.0, 0.0), Vector3(0.28, 0.045, 0.045), Basis.IDENTITY])
+				out.append([Vector3(0.0, 0.74 * s, 0.0), Vector3(0.045, 0.28, 0.045), Basis.IDENTITY])
+				out.append([Vector3(0.0, 0.0, 0.74 * s), Vector3(0.045, 0.045, 0.28), Basis.IDENTITY])
+			return out
+		"prism":
+			# Four chunky tilted crystal shards framing an open geode cavity.
+			var pts := [
+				[Vector3(0.92, 0.0, 0.0), Vector3(0.0, 0.92, 0.0)],
+				[Vector3(0.0, 0.92, 0.0), Vector3(-0.92, 0.0, 0.0)],
+				[Vector3(-0.92, 0.0, 0.0), Vector3(0.0, -0.92, 0.0)],
+				[Vector3(0.0, -0.92, 0.0), Vector3(0.92, 0.0, 0.0)],
+			]
+			for s in pts:
+				var a: Vector3 = s[0]
+				var b: Vector3 = s[1]
+				var d := b - a
+				out.append([(a + b) * 0.5, Vector3(0.12, 0.12, d.length() * 0.5 + 0.05),
+					_beam_basis(d.normalized())])
+			return out
+	var verts: Array = FRAME_VERTS[kind]
 	for e in FRAME_EDGES[kind]:
 		var a: Vector3 = verts[e[0]]
 		var b: Vector3 = verts[e[1]]
