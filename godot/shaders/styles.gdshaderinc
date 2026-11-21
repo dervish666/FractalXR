@@ -1,20 +1,24 @@
-// STYLE: how a surface is drawn, shared by FLY's meshes (bulb_solid), GROUND, IFS and the
-// trees. 0 = natural (the shader's own look; art_colour is not called), 1 = neon: dark
+// STYLE: how a surface is drawn, shared by FLY's meshes (bulb_solid), GROUND, IFS, MARCH and
+// the trees. 0 = natural (the shader's own look; art_colour is not called), 1 = neon: dark
 // bodies drawn in glowing lines. 2 = toon: flat colours in two light steps and ink outlines.
 // 3 = pencil: graphite hatching on paper, denser and crossed in the shade. 4 = circuit:
-// copper traces and pads on a green board.
+// copper traces and pads on a green board. 5 = iridescent (thin-film interference),
+// 6 = magma (obsidian ridges with glowing HDR crevices), 7 = jade (wrapped light & fake SSS),
+// 8 = chrome (procedural 3-band liquid mirror reflection).
 //
 // Everything is fixed to the shape, never the screen, so both eyes see the same line on the
 // same fold. Contours come from the caller's key; strokes and traces live on the plane the
 // surface faces most (pos and nrm, in any frame that moves with the shape) at a power of two
 // period sized in pixels, so a pattern keeps its size on screen as you shrink. Widths are in
 // pixels via fwidth, and lines packed closer than a few pixels fade out instead of crawling.
-// Neon's colour runs past 1.0 so the Environment's glow (threshold 1, main.tscn) blooms it.
+// Neon's colour and magma's crevices run past 1.0 so the Environment's glow blooms them.
 #ifdef ART_GLOBAL
 global uniform int art_style;
 #else
 uniform int art_style = 0;
 #endif
+global uniform vec3 hand_light_pos;
+global uniform vec3 hand_light_col;
 uniform float neon_bands = 11.0;
 uniform float neon_gain = 2.0;
 uniform float neon_far = 80.0;   // metres: lines fade out by here (and FLY's per-pixel key stops)
@@ -30,6 +34,24 @@ uniform vec3 neon_body = vec3(0.004, 0.005, 0.012);
 uniform float style_px = 12.0;       // pattern period, in pixels, give or take an octave
 uniform vec3 paper = vec3(0.92, 0.9, 0.85);
 uniform vec3 graphite = vec3(0.12, 0.12, 0.15);
+
+// Soft world-space proximity lantern from the user's controller (V9). Skipped when off
+// (hand_light_col == 0, the desktop/harness default).
+vec3 hand_lantern(vec3 wpos, vec3 wnrm, vec3 wview, vec3 albedo) {
+	if (dot(hand_light_col, hand_light_col) <= 1e-6) return vec3(0.0);
+	vec3 hl = hand_light_pos - wpos;
+	float d2 = dot(hl, hl);
+	float att = 1.0 / (1.0 + d2 * 1.8);
+	vec3 hd = hl * inversesqrt(max(d2, 1e-6));
+	float ndl = max(dot(wnrm, hd), 0.0);
+	vec3 hv = normalize(hd + wview);
+	float ndh = max(dot(wnrm, hv), 0.0);
+	float s2 = ndh * ndh;
+	float s4 = s2 * s2;
+	float s16 = (s4 * s4) * (s4 * s4);
+	return (albedo * (0.18 + 0.82 * ndl) + mix(albedo, vec3(1.0), 0.5) * 0.45 * s16 * ndl)
+		* hand_light_col * att;
+}
 
 // An integer hash, as sin() hashes lose their bits on mobile GPUs.
 float hash2(vec2 c) {
@@ -101,6 +123,7 @@ vec3 circuit(vec2 uv, float period, float px) {
 // changes band; below 0, colour by facing instead (floors, and walls each way). pos, nrm: a
 // frame fixed to the shape. lit: 0 to 1 sun on the surface. ao: 0 to 1, 1 open. ndv: facing
 // the eye. dist: metres from the eye. Returns linear colour before the caller's gain.
+// Called for NPR styles 1..4 only (physical finishes 5..8 call physical_finish below).
 vec3 art_colour(float f, float toon_e, vec3 pos, vec3 nrm, float lit, float ao, float ndv, float dist) {
 	vec3 ns = normalize(nrm);
 	vec3 ax = abs(ns);
@@ -181,4 +204,69 @@ vec3 art_colour(float f, float toon_e, vec3 pos, vec3 nrm, float lit, float ao, 
 	cb += vec3(0.25, 1.6, 0.45) * cc.z;   // past 1, so it blooms
 	cb += vec3(0.1, 0.6, 0.3) * sil * 0.15;
 	return cb;
+}
+
+// Physical surface finishes (V2, art_style 5..8):
+//   5 = iridescent (thin-film bismuth interference driven by view angle & surface key)
+//   6 = magma      (dark glossy obsidian ridges with glowing HDR crevices that bloom)
+//   7 = jade       (translucent carved jade / alabaster with wrapped light & backlit SSS)
+//   8 = chrome     (liquid mirror reflecting a 3-band horizon/sky studio gradient)
+// n, l and v must share the same coordinate space (view or world). refl_y is the world-space
+// reflection direction's Y component (-1..1).
+vec3 physical_finish(vec3 albedo, vec3 hi_col, vec3 n, vec3 l, vec3 v, float refl_y,
+		float sh, float ao, float key) {
+	float ndl = max(dot(n, l), 0.0);
+	float ndv = clamp(dot(n, v), 0.0, 1.0);
+	float lit = ndl * sh;
+	vec3 hv = normalize(l + v);
+	float ndh = max(dot(n, hv), 0.0);
+	float s2 = ndh * ndh;
+	float s4 = s2 * s2;
+	float s8 = s4 * s4;
+	float s16 = s8 * s8;
+	float s64 = s16 * s16 * s16 * s16;
+	float f1 = 1.0 - ndv;
+	float fres = f1 * f1 * f1;
+
+	if (art_style == 5) {
+		float phase = ndv * 2.2 + key * 0.85;
+		vec3 film = 0.5 + 0.5 * cos(6.2831853 * (phase + vec3(0.0, 0.33, 0.67)));
+		vec3 tint = mix(albedo, film, 0.58);
+		vec3 base = tint * (0.24 * ao + 1.15 * lit * mix(0.6, 1.0, ao));
+		vec3 spec = film * (0.85 * (s16 * s8) + 0.9 * s64) * (0.25 + 0.75 * lit);
+		vec3 rim = film * fres * 0.75 * ao;
+		return base + spec + rim;
+	}
+	if (art_style == 6) {
+		vec3 basalt = mix(vec3(0.025, 0.025, 0.032), albedo * 0.16, 0.45);
+		vec3 c = basalt * (0.35 + 1.4 * lit) + mix(albedo, vec3(1.0), 0.55) * 0.85 * s64 * lit;
+		c += hi_col * fres * 0.22 * ao;
+		float crev = clamp(1.0 - ao, 0.0, 1.0);
+		float heat = crev * crev * (0.45 + 0.55 * crev);
+		vec3 glow = mix(albedo, hi_col, 0.65) * 1.4 + hi_col * 1.35 * crev;
+		return c + glow * heat * 1.55;
+	}
+	if (art_style == 7) {
+		float wrap = max((dot(n, l) + 0.55) / 1.55, 0.0) * mix(0.45, 1.0, sh);
+		float back = clamp(dot(-l, v), 0.0, 1.0);
+		float b2 = back * back;
+		float sss = (0.3 + 0.7 * b2 * b2) * ao * (0.35 + 0.65 * fres);
+		vec3 deep = albedo * vec3(0.42, 0.62, 0.52);
+		vec3 c = mix(deep, albedo, 0.55 + 0.45 * wrap) * (0.32 * ao + 0.95 * wrap);
+		c += mix(albedo, hi_col, 0.45) * sss * 0.85;
+		c += mix(vec3(1.0), hi_col, 0.3) * 0.45 * s64 * lit;
+		return c;
+	}
+	vec3 ground_band = mix(albedo * 0.28, vec3(0.06, 0.07, 0.11), 0.5);
+	vec3 horizon_band = mix(hi_col, vec3(1.0, 0.96, 0.92), 0.55) * 1.15;
+	vec3 zenith_band = mix(albedo * 0.85, vec3(0.28, 0.42, 0.68), 0.45);
+	vec3 env_refl = refl_y < 0.0
+		? mix(horizon_band, ground_band, clamp(-refl_y * 2.2, 0.0, 1.0))
+		: mix(horizon_band, zenith_band, clamp(refl_y * 1.6, 0.0, 1.0));
+	float hline = exp(-refl_y * refl_y * 28.0);
+	env_refl += mix(hi_col, vec3(1.0), 0.7) * hline * 0.65;
+	float f_chrome = 0.25 + 0.75 * fres;
+	vec3 c = env_refl * mix(albedo * 0.55 + vec3(0.45), vec3(1.0), f_chrome) * mix(0.22, 1.0, ao);
+	c += vec3(1.0) * 1.2 * s64 * lit;
+	return c;
 }

@@ -586,6 +586,9 @@ func adopt(d: Dictionary) -> int:
 		_branch_mat.set_shader_parameter(key, d[key])
 	for key in ["leaf_tint", "leaf_mix", "leaf_hue", "leaf_shape", "leaf_gain"]:
 		_leaf_mat.set_shader_parameter(key, d[key])
+	_branch_mat.set_shader_parameter(&"fog_density", fog_density)
+	_branch_mat.set_shader_parameter(&"fog_colour", Vector3(fog_colour.r, fog_colour.g, fog_colour.b))
+	_leaf_mat.set_shader_parameter(&"fog_density", fog_density)
 	_fed = false
 	grow_t = 0.0
 	_sync_litter()
@@ -802,6 +805,20 @@ func set_leaves(on: bool) -> void:
 	leaves_on = on
 	if _leaves != null and not far:
 		_leaves.visible = on
+
+
+var fog_density := 0.0
+var fog_colour := Color(0.015, 0.02, 0.045)
+
+
+func set_fog(density: float, colour: Color) -> void:
+	fog_density = density
+	fog_colour = colour
+	if _branch_mat != null:
+		_branch_mat.set_shader_parameter(&"fog_density", density)
+		_branch_mat.set_shader_parameter(&"fog_colour", Vector3(colour.r, colour.g, colour.b))
+	if _leaf_mat != null:
+		_leaf_mat.set_shader_parameter(&"fog_density", density)
 
 
 const _PAL_NAMES: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal4"]

@@ -61,6 +61,8 @@ uniform float litter_gain = 0.9;
 // you (forest.gd LITTER_NEAR); this shrinks it away before that line, so it never pops, and keeps
 // 5 cm discs from shimmering at a distance where they would be a pixel or two.
 uniform vec2 litter_fade = vec2(9.0, 13.0);
+// V6: avenue atmospheric distance attenuation (0 off for hero tree or passthrough).
+uniform float fog_density = 0.0;
 
 vec3 hue_turn(vec3 c, float a) {
 	const vec3 k = vec3(0.57735027);
@@ -103,6 +105,10 @@ void vertex() {
 	v_col = c * brightness * leaf_gain * (litter > 0.5 ? litter_gain : 1.0);
 
 	vec3 center = MODEL_MATRIX[3].xyz;
+	if (fog_density > 0.0 && litter < 0.5) {
+		float fd = fog_density * distance(center, CAMERA_POSITION_WORLD);
+		v_col *= exp(-fd * fd);
+	}
 	vec3 w;
 	if (litter > 0.5) {
 		float lg = clamp((grow_t - grow_s - 0.2 - birth) / 0.8, 0.0, 1.0);

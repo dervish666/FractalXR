@@ -117,6 +117,13 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).stepping(func(d: int):
 				m._set_tree_bark(wrapi(m.forest.bark_style + d, 0, Forest.BARK_STEPS.size()))).hinted(
 			"A fractal pattern grown into the bark"),
+		# V7: wind-carried glowing petals/spores drifting through the grove and avenue.
+		WristMenu.Item.new("look", "PETALS",
+			func(): return "on" if m.forest.motes_on else "off",
+			func(): m.forest.set_motes_on(not m.forest.motes_on),
+			false, vis).toggle(func(): return m.forest.motes_on).minor().hinted(
+			"Drifting petals and spores carried by the wind"),
+		MenuShared.lantern(m, vis),
 		# The frame-time dial goes after what the trees look like, not ahead of them.
 		MenuShared.detail(m, vis),
 		MenuShared.fovea(m, vis),

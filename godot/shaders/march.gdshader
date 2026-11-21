@@ -55,6 +55,8 @@ void vertex() {
 }
 
 #include "res://shaders/bulb_de.gdshaderinc"
+#define ART_GLOBAL
+#include "res://shaders/styles.gdshaderinc"
 
 vec3 palette(float u) {
 	u = clamp(u, 0.0, 1.0) * 4.0;
@@ -163,27 +165,51 @@ void fragment() {
 	// The crawl term is a free, stable cavity cue. An additional DE probe here was a
 	// sixth expensive DE evaluation after each hit and dominated the visible detail.
 	float ao_raw = crawl;
-	float ao = mix(0.5, 1.0, ao_raw);
-
-	// Same orbit-trap coordinate the compute path stores per particle, so a palette
-	// bands the surface the way it bands the splats.
-	// The trap alone is chaotic at pixel scale on a marched surface (the splats hide
-	// that by blending hundreds of them), so it is only the seasoning: the coarse
-	// occlusion probes carry the ramp, crevices dark and ridges light.
-	float trap = clamp((r.y * 0.7 + r.z * 0.5) * 0.45, 0.0, 1.0);
-	float col = clamp(0.65 * ao_raw + 0.35 * trap, 0.0, 1.0);
-	vec3 albedo = palette(cycle_u(col));
-	if (colour_cycle > 0.0)
-		albedo = keep_luma(albedo, dot(palette(fract(col * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
-	float f1 = 1.0 - ndv;
-	float fres = f1 * f1 * f1;
-	vec3 c = albedo * (0.16 + 0.6 * ndv + 0.4 * ndk) * ao * crawl
-		+ pal4 * fres * 0.3 * ao;
-	ALBEDO = c * gain;
+	float ao = mix(0.45, 1.0, ao_raw * ao_raw);
 
 	// VERTEX is the view-space ray. t is in state units, so apply the state/local fit
 	// and the cloud's uniform node scale before writing its real depth.
-	vec3 hit_view = vdir * (t * cloud_fit * v_mscale);
+	float hit_dist = t * cloud_fit * v_mscale;
+	vec3 hit_view = vdir * hit_dist;
+	vec3 wpos = (INV_VIEW_MATRIX * vec4(hit_view, 1.0)).xyz;
+	vec3 wn = normalize((MODEL_MATRIX * vec4(n, 0.0)).xyz);
+	vec3 wview = normalize(CAMERA_POSITION_WORLD - wpos);
+
+	// Same orbit-trap coordinate the compute path stores per particle, so a palette
+	// bands the surface the way it bands the splats.
+	float trap = clamp((r.y * 0.7 + r.z * 0.5) * 0.45, 0.0, 1.0);
+	float col = clamp(0.65 * ao_raw + 0.35 * trap, 0.0, 1.0);
+	vec3 c;
+	if (art_style >= 1 && art_style <= 4) {
+		c = art_colour(col * neon_bands + 0.5, col * 3.999, pos, n, ndk, ao, ndv, hit_dist);
+	} else {
+		vec3 albedo = palette(cycle_u(col));
+		if (colour_cycle > 0.0)
+			albedo = keep_luma(albedo, dot(palette(fract(col * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
+		if (art_style >= 5) {
+			float refl_y = reflect(-wview, wn).y;
+			c = physical_finish(albedo, pal4, n, KEY, v, refl_y, 1.0, ao_raw * ao_raw, col);
+		} else {
+			// V4: two-tone hemisphere ambient + metallic sheen & tight gloss highlight.
+			vec3 hemi = mix(vec3(0.10, 0.11, 0.16), vec3(0.26, 0.30, 0.38), wn.y * 0.5 + 0.5);
+			c = albedo * (hemi + vec3(0.32 * ndv + 0.92 * ndk)) * ao * crawl;
+			vec3 hv = normalize(KEY + v);
+			float ndh = max(dot(n, hv), 0.0);
+			float s2 = ndh * ndh;
+			float s4 = s2 * s2;
+			float s8 = s4 * s4;
+			float s16 = s8 * s8;
+			float s64 = s16 * s16 * s16 * s16;
+			c += albedo * 0.75 * (s16 * s8) * ndk * ao;
+			c += mix(albedo, vec3(1.0), 0.35) * 0.65 * s64 * ndk * ao;
+			float f1 = 1.0 - ndv;
+			float fres = f1 * f1 * f1;
+			c += pal4 * fres * 0.38 * ao;
+		}
+		c += hand_lantern(wpos, wn, wview, albedo);
+	}
+	ALBEDO = c * gain;
+
 	vec4 clip = PROJECTION_MATRIX * vec4(hit_view, 1.0);
 	DEPTH = clip.z / clip.w;
 }

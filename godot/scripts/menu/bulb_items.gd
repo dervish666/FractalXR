@@ -60,8 +60,13 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, func(): return vis.call() and style(m) == FLY).stepping(
 			func(d: int): m.fly_speed_idx = wrapi(m.fly_speed_idx + d, 0, FractalMain.FLY_SPEEDS.size())).hinted(
 			"How fast you fly"),
-		# How FLY's own worlds are drawn (shared with GROUND, IFS and TREES).
-		MenuShared.art(m, func(): return vis.call() and style(m) == FLY and m.fly_world != BulbFly.World.BULB),
+		# How SOLID, MARCHED and FLY bulbs are drawn (shared with GROUND, IFS and TREES).
+		MenuShared.art(m, func():
+			var st := style(m)
+			return vis.call() and (st == SOLID or st == MARCHED or st == FLY)),
+		MenuShared.lantern(m, func():
+			var st := style(m)
+			return vis.call() and (st == SOLID or st == MARCHED or st == FLY)),
 		# How fine the chosen surface is: planes for lines, trace steps for marched, grid cells
 		# for solid. A detail, not a look, so it waits behind MORE.
 		WristMenu.Item.new("look", "QUALITY",

@@ -54,6 +54,8 @@ uniform vec3 sky_tint = vec3(1.0);
 uniform vec3 key_colour = vec3(1.0);
 uniform vec3 fog_colour = vec3(0.6, 0.7, 0.85);
 uniform float fog_density = 0.0;
+// V5: directional Mie-like sun in-scattering in the distance fog (FLY worlds set this > 0).
+uniform float sun_scatter = 0.0;
 // A soft lamp at the eye, for inside a closed shape where the sun never reaches (VAULT):
 // diffuse toward the viewer, falling off over lamp_m metres. 0 = off.
 uniform float head_light = 0.0;
@@ -253,7 +255,7 @@ void fragment() {
 	float lit = ndl * sh;
 
 	vec3 albedo = vec3(0.0);
-	if (art_style > 0 && debug_view == 0) {
+	if (art_style >= 1 && art_style <= 4 && debug_view == 0) {
 		float dist = length(VERTEX);
 		float near = 1.0 - smoothstep(0.5 * neon_far, neon_far, dist);
 		if (pixel_trap > 0) {
@@ -273,10 +275,10 @@ void fragment() {
 			if (near > 0.0)
 				trap = mix(v_trap, fly_trap(v_state), near);
 		}
+		float eq = equalise(trap);
 		if (colour_cycle > 0.0 && palette_cycles < 1.5) {
 			albedo = v_cycled;
 		} else {
-			float eq = equalise(trap);
 			albedo = palette(cycle_u(eq));
 			if (colour_cycle > 0.0)
 				albedo = keep_luma(albedo, dot(palette(fract(eq * palette_cycles)), vec3(0.2126, 0.7152, 0.0722)));
@@ -287,27 +289,45 @@ void fragment() {
 		float lum2 = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
 		albedo = max(mix(vec3(lum2), albedo, saturation), vec3(0.0));
 
-		vec3 c = albedo * (ambient * ao * sky_tint + key * lit * key_colour * mix(0.6, 1.0, v_ao));
-		// Metal, not plastic: a broad sheen tinted by the surface and a tight glint that stays
-		// mostly the surface's colour. Plastic's highlight is white.
-		if (lit > 0.0) {
-			vec3 hv = normalize(l + VIEW);
-			float ndh = max(dot(n, hv), 0.0);
-			c += albedo * sheen * pow(ndh, shininess) * lit;
-			c += mix(albedo, vec3(1.0), 0.3) * gloss * pow(ndh, 90.0) * lit;
+		vec3 wpos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		vec3 wn = normalize(mat3(INV_VIEW_MATRIX) * n);
+		vec3 wview = normalize(CAMERA_POSITION_WORLD - wpos);
+		vec3 c;
+		if (art_style >= 5 && debug_view == 0) {
+			float refl_y = reflect(-wview, wn).y;
+			c = physical_finish(albedo, pal4, n, l, VIEW, refl_y, sh, ao, eq);
+		} else {
+			c = albedo * (ambient * ao * sky_tint + key * lit * key_colour * mix(0.6, 1.0, v_ao));
+			// Metal, not plastic: a broad sheen tinted by the surface and a tight glint that stays
+			// mostly the surface's colour. Plastic's highlight is white.
+			if (lit > 0.0) {
+				vec3 hv = normalize(l + VIEW);
+				float ndh = max(dot(n, hv), 0.0);
+				c += albedo * sheen * pow(ndh, shininess) * lit;
+				c += mix(albedo, vec3(1.0), 0.3) * gloss * pow(ndh, 90.0) * lit;
+			}
+			float f1 = 1.0 - ndv;
+			c += glow_colour * (f1 * f1 * f1) * rim * v_ao;
 		}
-		float f1 = 1.0 - ndv;
-		c += glow_colour * (f1 * f1 * f1) * rim * v_ao;
 		if (head_light > 0.0) {
 			float fall = lamp_m * lamp_m / (lamp_m * lamp_m + dot(VERTEX, VERTEX));
 			c += albedo * key_colour * head_light * ndv * fall * mix(0.4, 1.0, v_ao);
 		}
+		c += hand_lantern(wpos, wn, wview, albedo);
 		ALBEDO = c * gain * grow * tint;
 	}
 	// Squared, so the near city keeps its colour and the haze gathers toward the edge.
 	if (fog_density > 0.0) {
-		float fd = fog_density * length(VERTEX);
-		ALBEDO = mix(fog_colour, ALBEDO, exp(-fd * fd));
+		float vdist = length(VERTEX);
+		float fd = fog_density * vdist;
+		vec3 fcol = fog_colour;
+		if (sun_scatter > 0.0) {
+			float sdot = max(dot(VERTEX / max(vdist, 1e-5), v_light), 0.0);
+			float s2 = sdot * sdot;
+			float s6 = s2 * s2 * s2;
+			fcol = mix(fog_colour, key_colour * 1.15, s6 * sun_scatter);
+		}
+		ALBEDO = mix(fcol, ALBEDO, exp(-fd * fd));
 	}
 	// Harness views of the baked terms (tools/solid_shot.sh): 1 AO, 2 shadow, 3 N.L.
 	if (debug_view == 1) ALBEDO = vec3(v_ao);

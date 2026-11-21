@@ -232,6 +232,13 @@ var _sow_row := 0
 var _sow_row_end := 0
 var _sow_selected := ""
 var _wave_near := INF
+# V6: avenue distance fog; V7: wind-carried drifting petals/spores/fireflies.
+const MOTE_COUNT := 640
+var _fog_density := 0.0
+var _fog_colour := Color(0.015, 0.02, 0.045)
+var motes_on := true
+var _motes: MultiMeshInstance3D
+var _motes_mat: ShaderMaterial
 
 
 func _init() -> void:
@@ -241,6 +248,29 @@ func _init() -> void:
 	add_child(_avenue)
 	_avenue.add_child(_far)
 	_avenue.add_child(_floor)
+	_init_motes()
+
+
+func _init_motes() -> void:
+	_motes_mat = ShaderMaterial.new()
+	_motes_mat.shader = load("res://shaders/tree_motes.gdshader")
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_custom_data = true
+	mm.mesh = FractalTree.unit_meshes()[1]
+	mm.instance_count = MOTE_COUNT
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20261121
+	for i in MOTE_COUNT:
+		mm.set_instance_transform(i, Transform3D.IDENTITY)
+		mm.set_instance_custom_data(i, Color(rng.randf(), rng.randf(), rng.randf(), rng.randf()))
+	_motes = MultiMeshInstance3D.new()
+	_motes.name = "Motes"
+	_motes.multimesh = mm
+	_motes.material_override = _motes_mat
+	_motes.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_motes.custom_aabb = AABB(Vector3(-500.0, -500.0, -500.0), Vector3(1000.0, 1000.0, 1000.0))
+	add_child(_motes)
 
 
 func _notification(what: int) -> void:
@@ -347,6 +377,8 @@ func set_wind(w: float) -> void:
 	_wind = w
 	for t in _trees:
 		t.set_wind(w)
+	if _motes_mat != null:
+		_motes_mat.set_shader_parameter(&"wind", w)
 
 
 func set_leaves(on: bool) -> void:
@@ -354,6 +386,38 @@ func set_leaves(on: bool) -> void:
 	for t in _trees:
 		t.set_leaves(on)
 	_far.set_leaves(on)
+	if _motes != null:
+		_motes.visible = on and motes_on
+
+
+func set_motes_on(on: bool) -> void:
+	motes_on = on
+	if _motes != null:
+		_motes.visible = on and _leaves_on
+
+
+func set_motes_species(species: String) -> void:
+	if _motes_mat == null:
+		return
+	if species == "" or not FractalTree.SHAPES.has(species):
+		_motes_mat.set_shader_parameter(&"leaf_shape", 0.0)
+		_motes_mat.set_shader_parameter(&"leaf_mix", 0.0)
+		_motes_mat.set_shader_parameter(&"leaf_hue", 0.0)
+		return
+	var p := FractalTree.params_for(species, 1, 0.0)
+	var lt: Color = p["leaf_tint"]
+	_motes_mat.set_shader_parameter(&"leaf_tint", Vector3(lt.r, lt.g, lt.b))
+	_motes_mat.set_shader_parameter(&"leaf_mix", float(p["leaf_mix"]))
+	_motes_mat.set_shader_parameter(&"leaf_hue", float(p["leaf_hue"]))
+	_motes_mat.set_shader_parameter(&"leaf_shape", float(p["leaf_shape"]))
+
+
+func set_fog(density: float, colour: Color) -> void:
+	_fog_density = density
+	_fog_colour = colour
+	for t in _trees:
+		t.set_fog(density, colour)
+	_far.set_fog(density, colour)
 
 
 func set_palette(pal: Array) -> void:
@@ -362,6 +426,10 @@ func set_palette(pal: Array) -> void:
 		t.set_palette(pal)
 	_far.set_palette(pal)
 	_floor.set_palette(pal)
+	if _motes_mat != null and pal.size() >= 5:
+		_motes_mat.set_shader_parameter(&"pal2", pal[2])
+		_motes_mat.set_shader_parameter(&"pal3", pal[3])
+		_motes_mat.set_shader_parameter(&"pal4", pal[4])
 
 
 ## FLOOR: a FLOOR_STEPS index. The fractal ground is one node; the fallen leaves are a node per
@@ -638,6 +706,9 @@ func tick(delta: float, cam: Vector3) -> void:
 		_sow_next_row()
 	if layout == Layout.WALK:
 		_tick_walk(delta, cam)
+	if _motes != null and _motes.visible:
+		var walk_v := (global_transform.basis * _avenue_frame.basis.z) * _walk_s if layout == Layout.WALK else Vector3.ZERO
+		_motes_mat.set_shader_parameter(&"walk_offset", walk_v)
 	if _floor.visible:
 		_place_floor(cam)
 	_tier_slice()
@@ -739,6 +810,7 @@ func _adopt(t: FractalTree, d: Dictionary, fresh: bool) -> void:
 	var u0 := Time.get_ticks_usec()
 	if not t.is_inside_tree():
 		_avenue.add_child(t)
+	t.set_fog(_fog_density, _fog_colour)
 	t.adopt(d)
 	adopt_us_max = maxi(adopt_us_max, Time.get_ticks_usec() - u0)
 	t.grow_t = minf(keep, 0.0) if fresh else keep

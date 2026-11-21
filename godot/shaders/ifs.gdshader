@@ -60,6 +60,12 @@ uniform float echo_t = 0.0;        // seconds, the echoes' clock: stops with MOT
 uniform float swap_s = 1.6;        // seconds for one generation to fold or grow
 uniform float swap_span = 2.4;     // seconds between the outermost generation and the root
 uniform float echo_glow = 1.5;     // gain swing per unit of breathe, so a swell also brightens
+// V1: architectural metallic/crystal shading and generation energy pulse.
+uniform vec3 light_dir = vec3(0.45, 0.82, 0.35);
+uniform float sheen = 0.72;
+uniform float gloss = 0.55;
+uniform float rim_gain = 0.52;
+uniform float pulse_gain = 0.5;
 
 #define ART_GLOBAL
 #include "res://shaders/styles.gdshaderinc"
@@ -71,6 +77,11 @@ varying float v_shade;
 varying vec3 v_pos;
 varying vec3 v_n;
 varying float v_axis;
+// V1/V2/V9: (level, radius), world position & normal, and view-space key light.
+varying vec2 v_meta;
+varying vec3 v_world;
+varying vec3 v_wnorm;
+varying flat vec3 v_light;
 
 void vertex() {
 	float level = INSTANCE_CUSTOM.x;
@@ -98,8 +109,10 @@ void vertex() {
 	v_pos = local_v;
 	v_n = NORMAL;
 	v_axis = UV.x;
+	v_meta = vec2(level, radius);
 	float swell = 0.0;
 	vec3 w = (MODEL_MATRIX * vec4(local_v, 1.0)).xyz;
+	vec3 wn = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	if (echo_live > 0.5) {
 		// In world space about the echo's centre, avoiding inverse(mat3(MODEL_MATRIX)) via
 		// skip_vertex_transform.
@@ -111,6 +124,7 @@ void vertex() {
 		float c = cos(a);
 		float s = sin(a);
 		rel = rel * c + cross(k, rel) * s + k * dot(k, rel) * (1.0 - c);
+		wn = wn * c + cross(k, wn) * s + k * dot(k, wn) * (1.0 - c);
 		vec3 wob = echo_wander.xyz * sin(echo_wander.w * t * vec3(1.0, 1.37, 0.71) + vec3(0.0, 2.1, 4.2));
 		w = echo_centre + rel + wob;
 	}
@@ -121,23 +135,70 @@ void vertex() {
 	// Its own line: FractalIFS._variant anchors on the one above, whole.
 	v_u += colour_cycle;
 	v_shade = UV.x * echo_gain * (1.0 + echo_glow * swell);
+	v_world = w;
+	v_wnorm = wn;
+	v_light = normalize((VIEW_MATRIX * vec4(normalize(light_dir), 0.0)).xyz);
 	vec3 view_v = (VIEW_MATRIX * vec4(w, 1.0)).xyz;
 	VERTEX = view_v;
-	NORMAL = normalize((MODELVIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	NORMAL = normalize((VIEW_MATRIX * vec4(wn, 0.0)).xyz);
 	POSITION = PROJECTION_MATRIX * vec4(view_v, 1.0);
 }
 
 void fragment() {
 	// fract() keeps the drifting coordinate precise after minutes of scrolling; the ramp is
 	// built cyclic, first colour repeated at 1.0, so the wrap is not a seam.
-	if (art_style > 0) {
+	float echo_k = v_shade / max(v_axis, 1e-3);
+	vec3 n = normalize(NORMAL);
+	if (dot(n, VIEW) < 0.0) n = -n;
+	if (art_style >= 1 && art_style <= 4) {
 		float u = fract(v_u);
 		// AXIS_SHADE runs 0.66 to 1.0: the brightest axis is in the sun.
 		float lit = clamp((v_axis - 0.6) / 0.4, 0.0, 1.0);
-		float ndv = clamp(dot(normalize(NORMAL), VIEW), 0.0, 1.0);
+		float ndv = clamp(dot(n, VIEW), 0.0, 1.0);
 		ALBEDO = art_colour(u * neon_bands + 0.5, u * 3.999, v_pos, v_n, lit, 1.0, ndv, length(VERTEX))
-			* (v_shade / max(v_axis, 1e-3)) * brightness;
+			* echo_k * brightness;
 	} else {
-		ALBEDO = texture(ramp, vec2(fract(v_u), 0.5)).rgb * v_shade * brightness;
+		float u = fract(v_u);
+		vec3 base = texture(ramp, vec2(u, 0.5)).rgb;
+		vec3 hi_col = texture(ramp, vec2(fract(u + 0.35), 0.5)).rgb;
+		vec3 wview = normalize(CAMERA_POSITION_WORLD - v_world);
+		vec3 wn = normalize(v_wnorm);
+		if (dot(wn, wview) < 0.0) wn = -wn;
+		vec3 l = normalize(v_light);
+		float pulse = 0.0;
+		if (pulse_gain > 0.001) {
+			float wave = 0.5 + 0.5 * sin((v_meta.x * 0.7 + v_meta.y * 0.3) * 6.2831853 - anim_t * 1.15);
+			float w2 = wave * wave;
+			float w8 = (w2 * w2) * (w2 * w2);
+			pulse = w8 * pulse_gain;
+		}
+		vec3 col;
+		if (art_style >= 5) {
+			float ao_ifs = mix(0.18, 0.96, v_meta.y);
+			float refl_y = reflect(-wview, wn).y;
+			col = physical_finish(base, hi_col, n, l, VIEW, refl_y, 1.0, ao_ifs, u);
+			col += mix(base, hi_col, 0.5) * (pulse * 0.5);
+		} else {
+			float ndl = max(dot(n, l), 0.0);
+			float ndv = clamp(dot(n, VIEW), 0.0, 1.0);
+			float depth_ao = mix(0.76, 1.06, v_meta.y);
+			float lit = 0.26 + 0.42 * v_axis + 0.56 * ndl;
+			col = base * lit * depth_ao;
+			vec3 hv = normalize(l + VIEW);
+			float ndh = max(dot(n, hv), 0.0);
+			float s2 = ndh * ndh;
+			float s4 = s2 * s2;
+			float s8 = s4 * s4;
+			float s16 = s8 * s8;
+			float s64 = s16 * s16 * s16 * s16;
+			col += base * sheen * (s16 * s8) * (0.35 + 0.65 * ndl);
+			col += mix(base, vec3(1.0), 0.45) * gloss * s64 * (0.25 + 0.75 * ndl);
+			float f1 = 1.0 - ndv;
+			float fres = f1 * f1 * f1;
+			col += mix(hi_col, vec3(1.0), 0.25) * fres * rim_gain * depth_ao;
+			col += mix(base, vec3(1.0), 0.35) * pulse;
+		}
+		col += hand_lantern(v_world, wn, wview, base);
+		ALBEDO = col * echo_k * brightness;
 	}
 }

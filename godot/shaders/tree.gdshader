@@ -78,6 +78,9 @@ uniform bool batch = false;
 uniform int bark_style = 0;
 uniform float bark_cell = 0.2;   // metres of tree per pattern unit (the julia lace runs 1.5x that)
 uniform float bark_glow = 1.0;   // how much the brightest lines lean toward the crown's tip colour
+// V6: avenue atmospheric fog (0 off for tabletop hero tree or passthrough).
+uniform vec3 fog_colour = vec3(0.015, 0.02, 0.045);
+uniform float fog_density = 0.0;
 
 // Rotate a colour about the grey axis (Rodrigues). Angle 0 returns it unchanged.
 vec3 hue_turn(vec3 c, float a) {
@@ -225,7 +228,7 @@ void fragment() {
 	vec3 V = to_cam / max(cam_dist, 1e-6);
 	float ndv = max(dot(n, V), 0.0);
 	float diff = 0.6 * max(dot(n, KEY), 0.0) + 0.4 * ndv;
-	if (art_style > 0) {
+	if (art_style >= 1 && art_style <= 4) {
 		// Rings up the tree for neon's lines, and toon's colours by height.
 		ALBEDO = art_colour(u * neon_bands + 0.5, u * 3.999, v_tpos, n, diff, 1.0, ndv,
 			cam_dist) * brightness;
@@ -243,8 +246,22 @@ void fragment() {
 		if (bark_style > 0 && !batch) {
 			base = bark(base, v_bark, tip);
 		}
-		float f1 = 1.0 - ndv;
-		float rim = f1 * f1 * f1;
-		ALBEDO = (base * (0.25 + 0.75 * diff) + pal3 * rim * 0.35 * u) * brightness;
+		vec3 col;
+		if (art_style >= 5) {
+			float refl_y = reflect(-V, n).y;
+			col = physical_finish(base, pal3, n, KEY, V, refl_y, 1.0, mix(0.2, 0.95, u), u);
+		} else {
+			float f1 = 1.0 - ndv;
+			float rim = f1 * f1 * f1;
+			// V6: soft downward canopy glow warming upper trunks and branches.
+			vec3 bounce = pal3 * 0.14 * smoothstep(0.25, 1.0, u) * (0.35 + 0.65 * max(n.y, 0.0));
+			col = base * (0.25 + 0.75 * diff) + pal3 * rim * 0.35 * u + bounce;
+		}
+		col += hand_lantern(v_world, n, V, base);
+		ALBEDO = col * brightness;
+	}
+	if (fog_density > 0.0) {
+		float fd = fog_density * cam_dist;
+		ALBEDO = mix(fog_colour, ALBEDO, exp(-fd * fd));
 	}
 }

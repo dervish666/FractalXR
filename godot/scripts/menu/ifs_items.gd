@@ -89,6 +89,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(): return "on" if m.ifs_room else "off",
 			func(): m._set_ifs_room(not m.ifs_room),
 			false, vis).toggle(func(): return m.ifs_room).hinted("Room-sized instead of table-sized"),
+		MenuShared.lantern(m, vis),
 		MenuShared.fovea(m, vis),
 		MenuShared.glow(m, vis),
 

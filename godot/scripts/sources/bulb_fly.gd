@@ -47,7 +47,7 @@ const MAX_BUILDING := 2
 const HOLE_PAD := 2.5
 ## Every material parameter main.gd sets on the base, copied to the levels in BULB.
 const SHARED_PARAMS: Array[StringName] = [&"pal0", &"pal1", &"pal2", &"pal3", &"pal4",
-	&"palette_cycles", &"gain", &"light_dir", &"debug_view"]
+	&"palette_cycles", &"gain", &"light_dir", &"debug_view", &"art_style"]
 ## Per-pixel colour (bulb_solid.gdshader's pixel_trap) reaches this many level 0 cells of
 ## SPIRES (one honeycomb cell each) from the eye; VAULT's reach is in metres per its own.
 const PIXEL_TRAP_CELLS := 2.4
@@ -76,7 +76,8 @@ const WORLDS := {
 		# Near-neutral stone, slate to warm: the blue and the gold are the light's (see
 		# NEUTRAL_STONE). Was navy to cream, which Sam found odd (2026-11-17).
 		"palette": NEUTRAL_STONE,
-		"sky": Color(0.58, 0.7, 0.86), "sun": Vector3(0.45, 0.55, 0.3),
+		"sky": Color(0.58, 0.7, 0.86), "zenith": Color(0.14, 0.24, 0.48),
+		"sun": Vector3(0.45, 0.55, 0.3), "sun_scatter": 0.55,
 		"sky_tint": Vector3(1.18, 1.44, 2.0), "key_colour": Vector3(1.0, 0.86, 0.62),
 		"shadow_k": 12.0, "fog_edges": 1.8,
 	},
@@ -101,7 +102,8 @@ const WORLDS := {
 			Vector3(0.35, 0.33, 0.3), Vector3(0.37, 0.34, 0.3), Vector3(0.39, 0.36, 0.31)],
 		# Darker haze and less sky in the shade than SPIRES: the reference's shadows are deep
 		# blue, and the first pass read washed out (harness, 2026-11-17).
-		"sky": Color(0.34, 0.44, 0.6), "sun": Vector3(0.35, 0.7, 0.25),
+		"sky": Color(0.34, 0.44, 0.6), "zenith": Color(0.08, 0.13, 0.28),
+		"sun": Vector3(0.35, 0.7, 0.25), "sun_scatter": 0.42,
 		"sky_tint": Vector3(0.8, 1.0, 1.55), "key_colour": Vector3(1.15, 0.9, 0.55),
 		"rim": 0.25,
 		# Baked per vertex, a sharp penumbra drew pale polygons across the sunlit faces.
@@ -151,13 +153,13 @@ var tint_levels := false
 ## for a change the harness shots barely show.
 var pixel_shadows := false
 ## FLY's STYLE (bulb_solid.gdshader art_style): 0 natural, 1 neon, 2 toon, 3 pencil,
-## 4 circuit. Names in main.gd.
+## 4 circuit, 5 iridescent, 6 magma, 7 jade, 8 chrome. Names in main.gd.
 var art := 0
 ## Neon's night: a dark blue haze to hold the silhouettes, nearly black overhead.
-## Each STYLE's sky, and so its fog (natural keeps the world's). By art: neon, toon,
-## pencil (the paper), circuit.
+## Each STYLE's sky, and so its fog (natural and iridescent/jade/chrome keep the world's).
+## By art: neon, toon, pencil (the paper), circuit, magma (volcanic twilight).
 const STYLE_SKY := {1: Color(0.02, 0.025, 0.06), 2: Color(0.45, 0.72, 1.0),
-	3: Color(0.92, 0.9, 0.85), 4: Color(0.01, 0.03, 0.02)}
+	3: Color(0.92, 0.9, 0.85), 4: Color(0.01, 0.03, 0.02), 6: Color(0.03, 0.012, 0.015)}
 
 const TINTS := [Color(1.0, 0.55, 0.55), Color(0.55, 1.0, 0.55), Color(0.55, 0.65, 1.0),
 	Color(1.0, 1.0, 0.5), Color(1.0, 0.55, 1.0), Color(0.5, 1.0, 1.0)]
@@ -267,6 +269,18 @@ func sky_colour() -> Color:
 	return STYLE_SKY.get(art, _cfg.get("sky", Color.BLACK))
 
 
+## V5: parameters for the procedural Rayleigh/Mie sky behind SPIRES and VAULT.
+func world_sky_params() -> Dictionary:
+	return {
+		"procedural": active and world != World.BULB and not STYLE_SKY.has(art),
+		"horizon": sky_colour(),
+		"zenith": _cfg.get("zenith", Color(0.12, 0.2, 0.4)),
+		"sun_state": _light,
+		"sun_colour": _cfg.get("key_colour", Vector3.ONE),
+		"sun_scatter": float(_cfg.get("sun_scatter", 0.0)),
+	}
+
+
 ## STYLE, from the menu: re-dress every level.
 func set_art(a: int) -> void:
 	art = a
@@ -304,6 +318,8 @@ func _set_look(s: BulbSolid, on: bool) -> void:
 	var sky: Color = sky_colour()
 	m.set_shader_parameter("fog_colour", Vector3(sky.r, sky.g, sky.b))
 	m.set_shader_parameter("fog_density", 0.0)
+	var scat := float(_cfg.get("sun_scatter", 0.0)) if (on and not STYLE_SKY.has(art)) else 0.0
+	m.set_shader_parameter("sun_scatter", scat)
 	m.set_shader_parameter("flatten", 0.0 if on else 0.2)
 	m.set_shader_parameter("pixel_shadow", 1 if on and pixel_shadows and world == World.SPIRES else 0)
 	m.set_shader_parameter("art_style", art if on else 0)

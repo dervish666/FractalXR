@@ -74,6 +74,9 @@ uniform vec3 pal4;
 // a hand's width from the eyes has a disparity no one can fuse, and inside a 30 m flame
 // there are always a few.
 uniform float near_fade = 0.0;
+// V11: subtle aerial depth separation inside GALAXY (0 off, 1 on). Far-field particles cool
+// slightly and soften so foreground tendrils pop vividly in stereo.
+uniform float depth_grade = 0.0;
 // Flame ECHOES (scripts/core/flame_echoes.gd). An echo is this same material on a smaller
 // vertex buffer, so it reads the hero's live state image. It draws every echo_stride-th block
 // of 64 particles, offset by echo_offset blocks: a sample spread over the whole cloud, so it
@@ -142,9 +145,15 @@ void vertex() {
 	vec3 p = (s.xyz - cloud_center) * cloud_fit;
 	VERTEX = bad ? vec3(0.0, 0.0, 1e9) : p;
 	v_col = palette(s.w) * brightness * echo_gain;
-	if (near_fade > 0.0) {
+	if (near_fade > 0.0 || depth_grade > 0.0) {
 		float eye = length((MODELVIEW_MATRIX * vec4(p, 1.0)).xyz);
-		v_col *= smoothstep(near_fade * 0.4, near_fade, eye);
+		if (near_fade > 0.0) {
+			v_col *= smoothstep(near_fade * 0.4, near_fade, eye);
+		}
+		if (depth_grade > 0.0) {
+			float far_k = smoothstep(3.5, 16.0, eye) * depth_grade;
+			v_col *= mix(vec3(1.0), vec3(0.68, 0.78, 0.96), far_k);
+		}
 	}
 
 	// The area kernel's sprite covers every pixel its square can touch: side + 1. The floor

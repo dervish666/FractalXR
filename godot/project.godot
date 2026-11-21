@@ -43,10 +43,19 @@ colour_cycle={
 "value": 0.0
 }
 ; STYLE (main.gd ART_NAMES, shaders/styles.gdshaderinc): 0 natural, 1 neon, 2 toon, 3 pencil,
-; 4 circuit. GROUND, IFS and the trees read it; FLY's meshes take theirs per material.
+; 4 circuit, 5 iridescent, 6 magma, 7 jade, 8 chrome.
 art_style={
 "type": "int",
 "value": 0
+}
+; HAND LANTERN (V9, main.gd): world-space controller proximity light. Zero colour disables it.
+hand_light_pos={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+hand_light_col={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
 }
 
 [xr]

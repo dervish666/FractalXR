@@ -175,10 +175,23 @@ var fly := BulbFly.new()
 ## Mandelbox walked from inside). In BulbFly.World order.
 const FLY_WORLD_NAMES := ["this bulb", "spires", "vault"]
 var fly_world := BulbFly.World.BULB
-## STYLE: how GROUND, IFS, TREES and FLY's own worlds are drawn (styles.gdshaderinc). The
-## global shader parameter art_style carries it to every shader but FLY's, which BulbFly.art sets.
-const ART_NAMES := ["natural", "neon", "toon", "pencil", "circuit"]
+## STYLE: how GROUND, IFS, TREES, SOLID/MARCHED BULB and FLY worlds are drawn
+## (styles.gdshaderinc): 0 natural, 1..4 NPR styles, 5..8 physical finishes (V2).
+const ART_NAMES := ["natural", "neon", "toon", "pencil", "circuit",
+	"iridescent", "magma", "jade", "chrome"]
 var art := 0
+## V5: procedural atmospheric sky behind SPIRES and VAULT (shaders/fly_sky.gdshader).
+var _fly_sky: Sky = null
+var _fly_sky_mat: ShaderMaterial = null
+var _fly_sky_shown := false
+## V9: hand-held proximity lantern from the active tracked controller.
+var hand_lantern_on := true
+var _hand_lantern_lit := false
+## V11: FLAME GALAXY aerial depth separation state.
+var _depth_grade := 0.0
+## V12: smooth exposure ease when switching modes in XR (disabled on desktop harnesses).
+const MODE_FADE_S := 0.35
+var _mode_fade := 1.0
 ## Fastest apparent flight, and the share of the clearance covered a second below it. A step
 ## stays a small share of the clearance (2.5 / 72 Hz, times FLY SPEED), so it cannot skip a wall.
 const FLY_MAX_MPS := 6.0
@@ -841,6 +854,9 @@ func _set_mode(kind: String) -> void:
 	menu.set_mode(kind)
 	_art_sky()
 	_sync_glow()
+	if xr != null:
+		_mode_fade = 0.05
+		_apply_exposure()
 
 
 ## The tree stands on the floor in front of you and grows. The cloud underneath keeps
@@ -864,10 +880,12 @@ func _set_tree_mode(on: bool) -> void:
 		if tree.branch_count == 0:
 			tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
 		_set_forest_wind(TREE_WIND[tree_wind_idx])
+		forest.set_motes_species("" if forest.plant_mix else FractalTree.SHAPE_NAMES[tree_shape_idx])
 		# Recentre first: a grove sown on entry keeps clear of you from where you will stand.
 		_recenter()
 		_regrow_forest()
 		_apply_palette()
+		_sync_forest_fog()
 	else:
 		_recenter()
 		cloud.request_measure()
@@ -1194,6 +1212,8 @@ func _step_specimen(d: int) -> void:
 func _cycle_tree_shape(d: int) -> void:
 	tree_shape_idx = wrapi(tree_shape_idx + d, 0, FractalTree.SHAPE_NAMES.size())
 	tree.set_shape(FractalTree.SHAPE_NAMES[tree_shape_idx])
+	if not forest.plant_mix:
+		forest.set_motes_species(FractalTree.SHAPE_NAMES[tree_shape_idx])
 
 
 func _set_forest_wind(amount: float) -> void:
@@ -1241,11 +1261,13 @@ func _clear_forest() -> void:
 ## A new grove of mixed species, keeping the trees you planted.
 func _sow_grove() -> void:
 	forest.sow_grove()
+	_sync_forest_fog()
 
 
 ## Two rows from your feet down the way you face; the hero steps out of the path.
 func _sow_avenue(walk: bool) -> void:
 	forest.sow_avenue(xr_camera.global_transform, walk, FractalTree.SHAPE_NAMES[tree_shape_idx])
+	_sync_forest_fog()
 
 
 ## COUNT: the next size up or down, sown again in the layout on show.
@@ -1269,11 +1291,13 @@ func _toggle_walk() -> void:
 		forest.stand_still()
 	else:
 		_sow_avenue(true)
+	_sync_forest_fog()
 
 
 ## Planting draws a mixed species each pull, or plants the SHAPE tile's species.
 func _toggle_plant_mix() -> void:
 	forest.set_plant_mix(not forest.plant_mix)
+	forest.set_motes_species("" if forest.plant_mix else FractalTree.SHAPE_NAMES[tree_shape_idx])
 
 
 ## The slow wither-and-replace in the sown grove.
@@ -1967,15 +1991,27 @@ func _tick_flame_scale(delta: float) -> void:
 	if fade != _near_fade:
 		_near_fade = fade
 		cloud.set_near_fade(fade)
+	var grade := 1.0 if galaxy.active or galaxy.is_moving() else 0.0
+	if grade != _depth_grade:
+		_depth_grade = grade
+		cloud.set_depth_grade(grade)
 	flame_echoes.suppressed = galaxy.active or galaxy.is_moving()
 	# The sky hangs behind every mode, the live flame included: bake flame A, then flame B
 	# stands in front of it. BULB has its own switch, off until pressed there: its splats were
 	# measured at 13.9 ms, at the line already, and a baked sky is one fetch per background
 	# pixel on top (under 1 ms, a guess). Passthrough always wins: the room is the sky.
 	# MANDEL fills before sync() looks for something to show, so its first fill can land.
+	var was_sky := flame_sky.is_shown()
 	flame_sky.mandel.tick(ground, _sky_switch() and flame_sky.is_mandel() and not passthrough,
 		ground_mode)
 	flame_sky.sync(_sky_switch() and not passthrough, delta)
+	if _in_own_world():
+		if was_sky != flame_sky.is_shown():
+			_world_sky(true)
+		elif _fly_sky_shown:
+			_sync_fly_sky_sun()
+	if ground_mode and was_sky != flame_sky.is_shown():
+		_sync_ground_horizon_fog()
 
 
 func _toggle_galaxy() -> void:
@@ -2336,6 +2372,10 @@ func _set_passthrough(on: bool) -> void:
 	# being composited; leaving passthrough must restore the solid set immediately.
 	if ground_mode:
 		_apply_ground_look()
+	if _in_own_world():
+		_world_sky(true)
+	else:
+		_art_sky()
 
 
 func _recenter() -> void:
@@ -2458,6 +2498,10 @@ func _process_frame(delta: float) -> void:
 	# hold ran on the same sticks and trigger the card was waiting on.
 	menu.set_suspended(not _xr_focused or help.is_open())
 	_menu_active = menu.update(delta)
+	if _mode_fade < 1.0:
+		_mode_fade = minf(1.0, _mode_fade + delta / MODE_FADE_S)
+		_apply_exposure()
+	_tick_hand_lantern()
 	if _xr_focused:
 		_run_guard(delta)
 	_tick_flame_scale(delta)
@@ -2952,6 +2996,8 @@ func _apply_palette() -> void:
 	if ground_mode:
 		ground.set_palette(pal)
 		orbit.set_palette(pal)
+		if flame_sky.is_shown():
+			_sync_ground_horizon_fog()
 	if tree_mode:
 		_set_forest_palette(pal)
 		plant_marker.set_palette(pal)
@@ -3153,6 +3199,7 @@ func _apply_solid() -> void:
 	var key_state := (cloud.global_transform.basis.orthonormalized().inverse()
 		* SOLID_KEY_WORLD.normalized())
 	solid.request(_bulb, n, key_state)
+	solid.material().set_shader_parameter(&"art_style", art)
 	if flying:
 		fly.begin(solid, _bulb, key_state, cloud.center, cloud.fit)
 		if grab != null:
@@ -3215,6 +3262,7 @@ func _set_fly_world(w: int) -> void:
 func _set_art(st: int) -> void:
 	art = st
 	RenderingServer.global_shader_parameter_set(&"art_style", st)
+	solid.material().set_shader_parameter(&"art_style", st)
 	fly.set_art(st)
 	if _in_own_world():
 		_world_sky(true)
@@ -3228,8 +3276,8 @@ var _glow_override := -1
 
 
 ## Auto-disable Glow in non-HDR modes to save the stereo downsample/blur/upsample pass on Quest.
-## FLAME, TREE (additive points/leaves) and neon/circuit styles (albedo > 1.0) keep glow on;
-## natural/toon/pencil GROUND, BULB and IFS disable it unless overridden.
+## FLAME, TREE (additive points/leaves) and neon/circuit/magma styles (albedo > 1.0) keep glow on;
+## natural/toon/pencil/iridescent/jade/chrome GROUND, BULB and IFS disable it unless overridden.
 func _sync_glow() -> void:
 	var env := _env()
 	if env == null:
@@ -3238,7 +3286,9 @@ func _sync_glow() -> void:
 		env.glow_enabled = _glow_override > 0
 		return
 	var flame_or_tree := not bulb_mode and not ground_mode and not ifs_mode
-	var hdr_style := (art == 1 or art == 4) and (ground_mode or ifs_mode or tree_mode or _in_own_world() or surface_idx == SURFACE_FLY_IDX)
+	var styled_surface := ground_mode or ifs_mode or tree_mode or _in_own_world() \
+		or (bulb_mode and (SURFACE_SOLID[surface_idx] > 0 or SURFACE_STEPS[surface_idx] > 0))
+	var hdr_style := (art == 1 or art == 4 or art == 6) and styled_surface
 	env.glow_enabled = flame_or_tree or hdr_style
 
 
@@ -3246,15 +3296,73 @@ func _sync_glow() -> void:
 ## (or the room) otherwise. FLY's own worlds set theirs in _world_sky.
 func _art_sky() -> void:
 	var env: Environment = $WorldEnvironment.environment
-	var styled := art > 0 and (ground_mode or tree_mode or ifs_mode)
+	var has_style_sky := BulbFly.STYLE_SKY.has(art)
+	var styled := has_style_sky and (ground_mode or tree_mode or ifs_mode \
+		or (bulb_mode and (SURFACE_SOLID[surface_idx] > 0 or SURFACE_STEPS[surface_idx] > 0)))
 	var sky: Color = BulbFly.STYLE_SKY.get(art, Color.BLACK) if styled else Color.BLACK
-	ground.set_fog_colour(sky if styled else FractalGround.FOG_COLOUR)
+	if styled:
+		ground.set_fog_colour(sky)
+	else:
+		_sync_ground_horizon_fog()
+	_sync_forest_fog()
 	if env == null or _in_own_world():
 		return
 	if passthrough:
 		env.background_color = Color(0, 0, 0, 0)
 	else:
 		env.background_color = sky
+
+
+## V6: twilight atmospheric fog down the avenue (off in GROVE or passthrough).
+func _sync_forest_fog() -> void:
+	var avenue := tree_mode and forest.layout != Forest.Layout.GROVE
+	if not avenue or passthrough:
+		forest.set_fog(0.0, Color.BLACK)
+		return
+	var fog_col: Color = BulbFly.STYLE_SKY.get(art, Color(0.015, 0.02, 0.045))
+	forest.set_fog(0.018, fog_col)
+
+
+## V8: when a sky hangs over GROUND (and STYLE isn't overriding it), warm the outer horizon
+## fog toward the active theme so the floor dissolves into the sky instead of a dark ring.
+func _sync_ground_horizon_fog() -> void:
+	if BulbFly.STYLE_SKY.has(art):
+		return
+	if flame_sky.is_shown() and not passthrough:
+		var pal := _theme_palette()
+		if pal.size() >= 2:
+			var h: Vector3 = (pal[0] as Vector3).lerp(pal[1] as Vector3, 0.4) * 0.45
+			ground.set_fog_colour(Color(h.x, h.y, h.z))
+			return
+	ground.set_fog_colour(FractalGround.FOG_COLOUR)
+
+
+## V9: soft proximity lantern carried by the active tracked controller. Silent on desktop
+## harnesses (xr == null) and dimmed gently while pointing at the wrist menu.
+func _tick_hand_lantern() -> void:
+	var lit := hand_lantern_on and xr != null and _xr_focused
+	var hand: XRController3D = null
+	if lit:
+		if right_hand != null and right_hand.get_has_tracking_data():
+			hand = right_hand
+		elif left_hand != null and left_hand.get_has_tracking_data():
+			hand = left_hand
+	if hand == null:
+		if _hand_lantern_lit:
+			_hand_lantern_lit = false
+			RenderingServer.global_shader_parameter_set(&"hand_light_col", Vector3.ZERO)
+		return
+	var col := Vector3(1.0, 0.90, 0.76)
+	var pal := _theme_palette()
+	if pal.size() >= 4:
+		var accent: Vector3 = pal[3]
+		var am := maxf(accent.x, maxf(accent.y, accent.z))
+		if am > 0.05:
+			col = col.lerp(accent / am, 0.25)
+	var gain := 0.25 if _menu_active else 0.95
+	RenderingServer.global_shader_parameter_set(&"hand_light_pos", hand.global_position)
+	RenderingServer.global_shader_parameter_set(&"hand_light_col", col * gain)
+	_hand_lantern_lit = true
 
 
 ## Stand the head where the world says it opens (BulbFly.start_pose), level with the floor:
@@ -3275,14 +3383,61 @@ func _world_place() -> void:
 		FLY_WORLD_NAMES[fly.world], str(at), s2w, fly.de(at) * s2w])
 
 
-## The sky behind a world is the fog's colour, so the far edge has nothing to end against.
+func _ensure_fly_sky() -> void:
+	if _fly_sky != null:
+		return
+	_fly_sky_mat = ShaderMaterial.new()
+	_fly_sky_mat.shader = load("res://shaders/fly_sky.gdshader")
+	_fly_sky = Sky.new()
+	_fly_sky.sky_material = _fly_sky_mat
+	_fly_sky.radiance_size = Sky.RADIANCE_SIZE_32
+	_fly_sky.process_mode = Sky.PROCESS_MODE_QUALITY
+
+
+func _sync_fly_sky_sun() -> void:
+	if _fly_sky_mat == null or not _fly_sky_shown:
+		return
+	var p := fly.world_sky_params()
+	var s_state: Vector3 = p["sun_state"]
+	var s_world := (cloud.global_transform.basis.orthonormalized() * s_state).normalized()
+	_fly_sky_mat.set_shader_parameter(&"sun_dir", s_world)
+
+
+## The sky behind a world is either V5's procedural atmospheric sky (SPIRES / VAULT natural and
+## non-overridden finishes) or the flat STYLE sky colour matching the fog.
 func _world_sky(on: bool) -> void:
 	var env: Environment = $WorldEnvironment.environment
 	if env == null:
 		return
 	if on:
-		env.background_color = fly.sky_colour()
+		var p := fly.world_sky_params()
+		var use_proc := bool(p["procedural"]) and not passthrough and not flame_sky.is_shown()
+		if use_proc:
+			_ensure_fly_sky()
+			var h: Color = p["horizon"]
+			var z: Color = p["zenith"]
+			_fly_sky_mat.set_shader_parameter(&"horizon_colour", Vector3(h.r, h.g, h.b))
+			_fly_sky_mat.set_shader_parameter(&"zenith_colour", Vector3(z.r, z.g, z.b))
+			_fly_sky_mat.set_shader_parameter(&"nadir_colour", Vector3(h.r, h.g, h.b) * 0.25)
+			_fly_sky_mat.set_shader_parameter(&"sun_colour", p["sun_colour"])
+			_fly_sky_mat.set_shader_parameter(&"sun_scatter", float(p["sun_scatter"]))
+			env.ambient_light_source = Environment.AMBIENT_SOURCE_DISABLED
+			env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
+			env.sky = _fly_sky
+			env.background_mode = Environment.BG_SKY
+			_fly_sky_shown = true
+			_sync_fly_sky_sun()
+			return
+		if _fly_sky_shown and not flame_sky.is_shown():
+			env.background_mode = Environment.BG_COLOR
+			env.sky = null
+		_fly_sky_shown = false
+		env.background_color = Color(0, 0, 0, 0) if passthrough else fly.sky_colour()
 	else:
+		if _fly_sky_shown and not flame_sky.is_shown():
+			env.background_mode = Environment.BG_COLOR
+			env.sky = null
+		_fly_sky_shown = false
 		env.background_color = Color(0, 0, 0, 0) if passthrough else Color(0, 0, 0, 1)
 
 
@@ -3415,12 +3570,13 @@ func _guard_march() -> void:
 ## drives its exposure. The preset's flam3 exposure is still the starting point, scaled
 ## up because that value was tuned against an HDR accumulation buffer, not a 10-bit one.
 func _apply_exposure() -> void:
-	tonemap.exposure = _base_exposure * EXPOSURE_MUL[exposure_idx]
+	var fade := smoothstep(0.0, 1.0, _mode_fade)
+	tonemap.exposure = _base_exposure * EXPOSURE_MUL[exposure_idx] * fade
 	var env: Environment = $WorldEnvironment.environment
 	if env != null:
 		# Runs every morph frame through _apply_tone; only touch the resource when the
 		# value has actually moved, or every frame invalidates the environment.
-		var want := clampf(_base_exposure * 3.0 * EXPOSURE_MUL[exposure_idx], 0.05, 60.0)
+		var want := clampf(_base_exposure * 3.0 * EXPOSURE_MUL[exposure_idx] * fade, 0.05, 60.0)
 		if not is_equal_approx(env.tonemap_exposure, want):
 			env.tonemap_exposure = want
 

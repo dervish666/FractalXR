@@ -242,6 +242,21 @@ func set_palette(pal: Array) -> void:
 		_feed_palette(_batches[sp])
 
 
+var _fog_density := 0.0
+var _fog_colour := Color(0.015, 0.02, 0.045)
+
+
+func set_fog(density: float, colour: Color) -> void:
+	_fog_density = density
+	_fog_colour = colour
+	var fc := Vector3(colour.r, colour.g, colour.b)
+	for sp in _batches:
+		var bt: Batch = _batches[sp]
+		bt.mat_b.set_shader_parameter(&"fog_density", density)
+		bt.mat_b.set_shader_parameter(&"fog_colour", fc)
+		bt.mat_l.set_shader_parameter(&"fog_density", density)
+
+
 func set_leaves(on: bool) -> void:
 	_leaves_on = on
 	for sp in _batches:
@@ -265,6 +280,8 @@ func _batch(species: String, d: Dictionary) -> Batch:
 		m.set_shader_parameter(&"wind", 0.0)
 		m.set_shader_parameter(&"sway_gain", 0.0)
 		m.set_shader_parameter(&"grow_t", 0.0)
+		m.set_shader_parameter(&"fog_density", _fog_density)
+	bt.mat_b.set_shader_parameter(&"fog_colour", Vector3(_fog_colour.r, _fog_colour.g, _fog_colour.b))
 	bt.mat_b.set_shader_parameter(&"bark_tint", Vector3(p["bark_tint"].r, p["bark_tint"].g, p["bark_tint"].b))
 	bt.mat_b.set_shader_parameter(&"bark_mix", float(p["bark_mix"]))
 	bt.mat_l.set_shader_parameter(&"leaf_tint", Vector3(p["leaf_tint"].r, p["leaf_tint"].g, p["leaf_tint"].b))

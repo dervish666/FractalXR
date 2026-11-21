@@ -52,6 +52,15 @@ static func art(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		"How the world is drawn")
 
 
+## LANTERN (V9): soft point light carried by your active hand controller.
+static func lantern(m: FractalMain, vis: Callable) -> WristMenu.Item:
+	return WristMenu.Item.new("look", "LANTERN",
+		func(): return "on" if m.hand_lantern_on else "off",
+		func(): m.hand_lantern_on = not m.hand_lantern_on,
+		false, vis).toggle(func(): return m.hand_lantern_on).minor().hinted(
+		"Casts a soft light from your hand onto nearby surfaces")
+
+
 ## TURN: right stick X turns you smoothly (the default) or in 30 degree snaps.
 static func turn(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("scene", "TURN",

@@ -15,9 +15,24 @@ uniform float cube_gain = 1.0;
 // What is left of the sky at the nadir. Below the horizon it dims so the floor still reads as
 // a floor: a sky is a stable reference, a nebula under your feet is not.
 uniform float floor_keep = 0.12;
+// V8: ultra-slow celestial drift (rad/s, calm enough for zero vestibular pull) and colour_cycle
+// hue harmony so the sky breathes with the foreground fractal.
+uniform float sky_drift = 0.004;
+global uniform float colour_cycle;
+
+vec3 hue_turn(vec3 c, float a) {
+	const vec3 k = vec3(0.57735027);
+	float ca = cos(a);
+	return max(c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca), vec3(0.0));
+}
 
 void sky() {
 	vec3 d = normalize(EYEDIR);
+	if (sky_drift != 0.0) {
+		float a = TIME * sky_drift;
+		float ca = cos(a), sa = sin(a);
+		d = vec3(d.x * ca - d.z * sa, d.y, d.x * sa + d.z * ca);
+	}
 	vec3 c;
 	if (use_cube) {
 		c = texture(sky_cube, d).rgb * cube_gain;
@@ -29,6 +44,9 @@ void sky() {
 		float hv = 0.5 / float(textureSize(flame_sky, 0).y);
 		uv.y = clamp(uv.y, hv, 1.0 - hv);
 		c = texture(flame_sky, uv).rgb;
+	}
+	if (colour_cycle > 0.0) {
+		c = hue_turn(c, colour_cycle * 6.2831853);
 	}
 	COLOR = c * mix(floor_keep, 1.0, smoothstep(-0.35, 0.05, d.y));
 }

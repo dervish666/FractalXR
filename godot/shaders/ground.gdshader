@@ -712,6 +712,10 @@ void fragment() {
 	// STYLE's light: flat ground in a fixed sun unless relief says otherwise.
 	float lit_art = 0.75;
 	float ao_art = 1.0;
+	vec3 n_w = vec3(0.0, 1.0, 0.0);
+	vec3 L = normalize(light_dir);
+	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
+	vec3 base_albedo = col;
 	if (relief_on) {
 		mat2 m = mat2(rot.xy, rot.zw);
 		vec3 n;
@@ -724,11 +728,10 @@ void fragment() {
 			n = normalize(mix(n, n1, kn));
 			lap = mix(lap, lap1, kn);
 		}
-		vec3 L = normalize(light_dir);
+		n_w = n;
 		float diff = max(dot(n, L), 0.0);
 		float spec = 0.0;
 		if (sharp > 0.0 && inside < 1.0) {
-			vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
 			float ndh = max(dot(normalize(L + V), n), 0.0);
 			float s2 = ndh * ndh;
 			float s4 = s2 * s2;
@@ -771,6 +774,39 @@ void fragment() {
 		float heavy = 1.0 - smoothstep(0.0, wd * 2.0 + 0.02, f4);
 		float fade = (1.0 - smoothstep(0.15, 0.4, wd)) * smoothstep(0.1, 0.5, band);
 		col *= 1.0 - clamp(0.35 * line + 0.3 * heavy, 0.0, 0.6) * fade * (1.0 - inside);
+		if (art_style == 0 && inside_passthrough < 0.5) {
+			// V3: Living ocean in COAST's interior sea + luminous shoreline foam band.
+			if (inside > 0.01) {
+				float wpx = length(fwidth(v_world.xz));
+				float wave_fade = 1.0 - smoothstep(0.08, 0.45, wpx);
+				vec2 wp2 = v_world.xz;
+				float t = TIME;
+				float gx = cos(wp2.x * 3.1 + wp2.y * 1.4 + t * 1.35) * 0.055
+					+ cos(wp2.x * 6.7 - wp2.y * 4.3 - t * 2.1) * 0.025;
+				float gz = sin(wp2.y * 2.9 - wp2.x * 1.7 + t * 1.15) * 0.055
+					+ sin(wp2.y * 6.1 + wp2.x * 4.9 - t * 1.9) * 0.025;
+				vec3 nw = normalize(vec3(gx * wave_fade, 1.0, gz * wave_fade));
+				float wndv = clamp(dot(nw, V), 0.0, 1.0);
+				float wf1 = 1.0 - wndv;
+				float wfres = 0.08 + 0.92 * (wf1 * wf1 * wf1 * wf1);
+				vec3 deep_sea = inside_colour * (0.35 + 0.95 * s.a);
+				vec3 sky_refl = mix(fog_colour * 1.6 + pal1 * 0.25,
+					mix(pal3, vec3(0.85, 0.92, 1.0), 0.45), 0.45);
+				vec3 water = mix(deep_sea, sky_refl, wfres * 0.72);
+				vec3 wh = normalize(L + V);
+				float wnh = max(dot(nw, wh), 0.0);
+				float ws2 = wnh * wnh;
+				float ws8 = (ws2 * ws2) * (ws2 * ws2);
+				float ws16 = ws8 * ws8;
+				float ws64 = (ws16 * ws16) * (ws16 * ws16);
+				water += mix(pal4, vec3(1.0), 0.65) * ws64 * 0.85 * (0.35 + 0.65 * wave_fade);
+				col = mix(col, water, inside);
+				n_w = normalize(mix(n_w, nw, inside));
+			}
+			float shore = smoothstep(0.0, 0.08, hc) * (1.0 - smoothstep(0.08, 0.34, hc)) * (1.0 - inside);
+			float ripple = 0.65 + 0.35 * sin(hc * 28.0 - TIME * 2.2 + s.a * 6.28);
+			col += mix(pal3, vec3(0.92, 0.97, 1.0), 0.55) * shore * ripple * 0.35;
+		}
 	}
 
 	if (art_style > 0) {
@@ -785,7 +821,18 @@ void fragment() {
 		float ib = clamp(s.b, 0.0, 0.999);
 		float g_out = (s.g + 40.0 * ib) / (1.0 - ib);
 		float de_px = exp2(g_out) / max(texel0 * fpg, 1e-30);
-		col = ground_art(s, col, v, wcount, inside, de_px, lit_art, ao_art, v_world, dist);
+		if (art_style <= 4) {
+			col = ground_art(s, col, v, wcount, inside, de_px, lit_art, ao_art, v_world, dist);
+		} else {
+			// V2: physical finishes on the fractal terrain; magma heats hollows and the set boundary.
+			float edge_heat = clamp(1.0 - de_px * 0.25, 0.0, 1.0) * (1.0 - inside);
+			float ao_phys = clamp(ao_art * (1.0 - inside * 0.45) - edge_heat * 0.55, 0.0, 1.0);
+			float refl_y = reflect(-V, n_w).y;
+			col = physical_finish(base_albedo, pal4, n_w, L, V, refl_y, 1.0, ao_phys, v * 0.5);
+		}
+	}
+	if (art_style == 0 || art_style >= 5) {
+		col += hand_lantern(v_world, n_w, V, base_albedo);
 	}
 	col *= brightness;
 	float fog = smoothstep(fog_end * 0.55, fog_end, dist);

@@ -768,6 +768,11 @@ func _shift_out() -> void:
 func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	if not _ready_ok:
 		return
+	if sun_orbit and delta > 0.0 and _material != null:
+		_sun_angle = fposmod(_sun_angle + delta * SUN_ORBIT_RAD_S, TAU)
+		var r := Vector2(DEFAULT_LIGHT_DIR.x, DEFAULT_LIGHT_DIR.z).length()
+		_material.set_shader_parameter(&"light_dir",
+			Vector3(cos(_sun_angle) * r, DEFAULT_LIGHT_DIR.y, sin(_sun_angle) * r))
 	_head_xz = head_xz
 	# The mesh is finest at its centre; keep that under the viewer.
 	_mesh_instance.position = Vector3(head_xz.x, 0.0, head_xz.y)
@@ -1298,6 +1303,18 @@ func set_sky(height: float) -> void:
 
 ## Fog's colour: the shader's default, or a STYLE's sky (main.gd _art_sky).
 const FOG_COLOUR := Color(0.02, 0.02, 0.04)
+## V10: slowly orbiting low sun sweeping relief shadows across the fractal terrain.
+const SUN_ORBIT_RAD_S := TAU / 90.0
+const DEFAULT_LIGHT_DIR := Vector3(0.5, 0.5, 0.35)
+var sun_orbit := false
+var _sun_angle := atan2(DEFAULT_LIGHT_DIR.z, DEFAULT_LIGHT_DIR.x)
+
+
+func set_sun_orbit(on: bool) -> void:
+	sun_orbit = on
+	if not on and _material != null:
+		_sun_angle = atan2(DEFAULT_LIGHT_DIR.z, DEFAULT_LIGHT_DIR.x)
+		_material.set_shader_parameter(&"light_dir", DEFAULT_LIGHT_DIR)
 
 
 func set_fog_colour(c: Color) -> void:
