@@ -3286,9 +3286,9 @@ func _sync_glow() -> void:
 		env.glow_enabled = _glow_override > 0
 		return
 	var flame_or_tree := not bulb_mode and not ground_mode and not ifs_mode
-	var styled_surface := ground_mode or ifs_mode or tree_mode or _in_own_world() \
-		or (bulb_mode and (SURFACE_SOLID[surface_idx] > 0 or SURFACE_STEPS[surface_idx] > 0))
-	var hdr_style := (art == 1 or art == 4 or art == 6) and styled_surface
+	var styled_surface: bool = ground_mode or ifs_mode or tree_mode or _in_own_world() \
+		or (bulb_mode and (int(SURFACE_SOLID[surface_idx]) > 0 or int(SURFACE_STEPS[surface_idx]) > 0))
+	var hdr_style: bool = (art == 1 or art == 4 or art == 6) and styled_surface
 	env.glow_enabled = flame_or_tree or hdr_style
 
 
@@ -3297,8 +3297,8 @@ func _sync_glow() -> void:
 func _art_sky() -> void:
 	var env: Environment = $WorldEnvironment.environment
 	var has_style_sky := BulbFly.STYLE_SKY.has(art)
-	var styled := has_style_sky and (ground_mode or tree_mode or ifs_mode \
-		or (bulb_mode and (SURFACE_SOLID[surface_idx] > 0 or SURFACE_STEPS[surface_idx] > 0)))
+	var styled: bool = has_style_sky and (ground_mode or tree_mode or ifs_mode \
+		or (bulb_mode and (int(SURFACE_SOLID[surface_idx]) > 0 or int(SURFACE_STEPS[surface_idx]) > 0)))
 	var sky: Color = BulbFly.STYLE_SKY.get(art, Color.BLACK) if styled else Color.BLACK
 	if styled:
 		ground.set_fog_colour(sky)
