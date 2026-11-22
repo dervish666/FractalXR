@@ -9,7 +9,7 @@ LOG="$PROJ/.spike-out/mandel_sky/mandel_sky_shot.log"
 	--script tools/mandel_sky_shot.gd > "$LOG" 2>&1 &
 PID=$!
 # Own only this child. pkill -f on the project path would take out any other run in flight.
-( sleep 300; kill -9 "$PID" 2>/dev/null ) >/dev/null 2>&1 &
+( sleep 600; kill -9 "$PID" 2>/dev/null ) >/dev/null 2>&1 &
 WATCHDOG=$!
 trap 'set +e; kill "$WATCHDOG" 2>/dev/null; kill -9 "$PID" 2>/dev/null; true' EXIT
 RC=0

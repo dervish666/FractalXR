@@ -65,6 +65,8 @@ func _init() -> void:
 			_shot("%s_solid_%d.png" % [bname.to_lower(), n])
 			# On the plain mesh, before the debug and PIXEL views change its state and framing.
 			if n == 192:
+				if bname == "Classic":
+					ok = await _finish_views(bname, n) and ok
 				ok = await _lantern_views(bname) and ok
 			if pixel_grids:
 				ok = await _pixel_views(bname, n) and ok
@@ -242,6 +244,104 @@ func _pixel_views(bname: String, n: int) -> bool:
 	var good := share > 0.02
 	print("SOLIDSHOT %s pixel %s close-up moved %.3f" % [bname, "PASS" if good else "FAIL", share])
 	return good
+
+
+## Every physical finish (art_style 5+) on the posed SOLID mesh, so finishes can be judged
+## side by side on a real 3D fractal bulb as well as GROUND/TREE/IFS. Each finish must carry
+## image contrast (catches a black branch), differ from natural, differ from the unmapped
+## fallback (catches a deleted branch or fall-through) and differ from every other finish.
+func _finish_views(bname: String, n: int) -> bool:
+	const MIN_DIFF := 0.05
+	const MIN_LIT_RATIO := 0.35
+	var good := true
+	var nat := root.get_viewport().get_texture().get_image()
+	var nat_lit := _lit_frac(nat)
+	var shots: Dictionary = {}
+	for st in range(5, FractalMain.ART_NAMES.size()):
+		main._set_art(st)
+		for i in 6:
+			await process_frame
+		var img := root.get_viewport().get_texture().get_image()
+		var sname: String = FractalMain.ART_NAMES[st]
+		var file := "%s_solid_%d_%s.png" % [bname.to_lower(), n, sname]
+		img.save_png(OUT + file)
+		shots[st] = img
+	# Unmapped style index: exercises physical_finish's plain fallback so a deleted branch or a
+	# fall-through finish matches it and fails.
+	main.solid.material_override.set_shader_parameter("art_style", 99)
+	for i in 6:
+		await process_frame
+	var fb := root.get_viewport().get_texture().get_image()
+	main._set_art(0)
+	for i in 4:
+		await process_frame
+	for st in range(5, FractalMain.ART_NAMES.size()):
+		var img: Image = shots[st]
+		var sname: String = FractalMain.ART_NAMES[st]
+		var sp := _spread(img)
+		var lit_ratio := _lit_frac(img) / maxf(nat_lit, 1e-4)
+		var d_nat := _lit_diff(nat, img)
+		var d_fb := _lit_diff(fb, img)
+		var near_d := 1e9
+		var near_name := ""
+		for other in range(5, FractalMain.ART_NAMES.size()):
+			if other == st:
+				continue
+			var dp := _lit_diff(img, shots[other])
+			if dp < near_d:
+				near_d = dp
+				near_name = FractalMain.ART_NAMES[other]
+		var pass_ := sp > 0.02 and lit_ratio >= MIN_LIT_RATIO and d_nat >= MIN_DIFF \
+			and d_fb >= MIN_DIFF and near_d >= MIN_DIFF
+		good = good and pass_
+		print("SOLIDSHOT %s finish %s %s spread=%.3f lit_ratio=%.2f vs_nat=%.4f vs_fb=%.4f nearest=%s(%.4f)" % [
+			bname, sname, "PASS" if pass_ else "FAIL", sp, lit_ratio, d_nat, d_fb, near_name, near_d])
+	return good
+
+
+func _spread(img: Image) -> float:
+	var n := 0
+	var sum := 0.0
+	var sum2 := 0.0
+	var step := maxi(1, img.get_width() / 80)
+	for y in range(0, img.get_height(), step):
+		for x in range(0, img.get_width(), step):
+			var c := img.get_pixel(x, y)
+			var l := 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+			sum += l
+			sum2 += l * l
+			n += 1
+	var mean := sum / float(maxi(n, 1))
+	return sqrt(maxf(sum2 / float(maxi(n, 1)) - mean * mean, 0.0))
+
+
+## Share of the sample grid with luminance above 0.02.
+func _lit_frac(img: Image) -> float:
+	var n := 0
+	var lit := 0
+	var step := maxi(1, img.get_width() / 80)
+	for y in range(0, img.get_height(), step):
+		for x in range(0, img.get_width(), step):
+			n += 1
+			if img.get_pixel(x, y).get_luminance() > 0.02:
+				lit += 1
+	return float(lit) / float(maxi(n, 1))
+
+
+## Mean per-channel RGB difference over the union of lit (luma > 0.02) pixels.
+func _lit_diff(a: Image, b: Image) -> float:
+	var n := 0
+	var sum := 0.0
+	var step := maxi(1, a.get_width() / 80)
+	for y in range(0, a.get_height(), step):
+		for x in range(0, a.get_width(), step):
+			var ca := a.get_pixel(x, y)
+			var cb := b.get_pixel(x, y)
+			if ca.get_luminance() <= 0.02 and cb.get_luminance() <= 0.02:
+				continue
+			sum += (absf(ca.r - cb.r) + absf(ca.g - cb.g) + absf(ca.b - cb.b)) / 3.0
+			n += 1
+	return sum / float(maxi(n, 1))
 
 
 ## LANTERN on the solid: natural (the lantern alone turns on bulb_solid's world-space block) and

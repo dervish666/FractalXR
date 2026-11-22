@@ -11,6 +11,9 @@ const QUALITY_WORDS := ["low", "mid", "high"]
 
 static func build(m: FractalMain) -> Array[WristMenu.Item]:
 	var vis := func(): return m.bulb_mode
+	# The splat tiles, only while the bulb is drawn as particles. Over the solid mesh, the
+	# marched surface and FLY the cloud is hidden and they would do nothing.
+	var on_cloud := func(): return vis.call() and (style(m) == SPLATS or style(m) == LINES)
 	# The fineness each surface last had, so SURFACE comes back to it.
 	var mem := {LINES: 1, SOLID: 4, MARCHED: 1, FLY: FractalMain.SURFACE_FLY_IDX}
 	var out: Array[WristMenu.Item] = [
@@ -22,11 +25,11 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(i: int): return str(m.library.bulbs[i].get("name", "?")),
 			func(i: int): m._load_bulb(i)).as_card(),
 
-		MenuShared.drift(m, vis),
+		# In FLY the bulb is the world round you, so there is nothing in front of you to move on.
+		MenuShared.drift(m, func(): return vis.call() and style(m) != FLY),
 		MenuShared.spin(m, vis),
 		MenuShared.home(m, vis),
 		MenuShared.sky(m, vis),
-		MenuShared.sky_pick(m, vis),
 		MenuShared.turn(m, vis),
 		MenuShared.vignette(m, vis),
 
@@ -83,10 +86,11 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(d: int): m.solid.set_pixel_detail(wrapi(m.solid.pixel_detail + d, 0, PIXEL_NAMES.size()))
 			).slider(func(): return m.solid.pixel_detail, PIXEL_NAMES.size()).hinted(
 			"Shades every pixel from the true surface"),
-		MenuShared.splat(m, vis),
-		MenuShared.adapt(m, vis),
-		MenuShared.opacity(m, vis),
-		MenuShared.steady(m, vis),
+		MenuShared.cover(m, on_cloud),
+		# Plain splats with FIT SPLATS off only. A fitted splat and a line ignore the density grid.
+		MenuShared.adapt(m, func(): return vis.call() and style(m) == SPLATS and not m.auto_bake),
+		MenuShared.opacity(m, on_cloud),
+		MenuShared.steady(m, on_cloud),
 		# The per-splat fit: each splat turned to lie along the surface round it. Named for what
 		# ON does; it waits for the cloud to settle before it can fit.
 		WristMenu.Item.new("look", "FIT SPLATS",
@@ -102,7 +106,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 					RenderingServer.call_on_render_thread(m.cloud.bake)
 				else:
 					m.cloud.clear_bake(),
-			false, vis).toggle(func(): return m.auto_bake).minor().hinted(
+			false, on_cloud).toggle(func(): return m.auto_bake).minor().hinted(
 			"Turns each splat to lie along the surface"),
 		# Only while LINES is on: with it off there are no lines to pattern or thin.
 		WristMenu.Item.new("look", "PATTERN",
@@ -117,16 +121,13 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(d: int): m._step_line_width(d)).slider(
 			func(): return m.line_width_idx, FractalMain.LINE_WIDTHS.size()).minor().hinted(
 			"How thick the lines are"),
+		# A frozen cloud (STEADY at its top rung, BULB's default) cannot show a moving surface,
+		# so BREATHE shows only once STEADY lets points move.
 		WristMenu.Item.new("look", "BREATHE",
-			func():
-				# A frozen cloud cannot show a moving surface, so say so rather than
-				# reporting a rate that nothing is acting on.
-				if FractalMain.BULB_STABILITY[m.bulb_stability_idx] == 0:
-					return "held"
-				return "off" if FractalMain.BREATH_STEPS[m.breath_idx] == 0.0 \
-					else "%.0fx" % FractalMain.BREATH_STEPS[m.breath_idx],
+			func(): return "off" if FractalMain.BREATH_STEPS[m.breath_idx] == 0.0 \
+				else "%.0fx" % FractalMain.BREATH_STEPS[m.breath_idx],
 			func(): m.breath_idx = (m.breath_idx + 1) % FractalMain.BREATH_STEPS.size(),
-			false, vis).stepping(func(d: int):
+			false, func(): return on_cloud.call() and FractalMain.BULB_STABILITY[m.bulb_stability_idx] != 0).stepping(func(d: int):
 				m.breath_idx = wrapi(m.breath_idx + d, 0, FractalMain.BREATH_STEPS.size())).hinted(
 			"How fast the surface slowly reshapes"),
 		# ENTER (stand inside the shape at its roomiest hollow) is not on the headset menu.

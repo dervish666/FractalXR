@@ -60,7 +60,6 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(): m._bake_sky(),
 			false, vis).hinted("Paints this flame onto the sky"),
 		MenuShared.sky(m, vis),
-		MenuShared.sky_pick(m, vis),
 		MenuShared.turn(m, vis),
 		MenuShared.vignette(m, vis),
 		# The live bake's resolution. Each step re-bakes the flame on show; a bake is a frame
@@ -84,15 +83,17 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 				m.cloud.set_count(int(FractalMain.TEX_SIZE * FractalMain.TEX_SIZE
 					* FractalMain.PARTICLE_STEPS[m.particle_idx]))
 				m.cloud.request_measure()).hinted("More points, finer flame, more frame time"),
+		# SPLAT switches the cloud between points and splats, and each draw has its own dials:
+		# OPACITY only with SPLAT on, SIZE and AA only with it off. ADAPT is not here. These
+		# splats are isotropic and never read the density grid.
 		MenuShared.splat(m, vis),
-		MenuShared.adapt(m, vis),
-		MenuShared.opacity(m, vis),
+		MenuShared.opacity(m, func(): return vis.call() and m.splat_on),
 		WristMenu.Item.new("look", "SIZE",
 			func(): return "%.2f" % FractalMain.POINT_STEPS[m.point_idx],
 			func():
 				m.point_idx = (m.point_idx + 1) % FractalMain.POINT_STEPS.size()
 				m._apply_point_look(),
-			false, vis).stepping(func(d: int):
+			false, func(): return vis.call() and not m.splat_on).stepping(func(d: int):
 				m.point_idx = wrapi(m.point_idx + d, 0, FractalMain.POINT_STEPS.size())
 				m._apply_point_look()).slider(func(): return m.point_idx, FractalMain.POINT_STEPS.size()).hinted(
 			"Bigger, softer points"),
@@ -101,7 +102,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func():
 				m.aa_idx = (m.aa_idx + 1) % FractalMain.AA_STEPS.size()
 				m._apply_point_look(),
-			false, MenuShared.dev_only(vis)).stepping(func(d: int):
+			false, MenuShared.dev_only(func(): return vis.call() and not m.splat_on)).stepping(func(d: int):
 				m.aa_idx = wrapi(m.aa_idx + d, 0, FractalMain.AA_STEPS.size())
 				m._apply_point_look()).minor().hinted("Smooths each point's edge"),
 		MenuShared.steady(m, vis),

@@ -35,7 +35,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(): m._sow_avenue(false),
 			false, vis).hinted("Two rows of trees ahead of you"),
 		WristMenu.Item.new("make", "WALK",
-			func(): return "hold trigger" if m.forest.walking() else "endless avenue",
+			func(): return "on" if m.forest.walking() else "off",
 			func(): m._toggle_walk(),
 			false, vis).toggle(func(): return m.forest.walking()).hinted(
 			"Hold trigger to glide down an endless avenue"),
@@ -71,10 +71,9 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func(): return m.forest.pace_idx, Forest.WALK_PACES.size()).minor().hinted(
 			"How fast WALK glides"),
 
-		MenuShared.spin(m, vis),
+		MenuShared.spin(m, vis, "Turns your tree slowly"),
 		MenuShared.home(m, vis),
 		MenuShared.sky(m, vis),
-		MenuShared.sky_pick(m, vis),
 		MenuShared.turn(m, vis),
 		MenuShared.vignette(m, vis),
 
@@ -101,7 +100,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		WristMenu.Item.new("look", "LEAVES",
 			func(): return "on" if m.tree.leaves_on else "off",
 			func(): m._set_forest_leaves(not m.tree.leaves_on),
-			false, vis).toggle(func(): return m.tree.leaves_on),
+			false, vis).toggle(func(): return m.tree.leaves_on).hinted("Leaves on every tree"),
 		# Something under the trees, in theme: a faint fractal ground, fallen leaves round every
 		# trunk, or both (forest_floor.gd, tree_litter.gd). Off by default.
 		WristMenu.Item.new("look", "FLOOR",
@@ -117,6 +116,12 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).stepping(func(d: int):
 				m._set_tree_bark(wrapi(m.forest.bark_style + d, 0, Forest.BARK_STEPS.size()))).hinted(
 			"A fractal pattern grown into the bark"),
+		# Fractal bushes, ferns, sedge, fungi and moss round the foot of near trees.
+		WristMenu.Item.new("look", "UNDERGROWTH",
+			func(): return "on" if m.forest.undergrowth_on else "off",
+			func(): m._set_tree_undergrowth(not m.forest.undergrowth_on),
+			false, vis).toggle(func(): return m.forest.undergrowth_on).hinted(
+			"Bushes, ferns, sedge, fungi and moss round the trees"),
 		# V7: wind-carried glowing petals/spores drifting through the grove and avenue.
 		WristMenu.Item.new("look", "PETALS",
 			func(): return "on" if m.forest.motes_on else "off",

@@ -29,17 +29,23 @@ static func drift(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		false, vis).toggle(func(): return m._drift).hinted("Moves on to the next one by itself")
 
 
-static func spin(m: FractalMain, vis: Callable) -> WristMenu.Item:
+## SPIN turns the thing in front of you. TREE passes its own hint, because there "it" is only
+## your tree and never the grove round it.
+static func spin(m: FractalMain, vis: Callable, hint := "Turns it slowly") -> WristMenu.Item:
 	return WristMenu.Item.new("scene", "SPIN",
 		func(): return "on" if m.spin else "off", func(): m.spin = not m.spin,
-		false, vis).toggle(func(): return m.spin).hinted("Turns it slowly")
+		false, vis).toggle(func(): return m.spin).hinted(hint)
 
 
 ## HOME is the pose word everywhere, as on the X button; RESET is kept for the IFS shape.
+## GROUND builds its own HOME (the start view) under the same hint.
+const HOME_HINT := "Back where it started"
+
+
 static func home(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("scene", "HOME",
 		func(): return "in front of you", func(): m._recenter(); m.cloud.request_measure(),
-		false, vis).hinted("Brings it back in front of you")
+		false, vis).hinted(HOME_HINT)
 
 
 ## STYLE: how the world is drawn, natural or one of the art styles (main.gd ART_NAMES).
@@ -84,34 +90,24 @@ static func vignette(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		"Darkens the edges while you move")
 
 
-## SKY hangs or hides the baked sky in every mode (BULB keeps its own switch as well).
+## SKY: which sky hangs round you, or none, as one list (main.gd _step_sky). "off" comes first,
+## then the live bake of a flame, the skies pre-rendered on the Mac (art/skies/, which need no
+## bake and so are there in BULB from the start) and MANDEL. BULB keeps its own on/off switch;
+## the pick is shared by every mode.
 static func sky(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("scene", "SKY",
 		func(): return m._sky_label(),
-		func(): m._toggle_sky(), false, vis).toggle(func(): return m._sky_switch()).hinted(
-		"Shows or hides the sky round you")
+		func(): m._step_sky(1), false, vis).stepping(func(d: int): m._step_sky(d)).hinted(
+		"Which sky hangs round you, or none")
 
 
-## Which sky: the live bake of a flame, or one of the skies pre-rendered on the Mac
-## (art/skies/), which need no bake and so are there in BULB from the start.
-static func sky_pick(m: FractalMain, vis: Callable) -> WristMenu.Item:
-	return WristMenu.Item.new("scene", "SKY PICK",
-		func(): return m.flame_sky.pick_name(),
-		func(): m._step_sky_pick(1),
-		false, func(): return vis.call() and not m.flame_sky.presets.is_empty()).stepping(
-		func(d: int): m._step_sky_pick(d)).hinted("Which sky hangs round you")
-
-
+## SPLAT (FLAME) and COVER (BULB) were one tile with two meanings. SPLAT switches points to
+## splats and sizes them: off, then every size.
 static func splat(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("look", "SPLAT",
+		func(): return "%.0fmm" % (FractalMain.SPLAT_STEPS[m.splat_idx] * 1000.0) if m.splat_on else "off",
 		func():
-			if m.bulb_mode:
-				return "%.1fx cover" % FractalMain.BULB_COVERAGE[m.coverage_idx]
-			return "%.0fmm" % (FractalMain.SPLAT_STEPS[m.splat_idx] * 1000.0) if m.splat_on else "off",
-		func():
-			if m.bulb_mode:
-				m.coverage_idx = (m.coverage_idx + 1) % FractalMain.BULB_COVERAGE.size()
-			elif not m.splat_on:
+			if not m.splat_on:
 				m.splat_on = true
 			else:
 				m.splat_idx = (m.splat_idx + 1) % FractalMain.SPLAT_STEPS.size()
@@ -119,18 +115,30 @@ static func splat(m: FractalMain, vis: Callable) -> WristMenu.Item:
 					m.splat_on = false
 			m._apply_point_look(),
 		false, vis).stepping(func(d: int):
-			if m.bulb_mode:
-				m.coverage_idx = wrapi(m.coverage_idx + d, 0, FractalMain.BULB_COVERAGE.size())
-			else:
-				# One ladder: off, then every size. Scrubbing left from the first
-				# size lands on off, not on the largest splat.
-				var cur: int = (m.splat_idx + 1) if m.splat_on else 0
-				var nxt := wrapi(cur + d, 0, FractalMain.SPLAT_STEPS.size() + 1)
-				m.splat_on = nxt > 0
-				m.splat_idx = maxi(0, nxt - 1)
+			# One ladder: off, then every size. Scrubbing left from the first
+			# size lands on off, not on the largest splat.
+			var cur: int = (m.splat_idx + 1) if m.splat_on else 0
+			var nxt := wrapi(cur + d, 0, FractalMain.SPLAT_STEPS.size() + 1)
+			m.splat_on = nxt > 0
+			m.splat_idx = maxi(0, nxt - 1)
 			m._apply_point_look()).minor().hinted("Size of each soft point")
 
 
+## COVER scales every bulb splat against its own fitted neighbourhood (ParticleCloud.set_coverage).
+static func cover(m: FractalMain, vis: Callable) -> WristMenu.Item:
+	return WristMenu.Item.new("look", "COVER",
+		func(): return "%.1fx" % FractalMain.BULB_COVERAGE[m.coverage_idx],
+		func():
+			m.coverage_idx = (m.coverage_idx + 1) % FractalMain.BULB_COVERAGE.size()
+			m._apply_point_look(),
+		false, vis).stepping(func(d: int):
+			m.coverage_idx = wrapi(m.coverage_idx + d, 0, FractalMain.BULB_COVERAGE.size())
+			m._apply_point_look()).minor().hinted("How much of the surface the splats cover")
+
+
+## Density sizing. splat.gdshader reads it only for a plain splat with no fit. A fitted splat
+## takes its baked axes and a line takes its ring, so BULB shows it with FIT SPLATS off only,
+## and FLAME's isotropic splats never read the grid at all.
 static func adapt(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("look", "ADAPT",
 		func(): return "%d%%" % int(FractalMain.DENSITY_STEPS[m.density_idx] * 100.0),
@@ -142,14 +150,15 @@ static func adapt(m: FractalMain, vis: Callable) -> WristMenu.Item:
 			m._apply_point_look()).minor().hinted("Thins points where they pile up")
 
 
-## Splat opacity. Hidden while SURFACE is a solid mesh, where it does nothing.
+## Splat opacity (the splat material only). Each mode passes when there are splats to see
+## through: FLAME with SPLAT on, BULB while it is drawn as splats or lines.
 static func opacity(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("look", "OPACITY",
 		func(): return "%d%%" % int(FractalMain.OPACITY_STEPS[m.opacity_idx] * 100.0),
 		func():
 			m.opacity_idx = (m.opacity_idx + 1) % FractalMain.OPACITY_STEPS.size()
 			m._apply_point_look(),
-		false, func(): return vis.call() and FractalMain.SURFACE_SOLID[m.surface_idx] == 0).stepping(
+		false, vis).stepping(
 		func(d: int):
 			m.opacity_idx = wrapi(m.opacity_idx + d, 0, FractalMain.OPACITY_STEPS.size())
 			m._apply_point_look()).slider(func(): return m.opacity_idx, FractalMain.OPACITY_STEPS.size()).hinted(
@@ -193,14 +202,16 @@ static func _step_steady(m: FractalMain, d: int) -> void:
 ## The eye buffer's scale. Not on IFS's menu, which left it off while its recursion tile was
 ## also called DETAIL; that tile is LEVELS now, so putting it back is one line in
 ## ifs_items.gd. Nothing on the controller steps it in any mode (the right menu button is the Quest system button and
-## never reaches the app); on the desktop KEY_6 does.
+## never reaches the app); on the desktop KEY_6 does. A frame-time dial, so it waits behind MORE
+## with FOVEA and GLOW. The marched bulb pins the eye buffer (MARCH_RENDER_SCALE, a GPU fault
+## cap), and the tile says so rather than offering a dial that cannot move.
 static func detail(m: FractalMain, vis: Callable) -> WristMenu.Item:
 	return WristMenu.Item.new("look", "DETAIL",
-		func(): return "%.2fx" % (FractalMain.MARCH_RENDER_SCALE if m.march.is_on()
-			else FractalMain.RENDER_STEPS[m.render_idx]),
+		func(): return ("%.2fx locked" % FractalMain.MARCH_RENDER_SCALE if m.march.is_on()
+			else "%.2fx" % FractalMain.RENDER_STEPS[m.render_idx]),
 		func(): m._step_detail(1),
 		false, vis).stepping(func(d: int): m._step_detail(d)).slider(
-		func(): return m.render_idx, FractalMain.RENDER_STEPS.size()).hinted(
+		func(): return m.render_idx, FractalMain.RENDER_STEPS.size()).minor().hinted(
 		"Sharper picture, more frame time")
 
 

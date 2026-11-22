@@ -150,6 +150,35 @@ const FLOOR_STEPS := ["off", "fractal", "leaves", "both"]
 ## before that, so a tree passing the line shows no pop).
 const LITTER_NEAR := 16
 const LITTER_FAR := 14.0
+## Fractal undergrowth (tree_undergrowth.gd): shared MultiMesh beds funded with a small LOD 1
+## floor for the nearest trees right after every tree's coarsest form is reserved (shrinking to 0
+## as budget approaches BUDGET_MIN), plus extra detail and further beds from remaining headroom
+## after trees take their detail. Shaders fold LOD 0-only plants over 6.6-7.6 m before the
+## 7.8/9.0 m tier swap and fold whole beds into the floor over 10.0-14.0 m inside
+## UNDERGROWTH_FAR (14.2/15.2 m), while per-bed presence eases over 0.8 s on grants and
+## revocations and the LOD 0-only plants ease over 0.8 s on a budget tier change (the tree swaps
+## the MultiMesh only once they are folded away). The pass counts the tier each bed draws, so a
+## bed easing out or down costs its drawn tier until it finishes. GROVE ranks by distance to the
+## hero with sticky holders and limits beds to the hero plus up to 4 inner trees >= 1.05 m tall.
+## Every tree you plant gets a bed on top of those, in GROVE and AVENUE alike: ranked first, by
+## distance from your eye, each adding a bed to the LOD 1 floor, tiered at 7.8/9.0 m and cut at
+## 14.2/15.2 m like an avenue bed, with no height floor and no cap but PLANT_MAX. An inner grove
+## bed within UNDERGROWTH_GROVE_SPACING of one gives way. WALK sows over every planted tree.
+const UNDERGROWTH_NEAR := 16
+const UNDERGROWTH_GROVE_MAX := 4
+const UNDERGROWTH_GROVE_MIN_H := 1.05
+const UNDERGROWTH_GROVE_SPACING := 0.72
+const UNDERGROWTH_FAR := 15.0
+const UNDERGROWTH_FAR_IN := 14.2
+const UNDERGROWTH_FAR_OUT := 15.2
+const UNDERGROWTH_LOD0_IN := 7.8
+const UNDERGROWTH_LOD0_OUT := 9.0
+const UNDERGROWTH_STICKY_M := 1.2
+const UNDERGROWTH_BUDGET_HYST := 300
+const UNDERGROWTH_BUDGET_MAX := 6400
+const UNDERGROWTH_FLOOR_BEDS := 4
+const UNDERGROWTH_FLOOR_BUDGET := 1150
+const UNDERGROWTH_FLOOR_FULL := 7800
 ## BARK, the MAKE card's step: tree.gdshader's bark_style.
 const BARK_STEPS := ["plain", "veins", "julia"]
 ## Placement (uploads and far-batch writes) stops for the frame once this much of it is spent.
@@ -170,6 +199,7 @@ var plant_mix := true             # each plant draws the next species from a shu
 var succession := true
 var floor_idx := 0
 var bark_style := 0
+var undergrowth_on := true
 var pace_idx := WALK_PACE_DEFAULT
 var grove_seed := 0               # 0 = random each sowing
 var budget := BUDGET_START
@@ -177,6 +207,9 @@ var visible_cost := 0
 var drawn_branches := 0           # instances drawn at the last LOD pass, near and far
 var drawn_leaves := 0
 var litter_drawn := 0             # trees carrying fallen leaves at the last LOD pass
+var undergrowth_drawn := 0        # trees carrying fractal undergrowth at the last LOD pass
+var drawn_undergrowth_stems := 0
+var drawn_undergrowth_leaves := 0
 var gpu_ms := 0.0
 var count_idx := 0
 ## Shapes computed so far, and the compute time on the worker (the harness reads these).
@@ -278,6 +311,7 @@ func _init_motes() -> void:
 func _notification(what: int) -> void:
 	# Every task is waited on, finished or not, before the forest goes.
 	if what == NOTIFICATION_PREDELETE:
+		TreeUndergrowth.wait_prewarm()
 		for e in _pending:
 			WorkerThreadPool.wait_for_task_completion(int(e["task"]))
 		_pending.clear()
@@ -462,6 +496,18 @@ func set_bark(i: int) -> void:
 		t.set_bark(bark_style)
 
 
+## UNDERGROWTH: fractal bushes, ferns, sedge, fungi and moss round near trees (tree_undergrowth.gd).
+func set_undergrowth(on: bool) -> void:
+	undergrowth_on = on
+	for t in _trees:
+		t.set_undergrowth(on)
+	if not on:
+		undergrowth_drawn = 0
+		drawn_undergrowth_stems = 0
+		drawn_undergrowth_leaves = 0
+	_lod_next = true
+
+
 ## PACE: a WALK_PACES index. The next press of the trigger glides at it; a glide under way eases to it.
 func set_pace(i: int) -> void:
 	pace_idx = clampi(i, 0, WALK_PACES.size() - 1)
@@ -539,6 +585,9 @@ func clear() -> void:
 		_bury(t)
 	_trees.clear()
 	_far.clear()
+	undergrowth_drawn = 0
+	drawn_undergrowth_stems = 0
+	drawn_undergrowth_leaves = 0
 	_sow_row_end = 0
 	_set_layout(Layout.GROVE)
 
@@ -684,6 +733,8 @@ func plant_at(hit: Vector2, selected: String) -> FractalTree:
 	_next_plant = ""
 	var t := _new_tree(species)
 	t.hand_planted = true
+	# Its undergrowth comes up with it from the sprout (FractalTree._ug_grow).
+	t.undergrowth_grows = true
 	var sh: float = FractalTree.SHAPES[species]["height_m"]
 	t.target_height = sh * _rng.randf_range(PLANT_H.x, PLANT_H.y)
 	t.branch_cap = TREE_CAP_MAX
@@ -956,6 +1007,7 @@ func _recycle(t: FractalTree) -> void:
 	t.grow_t = WAITING_T
 	t.grow_rate = 0.0
 	t.tier_far = false
+	t.clear_undergrowth()
 	if t.far:
 		_far.drop(t)
 	if _far_on():
@@ -1034,6 +1086,7 @@ func _new_tree(species: String, parent: Node3D = self) -> FractalTree:
 	t.leaves_on = _leaves_on
 	t.bark_style = bark_style
 	t.litter_on = litter_on()
+	t.undergrowth_on = undergrowth_on
 	t.set_palette(_palette)
 	t.visible = true
 	# An avenue tree joins the scene when it is first uploaded (_adopt): one the far batch
@@ -1250,6 +1303,7 @@ func _lod_items(cam: Vector3) -> void:
 	var items: Array = []
 	for t in _trees:
 		if not t.built or t.far or t.grow_t <= 0.0:
+			t.clear_undergrowth()
 			continue
 		var xf := t.global_transform
 		var sc := xf.basis.get_scale().y
@@ -1263,7 +1317,7 @@ func _lod_items(cam: Vector3) -> void:
 		items.append([size, t, want])
 	items.sort_custom(func(a: Array, b: Array) -> bool: return a[0] > b[0])
 	# Every tree's coarsest form is reserved first, so the biggest trees cannot spend the
-	# budget the rest need just to stand there. Only what is left buys detail.
+	# budget the rest need just to stand there.
 	var floor_cost := _far.drawn
 	for it in items:
 		floor_cost += (it[1] as FractalTree).lod_cost(FractalTree.LOD_MAX)
@@ -1271,6 +1325,133 @@ func _lod_items(cam: Vector3) -> void:
 	visible_cost = floor_cost
 	drawn_branches = _far.branches
 	drawn_leaves = _far.leaves if _leaves_on else 0
+
+	undergrowth_drawn = 0
+	drawn_undergrowth_stems = 0
+	drawn_undergrowth_leaves = 0
+	var is_grove := layout == Layout.GROVE
+	var max_beds := UNDERGROWTH_GROVE_MAX if is_grove else UNDERGROWTH_NEAR
+	var ug_cands: Array = []
+	var planted_cands: Array = []
+	var chosen_spots: Array[Vector2] = []
+	var ug_reserved := {}
+	var ug_floor_spent := 0
+	# Beds counted against max_beds: every bed but a hand-planted tree's, which has PLANT_MAX.
+	var capped := 0
+
+	if not undergrowth_on:
+		for it in items:
+			(it[1] as FractalTree).clear_undergrowth()
+	else:
+		# 1. Partition eligible beds and account for ineligible trees that are still easing out
+		# (withering grove holders, trees past FAR_OUT) so revoked beds stay drawn and counted
+		# until presence reaches 0. A tree you planted is ranked by its distance from your eye in
+		# every layout, inside the far cut, with no height floor and no grove cap.
+		for it in items:
+			var t: FractalTree = it[1]
+			var lp := to_local(t.global_position) if is_grove else Vector3.ZERO
+			var spot := Vector2(lp.x, lp.z)
+			var eligible := false
+			if t.grow_rate > 0.0:
+				if t.hand_planted:
+					var pd := cam.distance_to(t.global_position)
+					var p_cut := UNDERGROWTH_FAR_OUT if t.undergrowth_lod >= 0 else UNDERGROWTH_FAR_IN
+					if pd < p_cut:
+						var p_rank := pd - (UNDERGROWTH_STICKY_M if t.undergrowth_lod >= 0 else 0.0)
+						planted_cands.append([p_rank, pd, t, spot])
+						eligible = true
+				elif is_grove:
+					if t.height_m >= UNDERGROWTH_GROVE_MIN_H:
+						var r_hero := spot.length()
+						# Sticky bonus keeps living grove holders from losing their slot to a nearer sprout.
+						var rank := r_hero - (UNDERGROWTH_STICKY_M if t.undergrowth_lod >= 0 else 0.0)
+						ug_cands.append([rank, r_hero, t, spot])
+						eligible = true
+				else:
+					var d := cam.distance_to(t.global_position)
+					var far_cut := UNDERGROWTH_FAR_OUT if t.undergrowth_lod >= 0 else UNDERGROWTH_FAR_IN
+					if d < far_cut:
+						var rank := d - (UNDERGROWTH_STICKY_M if t.undergrowth_lod >= 0 else 0.0)
+						ug_cands.append([rank, d, t, Vector2.ZERO])
+						eligible = true
+			if not eligible:
+				t.set_undergrowth_lod(-1)
+				if t.undergrowth_drawn_lod >= 0:
+					var fc := t.undergrowth_cost(t.undergrowth_drawn_lod)
+					# Counted, but not taken from the trees' detail: charging `left` here cut a
+					# tree's LOD at once and gave it back when the fade ended (a tree pop). The
+					# overshoot lasts at most the 0.8 s ease, which the GPU-time governor cannot see.
+					visible_cost += fc
+					ug_floor_spent += fc
+					undergrowth_drawn += 1
+					if not t.hand_planted:
+						capped += 1
+					if is_grove:
+						chosen_spots.append(spot)
+					var fe := TreeUndergrowth.entry(t.seed_value, t.undergrowth_drawn_lod)
+					drawn_undergrowth_stems += int(fe["n_s"])
+					if _leaves_on:
+						drawn_undergrowth_leaves += int(fe["n_l"])
+		var by_rank := func(a: Array, b: Array) -> bool:
+			if absf(float(a[0]) - float(b[0])) > 1e-4:
+				return float(a[0]) < float(b[0])
+			return (a[2] as FractalTree).seed_value < (b[2] as FractalTree).seed_value
+		ug_cands.sort_custom(by_rank)
+		planted_cands.sort_custom(by_rank)
+		# The trees you planted come first at every stage below: the floor, then LOD 0 and extra
+		# beds from headroom. You planted them where you are looking, so they are near and large on
+		# screen, there are at most PLANT_MAX, and the hero's own bed (outside the budget) keeps
+		# the grove from ever going bare when the inner trees give way.
+		var n_planted := planted_cands.size()
+		var planted_c1 := 0
+		for uc in planted_cands:
+			planted_c1 += (uc[2] as FractalTree).undergrowth_cost(1)
+		ug_cands = planted_cands + ug_cands
+
+		# 2. Reserve a LOD 1 floor for the nearest trees right after every tree's coarsest form,
+		# before trees take their extra detail, so COUNT 500 and throttled budgets keep a near
+		# forest floor. Shrinks smoothly to 0 as budget approaches BUDGET_MIN. Each planted tree
+		# adds one bed and its LOD 1 cost to the floor, so all of them stand on it at full
+		# budget and they thin first-come as it shrinks, ahead of the inner grove trees.
+		var floor_frac := clampf(float(budget - BUDGET_MIN) / float(UNDERGROWTH_FLOOR_FULL - BUDGET_MIN), 0.0, 1.0)
+		var floor_beds_max := int(floor(float(UNDERGROWTH_FLOOR_BEDS + n_planted) * floor_frac + 1e-4))
+		var floor_cap := mini(maxi(left, 0),
+			int(round(float(UNDERGROWTH_FLOOR_BUDGET + planted_c1) * floor_frac)))
+		var floor_beds := 0
+		var floor_used := 0
+		for uc in ug_cands:
+			if floor_beds >= floor_beds_max or floor_used >= floor_cap:
+				break
+			var t: FractalTree = uc[2]
+			if not t.hand_planted:
+				if capped >= max_beds:
+					break
+				# Spacing holds between sown beds and against planted ones, never among planted:
+				# a tree planted beside an inner grove tree keeps its bed and the inner one gives way.
+				if is_grove:
+					var spot: Vector2 = uc[3]
+					var crowded := false
+					for p in chosen_spots:
+						if spot.distance_to(p) < UNDERGROWTH_GROVE_SPACING:
+							crowded = true
+							break
+					if crowded:
+						continue
+			var c1 := t.undergrowth_cost(1)
+			if c1 > 0 and floor_used + c1 <= floor_cap and c1 <= left:
+				ug_reserved[t] = c1
+				floor_used += c1
+				ug_floor_spent += c1
+				left -= c1
+				visible_cost += c1
+				floor_beds += 1
+				undergrowth_drawn += 1
+				if not t.hand_planted:
+					capped += 1
+				if is_grove:
+					chosen_spots.append(uc[3])
+
+	# 3. Trees take their extra detail from remaining headroom, largest on screen first.
 	for it in items:
 		var t: FractalTree = it[1]
 		var k: int = it[2]
@@ -1282,6 +1463,77 @@ func _lod_items(cam: Vector3) -> void:
 		visible_cost += t.lod_cost(k) - base
 		drawn_branches += t.lod_branches(k)
 		drawn_leaves += t.lod_leaves(k) if _leaves_on else 0
+
+	# 4. Spend remaining headroom to upgrade reserved floor beds to LOD 0 and grant extra beds
+	# up to max_beds and UNDERGROWTH_BUDGET_MAX.
+	if undergrowth_on:
+		var ug_extra := mini(maxi(left, 0), maxi(0, UNDERGROWTH_BUDGET_MAX - ug_floor_spent))
+		for uc in ug_cands:
+			var d: float = uc[1]
+			var t: FractalTree = uc[2]
+			var cur_lod := t.undergrowth_lod
+			var planted := t.hand_planted
+			var want_ug := 0
+			if planted or not is_grove:
+				var lod0_cut := UNDERGROWTH_LOD0_OUT if cur_lod == 0 else UNDERGROWTH_LOD0_IN
+				want_ug = 0 if d < lod0_cut else 1
+			var ug_lod := -1
+			if ug_reserved.has(t):
+				ug_lod = 1
+				if want_ug == 0 and ug_extra > 0:
+					var c1: int = ug_reserved[t]
+					var delta_c := maxi(0, t.undergrowth_cost(0) - c1)
+					var need := delta_c if cur_lod == 0 else delta_c + UNDERGROWTH_BUDGET_HYST
+					if need <= ug_extra:
+						ug_lod = 0
+						ug_extra -= delta_c
+						left -= delta_c
+						visible_cost += delta_c
+			elif (planted or capped < max_beds) and ug_extra > 0:
+				var crowded := false
+				if is_grove and not planted:
+					var spot: Vector2 = uc[3]
+					for p in chosen_spots:
+						if spot.distance_to(p) < UNDERGROWTH_GROVE_SPACING:
+							crowded = true
+							break
+				if not crowded:
+					var c := t.undergrowth_cost(want_ug)
+					var hold_tier := cur_lod >= 0 and cur_lod <= want_ug
+					var need := c if hold_tier else c + UNDERGROWTH_BUDGET_HYST
+					if want_ug == 0 and need > ug_extra:
+						want_ug = 1
+						c = t.undergrowth_cost(1)
+						hold_tier = cur_lod >= 0
+						need = c if hold_tier else c + UNDERGROWTH_BUDGET_HYST
+					if c > 0 and need <= ug_extra:
+						ug_lod = want_ug
+						ug_extra -= c
+						left -= c
+						visible_cost += c
+						undergrowth_drawn += 1
+						if not planted:
+							capped += 1
+						if is_grove:
+							chosen_spots.append(uc[3])
+			t.set_undergrowth_lod(ug_lod)
+			# Count the tier the bed draws, not the one it was granted: a bed easing down still
+			# draws LOD 0 until its LOD 0-only plants fold away, and a revoked bed draws until its
+			# presence reaches 0. The difference is visible_cost over the grant for about 1.3 s at most;
+			# tree detail is never cut to pay for it.
+			var dl := t.undergrowth_drawn_lod
+			if dl >= 0:
+				var over := t.undergrowth_cost(dl) - t.undergrowth_cost(ug_lod)
+				if over > 0:
+					visible_cost += over
+				if ug_lod < 0:
+					undergrowth_drawn += 1
+					if not planted:
+						capped += 1
+				var e := TreeUndergrowth.entry(t.seed_value, dl)
+				drawn_undergrowth_stems += int(e["n_s"])
+				if _leaves_on:
+					drawn_undergrowth_leaves += int(e["n_l"])
 	# FLOOR's fallen leaves: the largest on screen first, so the nearest LITTER_NEAR within reach.
 	if litter_on():
 		var n := 0

@@ -45,8 +45,10 @@ func _init() -> void:
 	await _reset_undo(main)
 	await _edit_focus(main)
 	await _owners(main)
+	await _ground_zoom_tunnel(main)
 	await _unfocused(main)
 	await _lantern(main)
+	await _glow(main)
 	await _ground_sun(main)
 	await _forest_fog(main)
 
@@ -397,6 +399,50 @@ func _owners(main) -> void:
 	main.ground.stop_glide()
 
 
+## GROUND's two-hand zoom scales the whole floor round you, so it raises the walk's tunnel. One
+## hand dragging the floor 1:1 does not, and two hands that only jitter (half a millimetre a
+## frame) must not flicker it. Driven through _ground_grab_move with hands of its own. The
+## desktop has no tracked controller to grip with.
+func _ground_zoom_tunnel(main) -> void:
+	main._set_mode("ground")
+	for i in 8:
+		await process_frame
+	var dt := 1.0 / 72.0
+	var both: Array[int] = [0, 1]
+	var one: Array[int] = [1]
+	# A fresh hands array each frame, as _ground_grab builds one. Main keeps the one it is given.
+	var run := func(hands: Array[int], frames: int, at: Callable) -> Vector2:
+		var none: Array[int] = []
+		main._gg_hands = none
+		main._gg_zoom_rate = 0.0
+		var peak := 0.0
+		for i in frames:
+			main._vig_motion = 0.0
+			var pos: Array[Vector2] = []
+			pos.assign(at.call(i))
+			main._ground_grab_move(hands.duplicate(), pos, 0.0, dt)
+			peak = maxf(peak, main._vig_motion)
+		return Vector2(peak, main._vig_motion)
+	# Apart at one e-fold a second for half a second. The stick's full zoom is 0.9.
+	var apart: Vector2 = run.call(both, 36, func(i: int) -> Array:
+		var s := 0.3 * exp(float(i) * dt)
+		return [Vector2(-s * 0.5, -0.4), Vector2(s * 0.5, -0.4)])
+	var walk: bool = main._vig_profile == ComfortVignette.WALK
+	var jitter: Vector2 = run.call(both, 72, func(i: int) -> Array:
+		var s := 0.4 + (0.0005 if i % 2 == 0 else -0.0005)
+		return [Vector2(-s * 0.5, -0.4), Vector2(s * 0.5, -0.4)])
+	var drag: Vector2 = run.call(one, 36, func(i: int) -> Array:
+		return [Vector2(float(i) * dt, -0.4)])
+	_ok("ground zoom tunnel", apart.x > 0.9 and walk and jitter.x == 0.0 and drag.x == 0.0,
+		"two hands apart %.2f (WALK %s), jittering %.2f, one hand dragging %.2f" % [
+		apart.x, str(walk), jitter.x, drag.x])
+	var none: Array[int] = []
+	main._gg_hands = none
+	main._gg_zoom_rate = 0.0
+	main._vig_motion = 0.0
+	main.ground.home()
+
+
 # --- session focus -------------------------------------------------------------
 
 func _focus_safe(main) -> bool:
@@ -563,9 +609,10 @@ func _unfocused(main) -> void:
 func _lantern(main) -> void:
 	var cases := [
 		["flame", 0, 0, false], ["ground", 0, 0, true], ["ground", 0, 1, false],
-		["ground", 0, 4, false], ["ground", 0, 5, true], ["tree", 0, 0, true], ["ifs", 0, 3, false],
-		["ifs", 0, 8, true], ["bulb", 0, 0, false], ["bulb", 1, 0, true], ["bulb", 5, 8, true],
-		["bulb", 5, 2, false], ["bulb", 7, 0, true],
+		["ground", 0, 4, false], ["ground", 0, 5, true], ["ground", 0, 9, true],
+		["tree", 0, 0, true], ["ifs", 0, 3, false], ["ifs", 0, 8, true], ["ifs", 0, 12, true],
+		["bulb", 0, 0, false], ["bulb", 1, 0, true], ["bulb", 5, 8, true], ["bulb", 5, 10, true],
+		["bulb", 5, 2, false], ["bulb", 7, 0, true], ["bulb", 7, 11, true],
 	]
 	var bad := []
 	var art0: int = main.art
@@ -585,6 +632,43 @@ func _lantern(main) -> void:
 	for i in 3:
 		await process_frame
 	_ok("lantern gate", bad.is_empty(), "%d cases%s" % [cases.size(),
+		"" if bad.is_empty() else ": " + "; ".join(bad)])
+
+
+## Auto-Glow gate. FLAME and TREE always enable Glow, while GROUND, IFS and solid/marched BULB
+## enable it only under bloom styles (neon 1, circuit 4, magma 6). Remaining finishes keep it off.
+func _glow(main) -> void:
+	var cases := [
+		["flame", 0, 0, true], ["tree", 0, 0, true], ["tree", 0, 12, true],
+		["ground", 0, 0, false], ["ground", 0, 1, true], ["ground", 0, 4, true],
+		["ground", 0, 6, true], ["ground", 0, 5, false], ["ground", 0, 8, false],
+		["ground", 0, 9, false], ["ground", 0, 10, false], ["ground", 0, 11, false],
+		["ground", 0, 12, false], ["ifs", 0, 6, true], ["ifs", 0, 9, false],
+		["ifs", 0, 12, false], ["bulb", 0, 6, false], ["bulb", 5, 6, true],
+		["bulb", 5, 10, false], ["bulb", 5, 11, false],
+	]
+	var bad := []
+	var art0: int = main.art
+	var surf0: int = main.surface_idx
+	var ov0: int = main._glow_override
+	main._glow_override = -1
+	for c in cases:
+		main._set_mode(c[0])
+		for i in 3:
+			await process_frame
+		main.surface_idx = c[1]
+		main._set_art(c[2])
+		var got: bool = main._env().glow_enabled
+		if got != c[3]:
+			bad.append("%s surface %s art %d -> %s" % [c[0], main.SURFACE_NAMES[c[1]], c[2],
+				str(got)])
+	main._glow_override = ov0
+	main.surface_idx = surf0
+	main._set_art(art0)
+	main._set_mode("flame")
+	for i in 3:
+		await process_frame
+	_ok("glow gate", bad.is_empty(), "%d cases%s" % [cases.size(),
 		"" if bad.is_empty() else ": " + "; ".join(bad)])
 
 
@@ -612,7 +696,8 @@ func _ground_sun(main) -> void:
 	main.ground.set_sun_orbit(true)
 	# RELIEF, BUMP, STYLE, whether the sun lights it.
 	var cases := [["terrain", 0.0, "natural", true], ["flat", 1.0, "natural", true],
-		["flat", 0.0, "natural", false], ["flat", 0.0, "magma", true]]
+		["flat", 0.0, "natural", false], ["flat", 0.0, "magma", true],
+		["flat", 0.0, "opal", true], ["flat", 0.0, "velvet", true]]
 	var bad := []
 	for c in cases:
 		var r: int = main.GROUND_RELIEF.find(c[0])

@@ -3,8 +3,12 @@
 // bodies drawn in glowing lines. 2 = toon: flat colours in two light steps and ink outlines.
 // 3 = pencil: graphite hatching on paper, denser and crossed in the shade. 4 = circuit:
 // copper traces and pads on a green board. 5 = iridescent (thin-film interference),
-// 6 = magma (obsidian ridges with glowing HDR crevices), 7 = jade (wrapped light & fake SSS),
-// 8 = chrome (procedural 3-band liquid mirror reflection).
+// 6 = magma (obsidian ridges with glowing HDR crevices), 7 = jade (wrapped light and fake SSS),
+// 8 = chrome (procedural 3-band liquid mirror reflection), 9 = opal (deep midnight potch body
+// with patchy spectral diffraction fire and glass clearcoat), 10 = verdigris (satin antique
+// bronze ridges with chalky pale mineral patina in crevices), 11 = frost (clear dark glacial ice
+// with internal crystal facets and white hoarfrost rime), 12 = velvet (royal crimson-burgundy
+// plush core with capped microfiber grazing sheen and no specular hot spot).
 //
 // Everything is fixed to the shape, never the screen, so both eyes see the same line on the
 // same fold. Contours come from the caller's key; strokes and traces live on the plane the
@@ -130,7 +134,7 @@ vec3 circuit(vec2 uv, float period, float px) {
 // changes band; below 0, colour by facing instead (floors, and walls each way). pos, nrm: a
 // frame fixed to the shape. lit: 0 to 1 sun on the surface. ao: 0 to 1, 1 open. ndv: facing
 // the eye. dist: metres from the eye. Returns linear colour before the caller's gain.
-// Called for NPR styles 1..4 only (physical finishes 5..8 call physical_finish below).
+// Called for NPR styles 1..4 only (physical finishes 5..12 call physical_finish below).
 vec3 art_colour(float f, float toon_e, vec3 pos, vec3 nrm, float lit, float ao, float ndv, float dist) {
 	vec3 ns = normalize(nrm);
 	vec3 ax = abs(ns);
@@ -213,14 +217,19 @@ vec3 art_colour(float f, float toon_e, vec3 pos, vec3 nrm, float lit, float ao, 
 	return cb;
 }
 
-// Physical surface finishes (V2, art_style 5..8):
-//   5 = iridescent (thin-film bismuth interference driven by view angle & surface key)
-//   6 = magma      (dark glossy obsidian ridges with glowing HDR crevices that bloom)
-//   7 = jade       (translucent carved jade / alabaster with wrapped light & backlit SSS)
-//   8 = chrome     (liquid mirror reflecting a 3-band horizon/sky studio gradient)
+// Physical surface finishes (art_style 5..12):
+//   5  = iridescent (thin-film bismuth interference driven by view angle and surface key)
+//   6  = magma      (dark glossy obsidian ridges with glowing HDR crevices that bloom)
+//   7  = jade       (translucent carved jade / alabaster with wrapped light and backlit SSS)
+//   8  = chrome     (liquid mirror reflecting a 3-band horizon/sky studio gradient)
+//   9  = opal       (deep indigo-black potch body with patchy spectral diffraction fire and clearcoat)
+//   10 = verdigris  (satin antique bronze ridges with chalky pale mineral patina in AO crevices)
+//   11 = frost      (clear dark glacial ice with internal crystal facets and white hoarfrost rime)
+//   12 = velvet     (royal crimson-burgundy plush pile with capped grazing sheen, no hot spot)
 // n, l and v must share the same coordinate space (view or world). refl_y is the world-space
-// reflection direction's Y component (-1..1). film_key: the caller's 0..1 colour key, which
-// shifts iridescent's film. Not named `key`: bulb_solid.gdshader has a uniform of that name.
+// reflection direction's Y component (-1..1). film_key: the caller's 0..1 colour key (or half
+// the palette coordinate on GROUND), which shifts interference and surface variation. Not named
+// `key`: bulb_solid.gdshader has a uniform of that name.
 vec3 physical_finish(vec3 albedo, vec3 hi_col, vec3 n, vec3 l, vec3 v, float refl_y,
 		float sh, float ao, float film_key) {
 	float ndl = max(dot(n, l), 0.0);
@@ -265,16 +274,121 @@ vec3 physical_finish(vec3 albedo, vec3 hi_col, vec3 n, vec3 l, vec3 v, float ref
 		c += mix(vec3(1.0), hi_col, 0.3) * 0.45 * s64 * lit;
 		return c;
 	}
-	vec3 ground_band = mix(albedo * 0.28, vec3(0.06, 0.07, 0.11), 0.5);
-	vec3 horizon_band = mix(hi_col, vec3(1.0, 0.96, 0.92), 0.55) * 1.15;
-	vec3 zenith_band = mix(albedo * 0.85, vec3(0.28, 0.42, 0.68), 0.45);
-	vec3 env_refl = refl_y < 0.0
-		? mix(horizon_band, ground_band, clamp(-refl_y * 2.2, 0.0, 1.0))
-		: mix(horizon_band, zenith_band, clamp(refl_y * 1.6, 0.0, 1.0));
-	float hline = exp(-refl_y * refl_y * 28.0);
-	env_refl += mix(hi_col, vec3(1.0), 0.7) * hline * 0.65;
-	float f_chrome = 0.25 + 0.75 * fres;
-	vec3 c = env_refl * mix(albedo * 0.55 + vec3(0.45), vec3(1.0), f_chrome) * mix(0.22, 1.0, ao);
-	c += vec3(1.0) * 1.2 * s64 * lit;
-	return c;
+	if (art_style == 8) {
+		vec3 ground_band = mix(albedo * 0.28, vec3(0.06, 0.07, 0.11), 0.5);
+		vec3 horizon_band = mix(hi_col, vec3(1.0, 0.96, 0.92), 0.55) * 1.15;
+		vec3 zenith_band = mix(albedo * 0.85, vec3(0.28, 0.42, 0.68), 0.45);
+		vec3 env_refl = refl_y < 0.0
+			? mix(horizon_band, ground_band, clamp(-refl_y * 2.2, 0.0, 1.0))
+			: mix(horizon_band, zenith_band, clamp(refl_y * 1.6, 0.0, 1.0));
+		float hline = exp(-refl_y * refl_y * 28.0);
+		env_refl += mix(hi_col, vec3(1.0), 0.7) * hline * 0.65;
+		float f_chrome = 0.25 + 0.75 * fres;
+		vec3 c = env_refl * mix(albedo * 0.55 + vec3(0.45), vec3(1.0), f_chrome) * mix(0.22, 1.0, ao);
+		c += vec3(1.0) * 1.2 * s64 * lit;
+		return c;
+	}
+	if (art_style == 9) {
+		// Precious black opal: deep midnight-indigo potch body with smoky Tyndall scattering,
+		// replaced in patchy Bragg-diffraction domains by saturated spectral fire (whole-number
+		// film_key cycles so IFS's scrolling wrap never pops), finished with a glass clearcoat.
+		float op_wrap = max((dot(n, l) + 0.38) / 1.38, 0.0) * mix(0.45, 1.0, sh);
+		vec3 op_potch = vec3(0.012, 0.018, 0.045);
+		vec3 op_tyndall = mix(vec3(0.055, 0.11, 0.21), albedo * 0.22, 0.18);
+		vec3 op_body = mix(op_potch, op_tyndall, op_wrap) * mix(0.42, 1.0, ao);
+		float op_h = film_key * 1.0 + ndv * 1.55 - refl_y * 0.42 + 0.22;
+		vec3 op_c = 0.5 + 0.5 * cos(6.2831853 * (op_h + vec3(0.02, 0.32, 0.64)));
+		vec3 op_hue = op_c * op_c;
+		float op_g1 = 0.5 + 0.5 * cos(6.2831853 * (film_key * 2.0 + ndv * 1.35 - refl_y * 0.50 + 0.35));
+		float op_g2 = 0.5 + 0.5 * sin(6.2831853 * (film_key * 1.0 - ndv * 1.10 + ndl * 0.60));
+		float op_patch = smoothstep(0.45, 0.88, op_g1 * 0.56 + op_g2 * 0.48);
+		vec3 op_fire = op_hue * (0.30 + 0.80 * lit) * mix(0.52, 1.0, ao) * 1.15;
+		vec3 op_col = mix(op_body, op_fire, op_patch * mix(0.52, 1.0, ao));
+		op_col += mix(vec3(0.14, 0.28, 0.48), op_hue * 0.85, 0.55) * fres * 0.34 * mix(0.45, 1.0, ao);
+		op_col += vec3(0.95, 0.98, 1.0) * (0.08 * s16 + 0.78 * s64) * (0.25 + 0.75 * lit);
+		return op_col;
+	}
+	if (art_style == 10) {
+		// Antique statuary bronze with chalky, pale desaturated mineral verdigris crust in AO
+		// crevices. Patina boundary keys only on ao and whole-number film_key cycles (never a
+		// reflection term, so both eyes see the same crust edge and IFS's wrap never pops).
+		float vg_var = 0.14 * sin(6.2831853 * film_key) + 0.06 * cos(6.2831853 * (film_key * 2.0));
+		float vg_pat = 1.0 - smoothstep(0.18, 0.64, ao + vg_var);
+		float vg_seam = 4.0 * vg_pat * (1.0 - vg_pat);
+		vec3 vg_metal = mix(vec3(0.28, 0.16, 0.075), albedo * vec3(0.55, 0.34, 0.16), 0.20);
+		vec3 vg_env = refl_y < 0.0
+			? mix(vec3(0.50, 0.32, 0.14), vec3(0.03, 0.02, 0.01), clamp(-refl_y * 2.0, 0.0, 1.0))
+			: mix(vec3(0.50, 0.32, 0.14), vec3(0.14, 0.11, 0.09), clamp(refl_y * 1.5, 0.0, 1.0));
+		vec3 vg_bronze = vg_metal * (0.14 * ao + 0.86 * lit)
+			+ vg_env * vg_metal * (0.38 + 0.48 * fres) * mix(0.25, 1.0, ao)
+			+ vec3(0.86, 0.62, 0.34) * (0.40 * s8 + 0.28 * s16 + 0.22 * s64) * (0.20 + 0.80 * lit);
+		vg_bronze *= 1.0 - 0.36 * vg_seam;
+		float vg_wrap = max((dot(n, l) + 0.55) / 1.55, 0.0) * mix(0.50, 1.0, sh);
+		float vg_mottle = 0.5 + 0.5 * sin(6.2831853 * (film_key * 2.0 + 0.2));
+		vec3 vg_pale = mix(vec3(0.22, 0.46, 0.35), vec3(0.36, 0.56, 0.43), vg_mottle);
+		vec3 vg_shade = mix(vec3(0.07, 0.19, 0.15), vec3(0.11, 0.26, 0.21), vg_mottle);
+		vec3 vg_ox = mix(vg_shade, vg_pale, 0.25 + 0.75 * vg_wrap);
+		vg_ox = mix(vg_ox, vec3(0.42, 0.58, 0.47), vg_seam * 0.35);
+		vg_ox *= 0.48 + 0.52 * mix(0.45, 1.0, ao);
+		vg_ox += vec3(0.28, 0.46, 0.37) * fres * 0.12 * (0.4 + 0.6 * vg_wrap);
+		return mix(vg_bronze, vg_ox, vg_pat);
+	}
+	if (art_style == 11) {
+		// Glacial crystal ice and hoarfrost rime: clear dark sapphire-teal facing the eye, with
+		// brightness carried by sharp internal crystal facets (integer film_key cycles), backlit
+		// transmission, icy Fresnel reflection and chalky snow-white rime along edges and ridges.
+		float fr_back = clamp(dot(-l, v), 0.0, 1.0);
+		float fr_b2 = fr_back * fr_back;
+		float fr_sss = (0.18 + 0.82 * fr_b2 * fr_b2) * mix(0.38, 1.0, ao) * (0.20 + 0.80 * fres);
+		vec3 fr_abyss = vec3(0.006, 0.025, 0.075);
+		vec3 fr_depth = mix(vec3(0.015, 0.09, 0.22), albedo * vec3(0.06, 0.18, 0.34), 0.12);
+		float fr_core_l = (0.15 + 0.85 * lit) * (0.20 + 0.80 * f1);
+		vec3 fr_ice = mix(fr_abyss, fr_depth, fr_core_l) * mix(0.32, 1.0, ao * ao)
+			+ vec3(0.06, 0.52, 0.82) * fr_sss * 0.62;
+		float fr_c1 = abs(cos(6.2831853 * (film_key * 1.0 + ndv * 1.40 - refl_y * 0.55)));
+		float fr_c2 = abs(sin(6.2831853 * (film_key * 2.0 - ndv * 0.95 + ndl * 0.50)));
+		float fr_p1 = fr_c1 * fr_c1;
+		fr_p1 = fr_p1 * fr_p1 * fr_p1;
+		float fr_p2 = fr_c2 * fr_c2;
+		fr_p2 = fr_p2 * fr_p2 * fr_p2;
+		float fr_facet = max(fr_p1, fr_p2 * 0.72);
+		fr_ice += vec3(0.45, 0.88, 1.0) * fr_facet * (0.30 + 0.70 * lit) * mix(0.50, 1.0, ao) * 0.78;
+		vec3 fr_refl = mix(vec3(0.18, 0.52, 0.80), vec3(0.76, 0.93, 1.0), smoothstep(-0.2, 0.65, refl_y));
+		fr_ice += fr_refl * fres * 0.48 * mix(0.52, 1.0, ao);
+		float fr_wrap = max((dot(n, l) + 0.35) / 1.35, 0.0) * mix(0.45, 1.0, sh);
+		float fr_edge = smoothstep(0.14, 0.68, fres);
+		float fr_frost_top = smoothstep(0.45, 0.90, refl_y) * smoothstep(0.45, 0.90, ao) * 0.42;
+		float fr_rime = clamp(fr_edge * 0.88 + fr_frost_top, 0.0, 1.0) * mix(0.46, 1.0, ao);
+		vec3 fr_snow = vec3(0.84, 0.94, 1.0) * (0.36 + 0.64 * fr_wrap);
+		vec3 fr_col = mix(fr_ice, fr_snow, fr_rime * 0.82);
+		fr_col += vec3(0.92, 0.98, 1.0) * (0.14 * (s16 * s8) + 0.95 * s64) * (0.25 + 0.75 * lit);
+		return fr_col;
+	}
+	if (art_style == 12) {
+		// Royal plush velvet: deep crimson-burgundy dye gently tinted by the palette (capped sat
+		// push), inverted-Fresnel light-trapping core, bounded microfiber grazing sheen so GROUND
+		// never clips, whole-number film_key nap wave, and no specular hot spot.
+		float vl_lum = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+		vec3 vl_pal = max(mix(vec3(vl_lum), albedo, 1.25), vec3(0.0));
+		float vl_pm = max(vl_pal.r, max(vl_pal.g, vl_pal.b));
+		vec3 vl_pal_norm = vl_pal * (min(vl_pm, 0.65) / max(vl_pm, 0.05));
+		float vl_wave = 0.5 + 0.5 * cos(6.2831853 * (film_key * 1.0 + refl_y * 0.35));
+		vec3 vl_royal = mix(vec3(0.36, 0.020, 0.11), vec3(0.58, 0.042, 0.14), vl_wave);
+		float vl_tone = 0.26 + 0.74 * smoothstep(0.015, 0.22, vl_lum);
+		vec3 vl_dye = mix(vl_royal, vl_pal_norm * vec3(0.75, 0.35, 0.58), 0.22) * vl_tone;
+		float vl_nap = 0.78 + 0.22 * vl_wave;
+		float vl_pile = 0.25 + 0.75 * f1;
+		vec3 vl_core = vl_dye * (0.18 + 0.58 * lit) * vl_pile * vl_nap * mix(0.42, 1.0, ao);
+		float vl_f2 = f1 * f1;
+		float vl_fuzz = 0.52 * vl_f2 + 0.48 * fres;
+		float vl_wrap = max((dot(n, l) + 0.45) / 1.45, 0.0) * mix(0.45, 1.0, sh);
+		vec3 vl_rim_tint = mix(vec3(0.70, 0.17, 0.31), vec3(0.80, 0.30, 0.42), vl_wave) * vl_tone;
+		vec3 vl_sheen = mix(vl_dye * 1.25, vl_rim_tint, 0.75);
+		vec3 vl_fuzz_col = vl_sheen * vl_fuzz * (0.34 + 0.66 * vl_wrap) * mix(0.55, 1.0, ao) * vl_nap;
+		float vl_retro = clamp(dot(l, v), 0.0, 1.0);
+		vec3 vl_back = vl_dye * (0.14 * vl_retro * vl_retro * vl_wrap) * mix(0.40, 1.0, ao);
+		return vl_core + vl_fuzz_col + vl_back;
+	}
+	// Plain diffuse fallback for any unmapped future style index.
+	return albedo * (0.25 * ao + 0.75 * lit);
 }

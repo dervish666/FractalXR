@@ -176,9 +176,10 @@ var fly := BulbFly.new()
 const FLY_WORLD_NAMES := ["this bulb", "spires", "vault"]
 var fly_world := BulbFly.World.BULB
 ## STYLE: how GROUND, IFS, TREES, SOLID/MARCHED BULB and FLY worlds are drawn
-## (styles.gdshaderinc): 0 natural, 1..4 NPR styles, 5..8 physical finishes (V2).
+## (styles.gdshaderinc): 0 natural, 1..4 NPR styles, 5..12 physical finishes.
 const ART_NAMES := ["natural", "neon", "toon", "pencil", "circuit",
-	"iridescent", "magma", "jade", "chrome"]
+	"iridescent", "magma", "jade", "chrome",
+	"opal", "verdigris", "frost", "velvet"]
 var art := 0
 ## V5: procedural atmospheric sky behind SPIRES and VAULT (shaders/fly_sky.gdshader).
 var _fly_sky: Sky = null
@@ -291,8 +292,8 @@ const TREE_DISTANCE := 5.5
 ## succession, their caps and LOD) is the Forest's: scripts/tree/forest.gd.
 var forest := Forest.new()
 ## Head-locked tunnel vignette (scripts/xr/comfort_vignette.gd), for every way the world moves
-## past you that your hand is not doing: the avenue walk, a room-size DIVE, the ground's stick
-## walk, zoom and glide, and the galaxy's grow.
+## past you that your hand does not drive 1:1: the avenue walk, a DIVE, the ground's stick walk,
+## zoom and glide, its two-hand zoom, and the galaxy's grow.
 var vignette := ComfortVignette.new()
 ## This frame's tunnel. Every mover asks through _want_vignette and _process applies the
 ## strongest once, so two movers cannot fight over it and a mover that stops asking clears it.
@@ -369,6 +370,19 @@ const GROUND_BUMP := [1.0, 2.0, 0.0, 0.5]
 var ground_bump_idx := 0
 const GROUND_SKY := [0.0, 3.0, 8.0, 30.0]   # mirrored ceiling height, metres; 0 = off
 var ground_sky_idx := 0
+## SPHERE maps GROUND onto a sphere round you by inverse stereographic projection from the
+## zenith. off keeps the flat floor. bowl (2 m radius, 45 m plane horizon, rim fog from 0.90)
+## bends the plane's inner 45 m onto the lower hemisphere under the sky. globe (2 m, 45 m)
+## carries the same map over the top: the whole plane on the sphere with its point at infinity
+## on the zenith, the Riemann sphere, so it takes the sky's place. The radius sets stereo depth
+## and parallax, the plane horizon the view from the centre; the globe keeps the bowl's 2 m,
+## which the headset passed, so its lower half is the bowl.
+const GROUND_SPHERE := ["off", "bowl", "globe"]
+const GROUND_SPHERE_R := [0.0, 2.0, 2.0]
+const GROUND_SPHERE_H := [60.0, 45.0, 45.0]
+const GROUND_SPHERE_FOG := [0.85, 0.90, 0.90]
+const GROUND_GLOBE := 2
+var ground_sphere_idx := 0
 ## With room passthrough enabled, the set's filled interior can be a real window rather
 ## than a near-black patch in the relief.
 var ground_inside_room := false
@@ -400,6 +414,15 @@ var _render_iter_saved := 0
 var _gg_hands: Array[int] = []
 var _gg_pos: Array[Vector2] = []
 var _gg_yaw := 0.0
+## The two-hand zoom's rate in e-folds a second, signed and eased over GRIP_ZOOM_EASE_S, for the
+## tunnel. The zoom scales the whole floor round you; a one-hand drag moves it 1:1 with the hand
+## and gets none.
+var _gg_zoom_rate := 0.0
+const GRIP_ZOOM_EASE_S := 0.1
+## Below this share of the stick's full zoom rate the tunnel stays open, as the stick's own dead
+## zone does. Two still hands jitter their spread a little, and a tunnel that flickered at rest
+## would be worse than none.
+const GRIP_ZOOM_DEAD := 0.15
 var library := PresetLibrary.new()
 var grab: WorldGrab = null
 var tonemap := Flam3Tonemap.new()
@@ -677,6 +700,12 @@ func _ready() -> void:
 	cloud.add_child(solid)
 	cloud.add_child(fly)
 	cloud.add_child(tree)
+	tree.undergrowth_lod = 0
+	tree.undergrowth_drawn_lod = 0
+	tree.undergrowth_presence = 1.0
+	tree.undergrowth_fixed = true
+	tree.undergrowth_on = forest.undergrowth_on
+	TreeUndergrowth.prewarm()
 	cloud.add_child(forest)
 	# Only _set_tree_mode shows it: hidden from the start, or V7's motes draw in every mode.
 	forest.visible = false
@@ -1257,6 +1286,15 @@ func _set_tree_bark(i: int) -> void:
 	tree.set_bark(forest.bark_style)
 
 
+## UNDERGROWTH: fractal bushes, ferns, sedge, fungi and moss round the hero and near trees.
+func _set_tree_undergrowth(on: bool) -> void:
+	forest.set_undergrowth(on)
+	tree.undergrowth_lod = 0
+	tree.undergrowth_drawn_lod = 0
+	tree.undergrowth_presence = 1.0
+	tree.set_undergrowth(forest.undergrowth_on)
+
+
 ## Regrow the hero and the forest, staggered; an empty forest is sown afresh.
 func _regrow_forest() -> void:
 	tree.regrow()
@@ -1372,10 +1410,12 @@ func _set_ground_mode(on: bool) -> void:
 
 ## Point at the ground and pull: glide until that spot is under you.
 func _ground_teleport(hand: XRController3D) -> void:
-	var hit = _hand_floor_hit(hand)
+	if hand == null or (xr != null and not hand.get_has_tracking_data()):
+		return
+	var hit = ground.ray_to_plane(hand.global_transform.origin, -hand.global_transform.basis.z)
 	if hit != null:
 		var hp := xr_camera.global_transform.origin
-		if guide.pick(hit, Vector2(hp.x, hp.z)):
+		if ground_sphere_idx == 0 and guide.pick(hit, Vector2(hp.x, hp.z)):
 			return
 		guide.set_tour(false)
 		ground.glide_to(hit)
@@ -1394,8 +1434,14 @@ func _sky_zoom(delta: float) -> void:
 	for i in 2:
 		if not (_trig_held[i] or _key(KEY_RIGHT if i == 1 else KEY_LEFT)):
 			continue
+		var o := hands[i].global_transform.origin
 		var d := -hands[i].global_transform.basis.z
 		if d.y < 0.05:
+			continue
+		# In sphere mode a hand held below eye height can hit the bowl wall with an upward ray;
+		# let _ground_teleport own those rays instead of zooming the sky behind the wall. On the
+		# globe every ray is a floor hit (and there is no sky to zoom).
+		if ground_sphere_idx > 0 and ground.ray_to_plane(o, d) != null:
 			continue
 		var squeeze := hands[i].get_float("trigger") if xr != null else 1.0
 		squeeze = clampf(squeeze, 0.3, 1.0)
@@ -1464,11 +1510,12 @@ func _tick_orbit() -> void:
 
 ## Grip drags the world with the hand and twists it with the wrist; two hands also zoom
 ## by their spread. Returns true while any grip is held, so the sticks stay quiet.
-func _ground_grab() -> bool:
+func _ground_grab(delta: float) -> bool:
 	# Floating the menu by its grip is not a drag of the field, and a ray on the panel stops a
 	# drag from starting (one already held carries on), as WorldGrab does in the other modes.
 	if menu.is_holding() or (_menu_active and _gg_hands.is_empty()):
 		_gg_hands = []
+		_gg_zoom_rate = 0.0
 		return false
 	var hands: Array[int] = []
 	var pos: Array[Vector2] = []
@@ -1483,25 +1530,42 @@ func _ground_grab() -> bool:
 		idx += 1
 	if hands.is_empty():
 		_gg_hands = []
+		_gg_zoom_rate = 0.0
 		return false
+	_ground_grab_move(hands, pos, yaw, delta)
+	return true
+
+
+## One frame of a held grip, from where the hands are: the drag and the twist, and with two
+## hands the zoom by their spread, which raises the walk's tunnel while it runs. Apart from the
+## controller reads so logic_check can hold two hands of its own.
+func _ground_grab_move(hands: Array[int], pos: Array[Vector2], yaw: float, delta: float) -> void:
+	var rate := 0.0
 	if hands == _gg_hands:
-		# Signs settled on the headset: the ground follows the hand with these.
+		# Signs settled on the headset: the ground follows the hand with these. In sphere mode,
+		# sphere_pan_scale() converts hand metres to plane metres so the floor stays under the hand.
+		var pan_sc := ground.sphere_pan_scale()
 		if hands.size() == 1:
-			ground.pan(pos[0] - _gg_pos[0])
+			ground.pan((pos[0] - _gg_pos[0]) * pan_sc)
 			ground.rotate_about_head(-wrapf(yaw - _gg_yaw, -PI, PI))
 		else:
 			var mid := (pos[0] + pos[1]) * 0.5
 			var pmid := (_gg_pos[0] + _gg_pos[1]) * 0.5
-			ground.pan(mid - pmid)
+			ground.pan((mid - pmid) * pan_sc)
 			var d0 := _gg_pos[1] - _gg_pos[0]
 			var d1 := pos[1] - pos[0]
 			if d0.length() > 0.05 and d1.length() > 0.05:
-				ground.zoom(clampf(d1.length() / d0.length(), 0.5, 2.0))
+				var k := clampf(d1.length() / d0.length(), 0.5, 2.0)
+				ground.zoom(k)
 				ground.rotate_about_head(-wrapf(d1.angle() - d0.angle(), -PI, PI))
+				rate = log(k) / maxf(delta, 1e-4)
+	_gg_zoom_rate = lerpf(_gg_zoom_rate, rate, 1.0 - exp(-delta / GRIP_ZOOM_EASE_S))
+	var zoom_m := absf(_gg_zoom_rate) / GROUND_ZOOM_PER_S
+	if zoom_m > GRIP_ZOOM_DEAD:
+		_want_vignette(ComfortVignette.WALK, minf(1.0, zoom_m))
 	_gg_hands = hands
 	_gg_pos = pos
 	_gg_yaw = yaw
-	return true
 
 
 func _set_render_hq(on: bool) -> void:
@@ -1526,6 +1590,18 @@ func _step_ground_relief(d: int) -> void:
 	_apply_ground_look()
 
 
+## SPHERE one step: off (flat floor), bowl (the lower half) or globe (the whole sphere, no sky).
+## Flat-plane overlays (beacons, tour, orbit, mirrored ceiling) and NEAR step aside in sphere mode.
+func _step_ground_sphere(d: int) -> void:
+	ground_sphere_idx = wrapi(ground_sphere_idx + d, 0, GROUND_SPHERE.size())
+	ground.stop_glide()
+	if ground_sphere_idx > 0:
+		guide.set_tour(false)
+		guide.visible = false
+		orbit.visible = false
+	_apply_ground_look()
+
+
 func _apply_ground_look() -> void:
 	ground.set_look(&"relief_mode", GROUND_RELIEF_MODE[ground_relief_idx])
 	var h: float = GROUND_HEIGHT[ground_height_idx]
@@ -1536,7 +1612,10 @@ func _apply_ground_look() -> void:
 	ground.set_look(&"colour_offset", ground_hue)
 	ground.set_look(&"bump_strength", GROUND_BUMP[ground_bump_idx])
 	ground.set_look(&"inside_passthrough", 1.0 if ground_inside_room and passthrough else 0.0)
-	ground.set_sky(GROUND_SKY[ground_sky_idx])
+	var sp_r: float = GROUND_SPHERE_R[ground_sphere_idx]
+	ground.set_sphere(sp_r, GROUND_SPHERE_H[ground_sphere_idx], GROUND_SPHERE_FOG[ground_sphere_idx],
+		passthrough, ground_sphere_idx == GROUND_GLOBE)
+	ground.set_sky(0.0 if sp_r > 0.0 else GROUND_SKY[ground_sky_idx])
 	# The texture channel feeds both the colour modulation and the bump, so it is only
 	# skipped in compute when neither wants it.
 	ground.set_texture_on(GROUND_TEXTURE[ground_texture_idx] > 0.0 or GROUND_BUMP[ground_bump_idx] > 0.0)
@@ -2021,14 +2100,20 @@ func _tick_flame_scale(delta: float) -> void:
 	# pixel on top (under 1 ms, a guess). Passthrough always wins: the room is the sky.
 	# MANDEL fills before sync() looks for something to show, so its first fill can land.
 	var was_sky := flame_sky.is_shown()
-	flame_sky.mandel.tick(ground, _sky_switch() and flame_sky.is_mandel() and not passthrough,
-		ground_mode)
-	flame_sky.sync(_sky_switch() and not passthrough, delta)
+	# GROUND's globe covers the whole sphere, so no sky is drawn behind it.
+	var globe_up := ground_mode and ground_sphere_idx == GROUND_GLOBE
+	flame_sky.mandel.tick(ground, _sky_switch() and flame_sky.is_mandel() and not passthrough \
+		and not globe_up, ground_mode)
+	flame_sky.sync(_sky_switch() and not passthrough and not globe_up, delta)
 	if _in_own_world():
 		if was_sky != flame_sky.is_shown():
 			_world_sky(true)
 	if ground_mode and was_sky != flame_sky.is_shown():
 		_sync_ground_horizon_fog()
+	if ground_mode:
+		# SPHERE's rim fades into MANDEL's horizon colour as the sky fades in, else to fog.
+		var mandel_up := flame_sky.is_mandel() and flame_sky.is_shown() and not passthrough
+		ground.set_sphere_sky_rim(smoothstep(0.0, 1.0, flame_sky._fade) if mandel_up else 0.0)
 
 
 func _toggle_galaxy() -> void:
@@ -2105,8 +2190,9 @@ func _bake_sky() -> void:
 		flame_sky.set_pick(0)
 
 
-## SKY PICK: live or a preset. Choosing a sky is asking to see it, so a preset switches SKY on;
-## back to live with nothing baked, FLAME bakes the flame on show (BULB has none to bake).
+## The pick alone: live, a preset or MANDEL. Choosing a sky is asking to see it, so a preset
+## switches SKY on; back to live with nothing baked, FLAME bakes the flame on show (BULB has
+## none to bake). The SKY tile goes through _step_sky; harnesses step the pick here.
 func _step_sky_pick(d: int) -> void:
 	flame_sky.set_pick(flame_sky.pick + d)
 	if flame_sky.pick > 0 and not _sky_switch():
@@ -2120,6 +2206,28 @@ func _step_sky_res(d: int) -> void:
 	sky_res_idx = wrapi(sky_res_idx + d, 0, FlameSky.RES_STEPS.size())
 	flame_sky.set_width(FlameSky.RES_STEPS[sky_res_idx])
 	if flame_sky.pick == 0 and (flame_sky.ready or flame_sky.baking):
+		_bake_sky()
+
+
+## The SKY tile, one rung along its list: off, then every pick (live, the presets, MANDEL).
+## Off turns this mode's switch off and leaves the pick under it; any other rung picks that sky
+## and turns the switch on, which bakes the flame on show when live has nothing yet.
+func _step_sky(d: int) -> void:
+	var n := flame_sky.presets.size() + 3
+	var rung := flame_sky.pick + 1 if _sky_switch() else 0
+	var to := wrapi(rung + d, 0, n)
+	# BULB's cloud holds a bulb, so the live rung shows nothing until a flame was baked in
+	# FLAME. Step past it then, or the first press reads "no flame" over an empty sky.
+	if to == 1 and bulb_mode and not flame_sky.ready and not flame_sky.baking:
+		to = wrapi(to + signi(d), 0, n)
+	if to == 0:
+		if _sky_switch():
+			_toggle_sky()
+		return
+	flame_sky.set_pick(to - 1)
+	if not _sky_switch():
+		_toggle_sky()
+	elif flame_sky.needs_flame_bake():
 		_bake_sky()
 
 
@@ -2149,8 +2257,10 @@ func _sky_label() -> String:
 		var ms := flame_sky.mandel
 		if not ms.has_data():
 			return "drawing %d%%" % int(ms.progress * 100.0)
-		return "on" if ms.zoom < 1.05 else "on, %s" % _zoom_text(ms.zoom)
-	return "on" if flame_sky.has_sky() else "no flame"
+		return "mandel" if ms.zoom < 1.05 else "mandel, %s" % _zoom_text(ms.zoom)
+	if flame_sky.pick > 0:
+		return flame_sky.pick_name()
+	return "live" if flame_sky.has_sky() else "no flame"
 
 
 ## A setup or compute failure. The log alone left the headset an empty void with nothing to
@@ -2601,17 +2711,24 @@ func _process_frame(delta: float) -> void:
 		# motion nobody asked for in that moment. The tiles keep filling either way.
 		if not _xr_focused or help.is_open() or _menu_active:
 			ground.stop_glide()
-		ground.update(Vector2(hp.x, hp.z), delta)
-		# A trip waits, rather than ends, while the menu or the dash is up: TOUR is switched on
-		# from the menu, and its first leg should not die under the hand that started it.
-		guide.paused = not _xr_focused or help.is_open() or _menu_active
-		var look := Vector2(-xr_camera.global_transform.basis.z.x, -xr_camera.global_transform.basis.z.z)
-		if look.length_squared() > 1e-4:
-			guide.facing = look.normalized()
-		guide.update(Vector2(hp.x, hp.z), delta)
+		ground.update(Vector2(hp.x, hp.z), delta, hp.y)
+		var sp_on := ground_sphere_idx > 0
+		if sp_on:
+			guide.visible = false
+			orbit.visible = false
+		else:
+			# A trip waits, rather than ends, while the menu or the dash is up: TOUR is switched on
+			# from the menu, and its first leg should not die under the hand that started it.
+			guide.paused = not _xr_focused or help.is_open() or _menu_active
+			var look := Vector2(-xr_camera.global_transform.basis.z.x, -xr_camera.global_transform.basis.z.z)
+			if look.length_squared() > 1e-4:
+				guide.facing = look.normalized()
+			guide.update(Vector2(hp.x, hp.z), delta)
+			_tick_orbit()
 		# A trigger glide or a trip carries you with no hand in it, so it gets the walk's tunnel.
-		_want_vignette(ComfortVignette.WALK, maxf(ground.glide_mps / GROUND_PAN_MPS, guide.moving))
-		_tick_orbit()
+		_want_vignette(ComfortVignette.WALK, maxf(
+			(ground.glide_mps / GROUND_PAN_MPS) * ground.sphere_flow_scale(),
+			0.0 if sp_on else guide.moving))
 		return
 	if tree_mode:
 		# The avenue's path runs through where the hero stands, so it steps aside there.
@@ -2643,10 +2760,9 @@ func _process_frame(delta: float) -> void:
 			ifs_dive.tick(delta, dive_held, xr_camera.global_transform)
 		else:
 			ifs_dive.pause()
-		# Room size flies the beams past your face, so the periphery dims while a step moves,
-		# eased with the step as the walk's is. At table size the sculpture moves in front of
-		# you and the view is left alone.
-		_want_vignette(ComfortVignette.DIVE, ifs_dive.motion() if ifs_room else 0.0)
+		# A step zooms the whole view into a copy, at room size and at table size alike, so the
+		# periphery dims while it moves, eased with the step as the walk's is.
+		_want_vignette(ComfortVignette.DIVE, ifs_dive.motion())
 		# A captured handle owns the shape, so the ambient clock stops while it is held. So does
 		# a dive step: it re-roots by the maps it started with, and a breath would move them.
 		ifs.ambient_hold = ifs_edit.is_editing() or ifs_dive.in_step()
@@ -2747,7 +2863,7 @@ func _handle_input(delta: float) -> void:
 			fwd = fwd.normalized()
 		if right.length_squared() > 1e-6:
 			right = right.normalized()
-		var grabbing := _ground_grab()
+		var grabbing := _ground_grab(delta)
 		if grabbing:
 			guide.set_tour(false)
 		var turn_a := _turn_step(snap_x, not grabbing and not stick_owned, delta)
@@ -2758,8 +2874,8 @@ func _handle_input(delta: float) -> void:
 			if ls.length() > 0.15 or absf(rs.y) > 0.15:
 				guide.set_tour(false)
 			if ls.length() > 0.15:
-				ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * delta)
-				moving = minf(1.0, ls.length())
+				ground.pan((right * ls.x + fwd * ls.y) * GROUND_PAN_MPS * ground.sphere_pan_scale() * delta)
+				moving = minf(1.0, ls.length()) * ground.sphere_flow_scale()
 			if absf(rs.y) > 0.15:
 				ground.zoom(exp(rs.y * GROUND_ZOOM_PER_S * delta))
 				moving = maxf(moving, minf(1.0, absf(rs.y)))
@@ -2972,8 +3088,9 @@ func _toggle_motion() -> void:
 	if ifs_mode:
 		_toggle_ifs_motion()
 	elif ground_mode:
-		orbit_on = not orbit_on
-		orbit.visible = false
+		if ground_sphere_idx == 0:
+			orbit_on = not orbit_on
+			orbit.visible = false
 	else:
 		spin = not spin
 
@@ -3304,8 +3421,9 @@ var _glow_override := -1
 
 
 ## Auto-disable Glow in non-HDR modes to save the stereo downsample/blur/upsample pass on Quest.
-## FLAME, TREE (additive points/leaves) and neon/circuit/magma styles (albedo > 1.0) keep glow on;
-## natural/toon/pencil/iridescent/jade/chrome GROUND, BULB and IFS disable it unless overridden.
+## FLAME, TREE (additive points/leaves) and bloom styles (neon 1, circuit 4, magma 6) keep Glow
+## on; natural, toon, pencil and the remaining finishes (iridescent, jade, chrome, opal,
+## verdigris, frost, velvet) disable it on GROUND, BULB and IFS unless overridden.
 func _sync_glow() -> void:
 	var env := _env()
 	if env == null:

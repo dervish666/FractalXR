@@ -1,8 +1,10 @@
-// The ground viewer: a flat plane you stand on, textured from a stack of fractal clipmap
-// levels (ground.glsl fills them). Level i has texels twice the size of level i-1, all
-// windows centred under the viewer, so what is near is sampled from fine texels and the
-// horizon from coarse ones: crisp at your feet, smooth in the distance, and the frame cost
-// does not depend on zoom depth or iteration count at all.
+// The ground viewer: a flat plane you stand on (or, with SPHERE on, a sphere round you mapped
+// by inverse stereographic projection from the zenith: the lower half in bowl, all of it in
+// globe), textured from a
+// stack of fractal clipmap levels (ground.glsl fills them). Level i has texels twice the size
+// of level i-1, all windows centred under the viewer, so what is near is sampled from fine
+// texels and the horizon from coarse ones: crisp at your feet, smooth in the distance, and
+// the frame cost does not depend on zoom depth or iteration count at all.
 //
 // Colouring is Frax's model: the fractal data is fixed, and palette, texture and relief
 // are applied here at sample time, so every look control is free.
@@ -41,6 +43,39 @@ uniform float slack = 48.0;             // texels of window kept around the view
 uniform vec4 clean_rect[9];
 uniform float fog_end = 100.0;          // metres; the coarsest window ends a little past this
 uniform vec3 fog_colour : source_color = vec3(0.02, 0.02, 0.04);
+// Sphere bend (SPHERE tile: off = 0, bowl and globe = 2 m). At 0 the vertex and fragment
+// shaders run the flat plane path untouched. Above 0, vertices up to sphere_horizon_r map onto
+// the lower hemisphere centred at (head_xz + sphere_off, sphere_centre_y) by inverse
+// stereographic projection from the zenith, with relief displaced along the inward normal and
+// normals rotated by the conformal tangent frame. FractalGround anchors the centre in the world
+// and holds it still while the head moves within a hold distance (fractal_ground.gd
+// STAND_HOLD_M).
+uniform float sphere_radius = 0.0;
+uniform float sphere_centre_y = 1.6;
+uniform float sphere_horizon_r = 60.0;
+uniform float sphere_fog_start = 0.85;
+uniform vec2 sphere_off = vec2(0.0);
+// GLOBE (sphere_globe 1): the same map without the clamp at the equator, so the whole plane
+// lies on the sphere with its point at infinity on the zenith: the Riemann sphere. The radial
+// mesh's outer ring (sphere_mesh_r, fractal_ground.gd MESH_R_MAX) goes to the zenith. Past the
+// clipmap's data the fragment works the escape count itself (near_escape, GLOBE_FAR_ITER),
+// crossfading from the data between plane radii globe_cap.x and .y, which FractalGround keeps
+// inside the coarsest level's reach. The globe lights the surface in the plane's own frame, so
+// the vault overhead is lit as the floor is.
+uniform float sphere_globe = 0.0;
+uniform float sphere_mesh_r = 320.0;
+uniform vec2 globe_cap = vec2(360.0, 600.0);
+// The flat clipmap's finest texel over this one's (fractal_ground.gd GLOBE_STAGE_BIAS: the
+// globe runs its levels coarser), so HEIGHT's terraces and ridges keep their height in metres.
+uniform float relief_unit = 1.0;
+// With SPHERE on under MANDEL SKY, mandel_sky.gd copies the sky's data on show and its view
+// here so the rim can fade into the sky's colour at d.y = 0 (sky_rim_colour). sky_rim_view
+// packs off.xy, k and half_w; sky_rim_tone packs fill_frac, dusk, the gain at the horizon and
+// has_data. The mix is 0 on the flat floor, under any other sky and in passthrough.
+uniform float sky_rim_mix = 0.0;
+uniform sampler2D sky_rim_data : filter_linear, repeat_disable;
+uniform vec4 sky_rim_view = vec4(0.0, 0.0, 1.0, 1.0);
+uniform vec4 sky_rim_tone = vec4(1.0, 0.2, 0.6, 0.0);
 
 uniform float colour_freq = 1.0;        // palette repeats per doubling of iteration count
 uniform float colour_offset = 0.0;      // slides the palette along the count
@@ -92,6 +127,29 @@ uniform vec3 pal4;
 #include "res://shaders/styles.gdshaderinc"
 
 varying vec3 v_world;
+varying vec2 v_plane;
+
+// Orthonormal tangent frame (tx, ny_inward, tz) on the lower hemisphere for normalised
+// stereographic plane coordinate u = w / sphere_horizon_r. Pure rational with denominator
+// 1 + |u|^2 >= 1 everywhere on the lower hemisphere (no pole at nadir or horizon); reduces
+// to the identity matrix at the nadir u = (0, 0).
+mat3 sphere_frame(vec2 u) {
+	float u2 = dot(u, u);
+	float inv = 1.0 / (1.0 + u2);
+	vec3 tx = vec3(1.0 - u.x * u.x + u.y * u.y, 2.0 * u.x, -2.0 * u.x * u.y) * inv;
+	vec3 ny = vec3(-2.0 * u.x, 1.0 - u2, -2.0 * u.y) * inv;
+	vec3 tz = vec3(-2.0 * u.x * u.y, 2.0 * u.y, 1.0 + u.x * u.x - u.y * u.y) * inv;
+	return mat3(tx, ny, tz);
+}
+
+// GLOBE's relief, displaced and shaded, tapers off between these normalised plane radii
+// u = |q| / sphere_horizon_r, 20 and 50 degrees above the horizon (u = tan(45 + e / 2)). The
+// conformal scale has already shrunk it to 0.12 of the nadir's by 50 degrees. Above that the
+// vault is the plane lit flat: one bilinear sample a pixel and no relief cross, which keeps the
+// half of the sphere that was one sky fetch cheap.
+const vec2 GLOBE_RELIEF_U = vec2(1.428, 2.747);
+// GLOBE's iteration budget past the data (fragment). The far exterior escapes in under ten.
+const int GLOBE_FAR_ITER = 32;
 
 // CYCLE (main.gd, the COLOUR card): Fractint's colour cycling, the ramp sliding along the count
 // so the bands flow. A global in cycles, the same one every mode reads; 0 is the ramp as before.
@@ -121,6 +179,29 @@ vec3 palette(float t) {
 	if (colour_cycle <= 0.0) return base;
 	return keep_luma(ramp(abs(fract(k * 0.5 + colour_cycle) * 2.0 - 1.0)),
 		dot(base, vec3(0.2126, 0.7152, 0.0722)));
+}
+
+// MANDEL SKY's colour on the horizon in the direction of plane offset q from the nadir, the
+// sky's sky_colour() at d.y = 0 without the edge line and the marker. The inverse
+// stereographic map keeps azimuth, so q's direction is the rim point's direction from the
+// sphere's centre, and both eyes get the same colour for the same rim point. One fetch, and
+// only for the rim's fogged pixels.
+vec3 sky_rim_colour(vec2 q) {
+	if (sky_rim_tone.w < 0.5) return vec3(0.0);
+	vec2 hw = q / max(length(q), 1e-6);
+	vec2 qs = sky_rim_view.xy + sky_rim_view.z * (mat2(rot.xy, rot.zw) * hw);
+	vec2 uv = qs / (2.0 * sky_rim_view.w) + 0.5;
+	vec3 c = palette(colour_offset) * sky_rim_tone.y;
+	if (all(greaterThan(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) {
+		float ff = sky_rim_tone.x;
+		float nf = float(textureSize(sky_rim_data, 0).x) * ff;
+		vec4 s = textureLod(sky_rim_data, clamp(uv, vec2(0.5 / nf), vec2(1.0 - 0.5 / nf)) * ff, 0.0);
+		c = palette(s.r * colour_freq + colour_offset);
+		c *= mix(1.0, 0.45 + 1.1 * s.a, texture_strength);
+		c *= mix(sky_rim_tone.y, 1.0, smoothstep(1.0, 4.5, s.r));
+		c = mix(c, inside_colour * (0.4 + 1.2 * s.a), clamp(s.b, 0.0, 1.0));
+	}
+	return c * sky_rim_tone.z;
 }
 
 int layer_of(int level) {
@@ -207,11 +288,13 @@ float coast_height(vec4 s) {
 // steepness at every distance; tied to the finest texel it vanished two metres out,
 // because the height stayed put while the texels it was measured over grew.
 float height_of(vec4 s, int level, bool with_grain) {
-	float unit0 = texel0 * wpu;
-	float unit_l = unit0 * float(1 << level);
+	float unit_l = texel0 * wpu * float(1 << level);
+	// The finest texel of the flat floor's clipmap, which globe runs coarser (relief_unit).
+	float t0f = texel0 * relief_unit;
+	float unit0 = t0f * wpu;
 	float h = 0.0;
 	if (relief_mode == 1 || relief_mode == 3) h = -log2(1.0 + s.r) * 48.0 * relief_scale * unit0;
-	else if (relief_mode == 2) h = clamp(s.g - log2(texel0), 0.0, 16.0) * 12.0 * relief_scale * unit0;
+	else if (relief_mode == 2) h = clamp(s.g - log2(t0f), 0.0, 16.0) * 12.0 * relief_scale * unit0;
 	else if (relief_mode == 4) h = coast_height(s) * relief_scale;
 	// Two grains: the orbit texture (broad, marbled) and the iteration bands themselves,
 	// a sawtooth with a cliff at every whole count, which is the terraced Frax look.
@@ -300,51 +383,142 @@ float shape_height(vec2 e0p, float lod, out bool inside) {
 
 void vertex() {
 	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	if (displace > 0.5 && (relief_mode != 0 || bump_strength > 0.0)) {
-		vec2 w = wp.xz - head_xz;
-		vec2 e0 = (mat2(rot.xy, rot.zw) * w) / (wpu * texel0);
-		float R = float(tex_size) * 0.5 - slack - 1.0;
-		// Same two limits as the fragment: never a level whose window does not reach the
-		// vertex, and never one finer than the mesh can show at this distance.
-		float lod_win = log2(max(max(abs(e0.x), abs(e0.y)), 1e-3) / (0.5 * R));
-		float lod_fp = log2(max(length(w) * mesh_spacing, 1e-6) / (texel0 * wpu));
-		int l = int(clamp(max(lod_win, lod_fp), float(min_level), float(max_level)));
-		// Snap the vertex to the centre of a texel of the level its spacing matches, so it
-		// sits on a fixed world point. The rings slide with the viewer, and without this
-		// every triangle re-interpolated between new sample points each frame and the
-		// whole surface swam as you walked. Ring spacing is at least one texel of this
-		// level, so neighbours never cross.
-		float sc = float(1 << l);
-		ivec2 rem = view_texel0 - ((view_texel0 >> l) << l);
-		vec2 t = (vec2(rem) + view_frac0 + e0) / sc;
-		vec2 e0s = (floor(t) + 0.5) * sc - vec2(rem) - view_frac0;
-		vec2 ws = (transpose(mat2(rot.xy, rot.zw)) * e0s) * (wpu * texel0);
-		VERTEX += transpose(mat3(MODEL_MATRIX)) * vec3(ws.x - w.x, 0.0, ws.y - w.y);
-		// The displaced height is a function of the world point and the floor reference,
-		// never of where the eye is. The rings are centred on the eye, and turning your
-		// head swings the eye about 9 cm round the neck, so every glance slid them across
-		// the field; picking the height's level by distance from the EYE then resampled
-		// the same world point at another level, and the texels the snapped vertices
-		// landed on changed too, so the bumps rose and fell as you looked about. Measured
-		// from the reference, which holds still while you turn (REF_HOLD_M), the level of
-		// every point is fixed. Half a level coarser than the mesh spacing, smoothed by
-		// sample_level's C1 weights, is a field the triangles can follow wherever their
-		// corners land: a 90 degree turn in place moved the surface 2-3 mm on average
-		// against 6-50 mm before, and a full level coarser bought almost nothing more while
-		// flattening the filament cliffs. The per-texel detail stays in the shading.
-		float tm = texel0 * wpu;
-		float d_ref = length(e0s - level_e0) * tm;
-		bool inside;
-		float hv = shape_height(e0s, max(lod_win, log2((d_ref + ref_hold) * mesh_spacing / tm) + 0.5), inside);
-		// The same field at the reference itself, so the floor under a still viewer is at 0.
-		bool dh;
-		float lod_rw = log2(max(max(abs(level_e0.x), abs(level_e0.y)), 1e-3) / (0.5 * R));
-		float h_ref = shape_height(level_e0, max(lod_rw, log2(ref_hold * mesh_spacing / tm) + 0.5), dh);
-		float h = inside ? hv - h_ref : 0.0;
-		// Local up, so the mirrored sky displaces toward the viewer as a reflection would.
-		VERTEX.y += h;
+	if (sphere_radius > 0.0) {
+		float hr = max(sphere_horizon_r, 1e-3);
+		bool globe = sphere_globe > 0.5;
+		// Mesh sits at _stand_xz = head_xz + sphere_off, so q is the plane offset from the
+		// sphere nadir while w = q + sphere_off samples the clipmap anchored to world XZ.
+		vec2 q = wp.xz - head_xz - sphere_off;
+		float r = length(q);
+		// GLOBE: mesh radius r stands for plane radius r / (1 - r / sphere_mesh_r), which sends
+		// the outer ring to infinity, the zenith. Where nothing is displaced the direction is
+		// built from v_inv = hr / plane radius, finite (0) all the way up.
+		float v_inv = -1.0;
+		vec2 q_dir = r > 1e-6 ? q / r : vec2(1.0, 0.0);
+		if (globe) {
+			float one_m = max(1.0 - r / sphere_mesh_r, 0.0);
+			if (r >= GLOBE_RELIEF_U.y * hr * one_m) {
+				v_inv = hr * one_m / max(r, 1e-6);
+			} else {
+				q /= one_m;
+				r = length(q);
+			}
+		} else if (r > hr) {
+			q *= hr / r;
+			r = hr;
+		}
+		float u_len = r / hr;
+		float h_disp = 0.0;
+		if (v_inv < 0.0 && displace > 0.5 && (relief_mode != 0 || bump_strength > 0.0)) {
+			vec2 w = q + sphere_off;
+			vec2 e0 = (mat2(rot.xy, rot.zw) * w) / (wpu * texel0);
+			float R = float(tex_size) * 0.5 - slack - 1.0;
+			float lod_win = log2(max(max(abs(e0.x), abs(e0.y)), 1e-3) / (0.5 * R));
+			float lod_fp = log2(max(r * mesh_spacing, 1e-6) / (texel0 * wpu));
+			int l = int(clamp(max(lod_win, lod_fp), float(min_level), float(max_level)));
+			float sc = float(1 << l);
+			ivec2 rem = view_texel0 - ((view_texel0 >> l) << l);
+			vec2 t = (vec2(rem) + view_frac0 + e0) / sc;
+			vec2 e0s = (floor(t) + 0.5) * sc - vec2(rem) - view_frac0;
+			vec2 qs = (transpose(mat2(rot.xy, rot.zw)) * e0s) * (wpu * texel0) - sphere_off;
+			// Release texel snapping near the equator so the rim stays a clean circle. The globe
+			// has no rim.
+			float snap_k = globe ? 1.0 : 1.0 - smoothstep(0.85, 0.97, u_len);
+			q = mix(q, qs, snap_k);
+			r = length(q);
+			if (!globe && r > hr) {
+				q *= hr / r;
+				r = hr;
+			}
+			u_len = r / hr;
+			e0s = (mat2(rot.xy, rot.zw) * (q + sphere_off)) / (wpu * texel0);
+			float tm = texel0 * wpu;
+			float d_ref = length(e0s - level_e0) * tm;
+			bool inside;
+			float hv = shape_height(e0s, max(lod_win, log2((d_ref + ref_hold) * mesh_spacing / tm) + 0.5), inside);
+			bool dh;
+			float lod_rw = log2(max(max(abs(level_e0.x), abs(level_e0.y)), 1e-3) / (0.5 * R));
+			float h_ref = shape_height(level_e0, max(lod_rw, log2(ref_hold * mesh_spacing / tm) + 0.5), dh);
+			float h = inside ? hv - h_ref : 0.0;
+			// Conformal scale factor matches displaced slopes to relief_normal(), clamped. The
+			// bowl tapers it to zero before the horizon so the seam stays flat; the globe tapers
+			// it over GLOBE_RELIEF_U, where the fragment's relief shading tapers too.
+			float sigma = 2.0 * sphere_radius / (hr * (1.0 + u_len * u_len));
+			float rim_fade = globe ? 1.0 - smoothstep(GLOBE_RELIEF_U.x, GLOBE_RELIEF_U.y, u_len)
+				: 1.0 - smoothstep(0.82, 0.98, u_len);
+			h_disp = clamp(h * sigma, -0.25 * sphere_radius, 0.25 * sphere_radius) * rim_fade;
+		}
+		vec3 dir;
+		if (v_inv >= 0.0) {
+			float v2 = v_inv * v_inv;
+			dir = vec3(2.0 * v_inv * q_dir.x, 1.0 - v2, 2.0 * v_inv * q_dir.y) / (1.0 + v2);
+		} else {
+			vec2 u = q / hr;
+			float u2 = dot(u, u);
+			float inv = 1.0 / (1.0 + u2);
+			dir = vec3(2.0 * u.x, u2 - 1.0, 2.0 * u.y) * inv;
+		}
+		// Keep inward relief 3 cm below the standing glass disc (y = 0, radius 0.75 m) so
+		// COAST's hills cannot rise through the floor underfoot in the 2 m bowl. Inward
+		// relief also pulls a vertex toward the axis, so the clamp reaches past the disc's rim
+		// and eases off by 1.25 m.
+		float stand_r = sphere_radius * length(dir.xz);
+		float stand_mask = 1.0 - smoothstep(0.85, 1.25, stand_r);
+		if (stand_mask > 0.0 && dir.y < -0.05) {
+			float max_h_stand = max(0.0, sphere_radius - (sphere_centre_y + 0.03) / (-dir.y));
+			h_disp = min(h_disp, mix(0.25 * sphere_radius, max_h_stand, stand_mask));
+		}
+		VERTEX = vec3(0.0, sphere_centre_y, 0.0) + dir * (sphere_radius - h_disp);
+		v_plane = q;
+		v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	} else {
+		v_plane = vec2(0.0);
+		if (displace > 0.5 && (relief_mode != 0 || bump_strength > 0.0)) {
+			vec2 w = wp.xz - head_xz;
+			vec2 e0 = (mat2(rot.xy, rot.zw) * w) / (wpu * texel0);
+			float R = float(tex_size) * 0.5 - slack - 1.0;
+			// Same two limits as the fragment: never a level whose window does not reach the
+			// vertex, and never one finer than the mesh can show at this distance.
+			float lod_win = log2(max(max(abs(e0.x), abs(e0.y)), 1e-3) / (0.5 * R));
+			float lod_fp = log2(max(length(w) * mesh_spacing, 1e-6) / (texel0 * wpu));
+			int l = int(clamp(max(lod_win, lod_fp), float(min_level), float(max_level)));
+			// Snap the vertex to the centre of a texel of the level its spacing matches, so it
+			// sits on a fixed world point. The rings slide with the viewer, and without this
+			// every triangle re-interpolated between new sample points each frame and the
+			// whole surface swam as you walked. Ring spacing is at least one texel of this
+			// level, so neighbours never cross.
+			float sc = float(1 << l);
+			ivec2 rem = view_texel0 - ((view_texel0 >> l) << l);
+			vec2 t = (vec2(rem) + view_frac0 + e0) / sc;
+			vec2 e0s = (floor(t) + 0.5) * sc - vec2(rem) - view_frac0;
+			vec2 ws = (transpose(mat2(rot.xy, rot.zw)) * e0s) * (wpu * texel0);
+			VERTEX += transpose(mat3(MODEL_MATRIX)) * vec3(ws.x - w.x, 0.0, ws.y - w.y);
+			// The displaced height is a function of the world point and the floor reference,
+			// never of where the eye is. The rings are centred on the eye, and turning your
+			// head swings the eye about 9 cm round the neck, so every glance slid them across
+			// the field; picking the height's level by distance from the EYE then resampled
+			// the same world point at another level, and the texels the snapped vertices
+			// landed on changed too, so the bumps rose and fell as you looked about. Measured
+			// from the reference, which holds still while you turn (REF_HOLD_M), the level of
+			// every point is fixed. Half a level coarser than the mesh spacing, smoothed by
+			// sample_level's C1 weights, is a field the triangles can follow wherever their
+			// corners land: a 90 degree turn in place moved the surface 2-3 mm on average
+			// against 6-50 mm before, and a full level coarser bought almost nothing more while
+			// flattening the filament cliffs. The per-texel detail stays in the shading.
+			float tm = texel0 * wpu;
+			float d_ref = length(e0s - level_e0) * tm;
+			bool inside;
+			float hv = shape_height(e0s, max(lod_win, log2((d_ref + ref_hold) * mesh_spacing / tm) + 0.5), inside);
+			// The same field at the reference itself, so the floor under a still viewer is at 0.
+			bool dh;
+			float lod_rw = log2(max(max(abs(level_e0.x), abs(level_e0.y)), 1e-3) / (0.5 * R));
+			float h_ref = shape_height(level_e0, max(lod_rw, log2(ref_hold * mesh_spacing / tm) + 0.5), dh);
+			float h = inside ? hv - h_ref : 0.0;
+			// Local up, so the mirrored sky displaces toward the viewer as a reflection would.
+			VERTEX.y += h;
+		}
+		v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	}
-	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 // Lighting normal and Laplacian from the four neighbour heights of one level. The heights
@@ -600,10 +774,31 @@ vec3 ground_art(vec4 s, vec3 nat, float v, float wk, float inside, float de_px, 
 }
 
 void fragment() {
-	vec2 w = v_world.xz - head_xz;
-	// Offset from the viewer in level-0 texels. Small numbers by construction.
+	bool on_sphere = sphere_radius > 0.0;
+	bool globe = on_sphere && sphere_globe > 0.5;
+	vec2 q = v_plane;
+	// GLOBE: the plane point from this pixel's direction from the centre, exact everywhere. The
+	// triangles round the zenith span plane radii out to infinity, which an interpolated plane
+	// coordinate cannot carry. `cap` is the fade into globe_far_colour() past the data.
+	float cap = 0.0;
+	if (globe) {
+		vec3 gd = normalize(v_world - (MODEL_MATRIX * vec4(0.0, sphere_centre_y, 0.0, 1.0)).xyz);
+		q = sphere_horizon_r * gd.xz / max(1.0 - gd.y, 1e-6);
+		cap = smoothstep(globe_cap.x, globe_cap.y, length(q));
+	}
+	vec2 w = on_sphere ? (q + sphere_off) : (v_world.xz - head_xz);
+	// The plane point in world metres. The flat floor reads v_world.xz as it always did, since
+	// (v_world.xz - head_xz) + head_xz is not bit-exact in float32.
+	vec2 w_world = on_sphere ? (w + head_xz) : v_world.xz;
+	// Offset from the viewer in level-0 texels. Small numbers by construction, except in the
+	// globe's cap, where the plane runs to infinity: there the samples are taken under the
+	// viewer instead (e0q), which no texel index can overflow, and the cap's colour covers them.
 	vec2 e0 = (mat2(rot.xy, rot.zw) * w) / (wpu * texel0);
+	vec2 e0q = cap < 1.0 ? e0 : vec2(0.0);
 	float dist = length(w);
+	// GLOBE's relief tapers out up the vault (GLOBE_RELIEF_U); where it is gone, no relief cross.
+	float t_rel = globe ? 1.0 - smoothstep(GLOBE_RELIEF_U.x, GLOBE_RELIEF_U.y,
+		length(q) / max(sphere_horizon_r, 1e-3)) : 1.0;
 
 	// Pick the level whose texel matches the pixel footprint, but never one whose window
 	// does not reach this point: level i is valid out to R * 2^i level-0 texels from the
@@ -618,44 +813,71 @@ void fragment() {
 	float lod = clamp(max(lod_fp, lod_win), float(min_level), float(max_level));
 	int l0 = int(floor(lod));
 	float k = fract(lod);
+	// GLOBE's vault hands over to the next level only in the last quarter of each, as the relief
+	// normals do (kn): three pixels in four take one bilinear sample, and it stays continuous.
+	if (globe) {
+		k = mix(smoothstep(0.75, 1.0, k), k, t_rel);
+	}
 	// A level whose texels here are still queued for the fill holds the far side of its
 	// window or another scale in those slots. Pass over it to the next coarser level that is
 	// filled, without a blend: a patch a level blurrier until the fill lands, never one of
 	// somewhere else. Same for l1, which then drops out of the blend.
 	bool in0;
-	int lu = usable_level(l0, e0, in0);
+	int lu = usable_level(l0, e0q, in0);
 	if (lu != l0) k = 0.0;
 	l0 = lu;
 	int l1 = min(l0 + 1, max_level);
-	bool in1 = l1 != l0 && in_window(l1, e0);
+	bool in1 = l1 != l0 && in_window(l1, e0q);
 	if (!in1) k = 0.0;
 	// Relief needs a 12-texel cross at l0 that contains this sample: fetch it once, up front.
 	bool relief_on = relief_mode != 0 || bump_strength > 0.0;
+	bool relief_fetch = relief_on && t_rel > 0.0;
 	float hx0 = 0.0;
 	float hx1 = 0.0;
 	float hz0 = 0.0;
 	float hz1 = 0.0;
 	vec4 sa;
-	if (relief_on) {
-		relief_heights(l0, e0, hx0, hx1, hz0, hz1, sa);
+	if (relief_fetch) {
+		relief_heights(l0, e0q, hx0, hx1, hz0, hz1, sa);
 	} else {
 		bool d0;
-		sa = sample_level(l0, e0, d0);
+		sa = sample_level(l0, e0q, d0);
 	}
 	// When blending normals to l1 (kn > 0), fetch l1's relief block once and reuse its centre
 	// as sb instead of calling sample_level(l1) and then re-fetching the same 4 texels later.
-	float kn = relief_on ? smoothstep(0.75, 1.0, k) : 0.0;
+	float kn = relief_fetch ? smoothstep(0.75, 1.0, k) : 0.0;
 	bool need_n1 = kn > 0.0 && l1 != l0 && in1;
 	float a0 = 0.0, a1 = 0.0, b0 = 0.0, b1 = 0.0;
 	vec4 sb = sa;
 	if (need_n1) {
-		relief_heights(l1, e0, a0, a1, b0, b1, sb);
+		relief_heights(l1, e0q, a0, a1, b0, b1, sb);
 	} else if (k > 0.0) {
 		bool d1;
-		sb = sample_level(l1, e0, d1);
+		sb = sample_level(l1, e0q, d1);
 	}
 	vec4 s = mix(sa, sb, k);
 	bool valid = in0;
+
+	// GLOBE past the data: the escape count worked here, with GLOBE_FAR_ITER iterations at
+	// most, crossfaded in over the cap's band. The neighbourhood of infinity is always the far
+	// exterior, where every family escapes in a handful of iterations, so near the zenith this
+	// is the same count, distance and texture the fill would have stored. Deep in, the band
+	// also crosses the set at scales coarser than the data, and what the budget cannot settle
+	// draws as the set's inside: the set's large shapes at a low iteration count.
+	if (globe) {
+		float w_far = valid ? cap : 1.0;
+		if (w_far > 0.0) {
+			vec2 dc = (mat2(rot.xy, rot.zw) * w) / wpu;
+			vec2 cp = vec2(near_c.x + (near_c.y + dc.x), near_c.z + (near_c.w + dc.y));
+			bool ok_far;
+			vec4 sf = near_julia != 0 ? near_escape(near_julia_c, cp, GLOBE_FAR_ITER, ok_far)
+				: near_escape(cp, vec2(0.0), GLOBE_FAR_ITER, ok_far);
+			// Past |c| = 2^32 the count would fall below -1; the zenith pixel stops well short.
+			sf.r = max(sf.r, -0.99);
+			s = mix(s, sf, w_far);
+		}
+		valid = true;
+	}
 
 	// NEAR (above): per-pixel escape where a texel spans more than a pixel near the set.
 	if (near_iter > 0) {
@@ -713,6 +935,11 @@ void fragment() {
 	float lit_art = 0.75;
 	float ao_art = 1.0;
 	vec3 n_w = vec3(0.0, 1.0, 0.0);
+	if (on_sphere && !relief_on) {
+		vec2 u_n = q / max(sphere_horizon_r, 1e-3);
+		float u2_n = dot(u_n, u_n);
+		n_w = vec3(-2.0 * u_n.x, 1.0 - u2_n, -2.0 * u_n.y) / (1.0 + u2_n);
+	}
 	vec3 L = normalize(light_dir);
 	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
 	// MIRROR draws this ground again overhead, turned face down (fractal_ground.gd _sky), and
@@ -722,24 +949,42 @@ void fragment() {
 	if (MODEL_MATRIX[1].y < 0.0) {
 		V.y = -V.y;
 	}
+	// GLOBE lights in the plane's own frame (sf takes plane to world): normal, light and view
+	// as the flat floor has them, so the vault is lit as the floor is. A world sun left every
+	// downward face of it in shade. n_w stays the world normal, for the lantern.
+	mat3 sf = on_sphere ? sphere_frame(q / max(sphere_horizon_r, 1e-3)) : mat3(1.0);
+	vec3 V_l = globe ? transpose(sf) * V : V;
 	vec3 base_albedo = col;
 	if (relief_on) {
 		mat2 m = mat2(rot.xy, rot.zw);
-		vec3 n;
-		float lap;
-		relief_normal(m, l0, hx0, hx1, hz0, hz1, height_of(sa, l0, true), n, lap);
-		if (need_n1) {
-			vec3 n1;
-			float lap1;
-			relief_normal(m, l1, a0, a1, b0, b1, height_of(sb, l1, true), n1, lap1);
-			n = normalize(mix(n, n1, kn));
-			lap = mix(lap, lap1, kn);
+		vec3 n = vec3(0.0, 1.0, 0.0);
+		float lap = 0.0;
+		if (relief_fetch) {
+			relief_normal(m, l0, hx0, hx1, hz0, hz1, height_of(sa, l0, true), n, lap);
+			if (need_n1) {
+				vec3 n1;
+				float lap1;
+				relief_normal(m, l1, a0, a1, b0, b1, height_of(sb, l1, true), n1, lap1);
+				n = normalize(mix(n, n1, kn));
+				lap = mix(lap, lap1, kn);
+			}
+			if (globe) {
+				n = normalize(mix(vec3(0.0, 1.0, 0.0), n, t_rel));
+				lap *= t_rel;
+			}
+		}
+		vec3 n_l = n;
+		if (on_sphere) {
+			n = sf * n;
+			if (!globe) {
+				n_l = n;
+			}
 		}
 		n_w = n;
-		float diff = max(dot(n, L), 0.0);
+		float diff = max(dot(n_l, L), 0.0);
 		float spec = 0.0;
 		if (sharp > 0.0 && inside < 1.0) {
-			float ndh = max(dot(half_dir(L, V), n), 0.0);
+			float ndh = max(dot(half_dir(L, V_l), n_l), 0.0);
 			float s2 = ndh * ndh;
 			float s4 = s2 * s2;
 			float s8 = s4 * s4;
@@ -782,12 +1027,12 @@ void fragment() {
 		float fade = (1.0 - smoothstep(0.15, 0.4, wd)) * smoothstep(0.1, 0.5, band);
 		col *= 1.0 - clamp(0.35 * line + 0.3 * heavy, 0.0, 0.6) * fade * (1.0 - inside);
 		// Outside the branches below: fwidth in a non-uniform branch is undefined.
-		float wpx = length(fwidth(v_world.xz));
+		float wpx = length(fwidth(w_world));
 		if (art_style == 0 && inside_passthrough < 0.5) {
 			// V3: Living ocean in COAST's interior sea + luminous shoreline foam band.
 			if (inside > 0.01) {
 				float wave_fade = 1.0 - smoothstep(0.08, 0.45, wpx);
-				vec2 wp2 = v_world.xz;
+				vec2 wp2 = w_world;
 				float t = TIME;
 				// Three swells at unrelated angles, frequencies and heights, under 1 rad/s: the
 				// first pass's two crossed pairs tiled the sea into a visible quilt. Each speed
@@ -805,7 +1050,14 @@ void fragment() {
 						+ D3 * (sin(dot(wp2, D3) * 7.3 + t * (315.0 * HOUR_TURN)) * 0.015);
 				}
 				vec3 nw = normalize(vec3(g.x * wave_fade, 1.0, g.y * wave_fade));
-				float wndv = clamp(dot(nw, V), 0.0, 1.0);
+				vec3 nw_l = nw;
+				if (on_sphere) {
+					nw = sf * nw;
+					if (!globe) {
+						nw_l = nw;
+					}
+				}
+				float wndv = clamp(dot(nw_l, V_l), 0.0, 1.0);
 				float wf1 = 1.0 - wndv;
 				float wfres = 0.08 + 0.92 * (wf1 * wf1 * wf1 * wf1);
 				vec3 deep_sea = inside_colour * (0.35 + 0.95 * s.a);
@@ -813,8 +1065,8 @@ void fragment() {
 				// against the coast: the first pass reflected an invented pale sky, milky mauve.
 				vec3 sky_refl = fog_colour * 1.25;
 				vec3 water = mix(deep_sea, sky_refl, wfres * 0.72);
-				vec3 wh = half_dir(L, V);
-				float wnh = max(dot(nw, wh), 0.0);
+				vec3 wh = half_dir(L, V_l);
+				float wnh = max(dot(nw_l, wh), 0.0);
 				float ws2 = wnh * wnh;
 				float ws8 = (ws2 * ws2) * (ws2 * ws2);
 				float ws16 = ws8 * ws8;
@@ -845,13 +1097,16 @@ void fragment() {
 		float g_out = (s.g + 40.0 * ib) / (1.0 - ib);
 		float de_px = exp2(g_out) / max(texel0 * fpg, 1e-30);
 		if (art_style <= 4) {
-			col = ground_art(s, col, v, wcount, inside, de_px, lit_art, ao_art, v_world, dist);
+			vec3 art_pos = on_sphere ? vec3(w_world.x, v_world.y, w_world.y) : v_world;
+			col = ground_art(s, col, v, wcount, inside, de_px, lit_art, ao_art, art_pos, dist);
 		} else {
 			// V2: physical finishes on the fractal terrain; magma heats hollows and the set boundary.
 			float edge_heat = clamp(1.0 - de_px * 0.25, 0.0, 1.0) * (1.0 - inside);
 			float ao_phys = clamp(ao_art * (1.0 - inside * 0.45) - edge_heat * 0.55, 0.0, 1.0);
-			float refl_y = reflect(-V, n_w).y;
-			col = physical_finish(base_albedo, pal4, n_w, L, V, refl_y, 1.0, ao_phys, v * 0.5);
+			// The globe hands the finish its plane-frame normal and view, as it lights itself.
+			vec3 n_f = globe ? transpose(sf) * n_w : n_w;
+			float refl_y = reflect(-V_l, n_f).y;
+			col = physical_finish(base_albedo, pal4, n_f, L, V_l, refl_y, 1.0, ao_phys, v * 0.5);
 		}
 	}
 	if (art_style == 0 || art_style >= 5) {
@@ -863,5 +1118,21 @@ void fragment() {
 	col *= brightness;
 	float fog = smoothstep(fog_end * 0.55, fog_end, dist);
 	if (!valid) fog = 1.0;
+	if (globe) {
+		// No rim, no sky and no fog: the plane runs to the zenith.
+		fog = 0.0;
+	} else if (on_sphere) {
+		// SPHERE fogs by the share of the way to the rim, not by distance. Under MANDEL SKY the
+		// rim fades into the sky's own colour on the horizon at this azimuth, so the two halves
+		// meet with no band between them; under any other sky it fades to fog_colour.
+		float rim = valid ? smoothstep(min(sphere_fog_start, 0.99), 1.0,
+			length(q) / max(sphere_horizon_r, 1e-3)) : 1.0;
+		vec3 far_col = fog_colour;
+		if (sky_rim_mix > 0.0 && rim > 0.0) {
+			far_col = mix(fog_colour, sky_rim_colour(q), sky_rim_mix);
+		}
+		col = mix(col, far_col, rim);
+		fog = 0.0;
+	}
 	ALBEDO = mix(col, fog_colour, fog);
 }

@@ -43,7 +43,7 @@ colour_cycle={
 "value": 0.0
 }
 ; STYLE (main.gd ART_NAMES, shaders/styles.gdshaderinc): 0 natural, 1 neon, 2 toon, 3 pencil,
-; 4 circuit, 5 iridescent, 6 magma, 7 jade, 8 chrome.
+; 4 circuit, 5 iridescent, 6 magma, 7 jade, 8 chrome, 9 opal, 10 verdigris, 11 frost, 12 velvet.
 art_style={
 "type": "int",
 "value": 0

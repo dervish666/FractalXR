@@ -35,7 +35,7 @@ func _init() -> void:
 	main._drift = false
 	main.breath_idx = main.BREATH_STEPS.find(0.0)
 	var styled_ok := true
-	for st in [[1, "neon"], [8, "chrome"]]:
+	for st in [[1, "neon"], [8, "chrome"], [9, "opal"], [10, "verdigris"], [11, "frost"], [12, "velvet"]]:
 		main._set_art(st[0])
 		for i in 6:
 			await process_frame

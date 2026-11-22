@@ -135,7 +135,8 @@ func _init() -> void:
 	await _shot(main, "room-dive-50.png", LEVEL)
 
 	# The comfort vignette, through main's own tick: up while a room-size step moves, gone once
-	# the hold has eased out, and off at table size with a step moving just as fast.
+	# the hold has eased out, and up at table size too, where the step zooms the whole view
+	# into a copy just the same.
 	var room_on: Array = await _held_frame(main)
 	var t0 := Time.get_ticks_msec()
 	while Time.get_ticks_msec() - t0 < 1000:   # twice the dive's EASE_S, in the real time main eases by
@@ -150,7 +151,7 @@ func _init() -> void:
 	var table: Array = await _held_frame(main)
 	_ok("vignette", room_on[3] and room_on[2] and room_on[0] > 0.5 \
 			and absf(room_on[0] - room_on[1]) < 1e-6 and not released[2] and released[0] == 0.0 \
-			and table[3] and table[1] > 0.5 and not table[2] and table[0] == 0.0,
+			and table[3] and table[1] > 0.5 and table[2] and absf(table[0] - table[1]) < 1e-6,
 		("room mid-step %.2f (dive %.2f, shown=%s); released %.2f (dive %.2f, shown=%s); "
 			+ "table mid-step %.2f (dive %.2f, shown=%s), size '%s'") % [room_on[0], room_on[1],
 		str(room_on[2]), released[0], released[1], str(released[2]), table[0], table[1],

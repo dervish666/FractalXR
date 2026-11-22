@@ -21,8 +21,16 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		# the other adds a generation. Both rebuild; the palette does not.
 		WristMenu.Item.new("make", "LEVELS",
 			# Short: a slider's value shares its row with the label. The title names the levels.
-			func(): return "%d · %d copies" % [FractalMain.IFS_DETAIL[m.ifs_detail_idx],
-				m.ifs.instance_count],
+			# While MOTION breathes, the live rebuild stops at the preset's drag rung, so a top
+			# rung would show nothing new. The value then says what is built and why, in place of
+			# the copies: "3 · breathing" beside a slider at 4. Anything longer is cut off.
+			func():
+				var want: int = FractalMain.IFS_DETAIL[m.ifs_detail_idx]
+				if m.ifs.levels_built >= want:
+					return "%d · %d copies" % [want, m.ifs.instance_count]
+				if m.ifs.ambient:
+					return "%d · breathing" % m.ifs.levels_built
+				return "%d of %d" % [m.ifs.levels_built, want],
 			func(): m._step_ifs_detail(1),
 			false, vis).stepping(func(d: int): m._step_ifs_detail(d)).slider(
 			func(): return m.ifs_detail_idx, FractalMain.IFS_DETAIL.size()).hinted(
@@ -59,7 +67,6 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).hinted("Back to the shape it opened as"),
 
 		MenuShared.sky(m, vis),
-		MenuShared.sky_pick(m, vis),
 		MenuShared.turn(m, vis),
 		MenuShared.vignette(m, vis),
 		# Copies of the sculpture through the room, on SCENE as FLAME's are. The count is what the

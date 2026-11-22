@@ -184,6 +184,8 @@ func _trees(m) -> void:
 	m._set_mode("tree")
 	m.forest.succession = false
 	m.forest.clear()
+	var ug0: bool = m.forest.undergrowth_on
+	m._set_tree_undergrowth(false)
 	# species_shot's framing: step back and look at the hero's middle.
 	m.xr_camera.position = Vector3(0.0, 2.8, 5.2)
 	m.xr_camera.look_at(Vector3(0.0, 2.5, -2.2))
@@ -194,6 +196,7 @@ func _trees(m) -> void:
 		m.tree.grow_t = m.tree.grow_s + 2.0
 		await _frames(8)
 		_take("tree", FractalTree.SHAPE_NAMES[i], true)
+	m._set_tree_undergrowth(ug0)
 	m.xr_camera.position = Vector3(0.0, 1.6, 0.0)
 	m.xr_camera.rotation_degrees = Vector3.ZERO
 

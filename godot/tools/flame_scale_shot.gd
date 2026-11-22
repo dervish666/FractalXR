@@ -333,12 +333,12 @@ func _sky(main) -> void:
 			_ok("sky fades in", a["lit_n"] < b["lit_n"], "lit samples %d at 30%% of the fade, %d after" % [
 				a["lit_n"], b["lit_n"]])
 		var shown: bool = env.background_mode == Environment.BG_SKY
-		sky.advance.call()
+		sky.step.call(-1)
 		for i in 4:
 			await process_frame
 		var off_img: Image = await _shot(main, "nosky-%s.png" % mode, look)
 		var hidden: bool = env.background_mode == Environment.BG_COLOR
-		sky.advance.call()
+		sky.step.call(1)
 		var on_s := _stats(on_img)
 		var off_s := _stats(off_img)
 		_ok("sky over %s" % mode, shown and hidden and on_s["lit_n"] > off_s["lit_n"] + 1000,
@@ -395,12 +395,13 @@ func _sky_flame(main, sky) -> void:
 	await _settle_sky(main)
 	var on_img: Image = await _shot(main, "sky-flame.png", look)
 	var shown: bool = env.background_mode == Environment.BG_SKY
-	sky.advance.call()
+	# SKY is one list with off first. From live, one step back is off and one step on is live.
+	sky.step.call(-1)
 	for i in 4:
 		await process_frame
 	var off_img: Image = await _shot(main, "nosky-flame.png", look)
 	var hidden: bool = env.background_mode == Environment.BG_COLOR
-	sky.advance.call()
+	sky.step.call(1)
 	var on_s := _stats(on_img)
 	var off_s := _stats(off_img)
 	_ok("sky over flame", shown and hidden and on_s["lit_n"] > off_s["lit_n"] + 1000,
@@ -441,8 +442,8 @@ func _sky_bulb(main, sky) -> void:
 	sky.advance.call()
 	await _settle_sky(main)
 	var on_img: Image = await _shot(main, "sky-bulb.png", look)
-	var shown: bool = env.background_mode == Environment.BG_SKY and str(sky.read.call()) == "on"
-	sky.advance.call()
+	var shown: bool = env.background_mode == Environment.BG_SKY and str(sky.read.call()) == "live"
+	sky.step.call(-1)
 	for i in 4:
 		await process_frame
 	var back_off: bool = env.background_mode == Environment.BG_COLOR and not main.sky_bulb_on \

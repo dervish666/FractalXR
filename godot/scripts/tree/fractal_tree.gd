@@ -169,6 +169,31 @@ var bark_style := 0
 ## forest's LOD pass decides litter_near; the hero sets it once). Both must hold to show.
 var litter_on := false
 var litter_near := false
+## Fractal forest undergrowth (tree_undergrowth.gd): wanted at all (undergrowth_on), and the
+## shared LOD tier granted by the forest's LOD pass (-1 hidden/revoked, 0 full, 1 compact; the
+## hero sets 0 once). Drawn with this tree's own branch and leaf materials. `undergrowth_presence`
+## eases 0..1 over UNDERGROWTH_EASE_S in tick() so grants and revocations fold smoothly without
+## popping; a revoked bed keeps drawing at `undergrowth_drawn_lod` until presence reaches 0.
+## `undergrowth_lod0` is the eased size of the LOD 0-only plants (COLOR.a 0) over the same time.
+## A tier change never swaps the MultiMesh while they show: a downgrade keeps drawing LOD 0 and
+## eases the weight to 0, then swaps to LOD 1; an upgrade swaps to LOD 0 at weight 0, then eases
+## up. LOD 1 is the COLOR.a 1 subset of LOD 0, so a swap at weight 0 changes no pixel. When
+## undergrowth_fixed is true (the spinning hero tree), the bed counter-rotates against local Y
+## spin so ferns and bushes stay rooted on the floor instead of sweeping through the grove.
+const UNDERGROWTH_EASE_S := 0.8
+var undergrowth_on := false
+var undergrowth_lod := -1
+var undergrowth_drawn_lod := -1
+var undergrowth_presence := 0.0
+var undergrowth_lod0 := 1.0
+var undergrowth_fixed := false
+## A tree you plant (Forest.plant_at) grows its bed with it: the bed's node scale, and the
+## `undergrowth` height its shaders read, follow _ug_grow() from the sprout, so the plants come
+## up as a miniature of the full bed and reach full size as the crown does. The plants' own
+## birth times still stagger them on top. Sown trees and the hero keep a full-size bed.
+const UG_GROW_LAG := 0.5          # seconds the bed starts behind the trunk, so the tree leads
+const UG_GROW_MIN := 0.03         # never 0: `undergrowth` > 0 is what marks a bed in the shaders
+var undergrowth_grows := false
 
 ## Instance index where each recursion level ends; level_ends[i] = branches in levels 0..i.
 var level_ends := PackedInt32Array()
@@ -177,6 +202,8 @@ var lod := 0
 var _branches: MultiMeshInstance3D = null
 var _leaves: MultiMeshInstance3D = null
 var _litter: MultiMeshInstance3D = null   # FLOOR's fallen leaves (tree_litter.gd), drawn with the leaf material
+var _ug_stems: MultiMeshInstance3D = null   # undergrowth stems/fronds/caps (tree_undergrowth.gd)
+var _ug_leaves: MultiMeshInstance3D = null  # undergrowth glowing buds/spores/dew
 var _branch_mat: ShaderMaterial = null
 var _leaf_mat: ShaderMaterial = null
 var _palette: Array = []
@@ -188,6 +215,9 @@ var _fed_g := 0.0
 var _fed_xf := Transform3D()
 var _fed_wxf := Transform3D()
 var _fed_wind := 0.0
+var _fed_ug_p := -1.0
+var _fed_ug_w := -1.0
+var _fed_ug_g := -1.0
 
 static var _cyl: CylinderMesh
 static var _quad: QuadMesh
@@ -592,6 +622,7 @@ func adopt(d: Dictionary) -> int:
 	_fed = false
 	grow_t = 0.0
 	_sync_litter()
+	_sync_undergrowth()
 	return n_b
 
 
@@ -690,10 +721,158 @@ func _sync_litter() -> void:
 	_litter.visible = _litter_shows()
 
 
+## Fractal forest undergrowth (tree_undergrowth.gd): shared MultiMesh pair (stems + foliage)
+## drawn with this tree's own branch and leaf materials, so every plant follows the theme,
+## palette phase, BARK, LEAVES, wind, fog and all 12 STYLEs, and rides WALK recycles for free.
+func set_undergrowth(on: bool) -> void:
+	undergrowth_on = on
+	_sync_undergrowth()
+
+
+## The requested tier. The drawn tier follows it only where that changes no pixel: a fresh bed
+## (presence 0) takes it at once, an upgrade swaps at LOD 0 weight 0, and a downgrade waits in
+## tick() for the weight to reach 0.
+func set_undergrowth_lod(k: int) -> void:
+	if k == undergrowth_lod:
+		return
+	undergrowth_lod = k
+	if k < 0:
+		if undergrowth_presence <= 0.0:
+			undergrowth_drawn_lod = -1
+	elif undergrowth_drawn_lod < 0 or undergrowth_presence <= 0.0:
+		undergrowth_drawn_lod = k
+		undergrowth_lod0 = 1.0 if k == 0 else 0.0
+	elif k == 0 and undergrowth_drawn_lod == 1:
+		undergrowth_drawn_lod = 0
+		undergrowth_lod0 = 0.0
+	elif k == 1 and undergrowth_drawn_lod == 0 and undergrowth_lod0 <= 0.0:
+		undergrowth_drawn_lod = 1
+	_sync_undergrowth()
+
+
+## Immediate drop with no presence ease: for far-batch release, WALK recycle and grow_t <= 0.
+func clear_undergrowth() -> void:
+	undergrowth_lod = -1
+	undergrowth_drawn_lod = -1
+	undergrowth_presence = 0.0
+	undergrowth_lod0 = 1.0
+	_fed_ug_p = -1.0
+	_fed_ug_w = -1.0
+	_fed_ug_g = -1.0
+	if _ug_stems != null:
+		_ug_stems.visible = false
+	if _ug_leaves != null:
+		_ug_leaves.visible = false
+
+
+func undergrowth_nodes() -> Array[MultiMeshInstance3D]:
+	var out: Array[MultiMeshInstance3D] = []
+	if _ug_stems != null:
+		out.append(_ug_stems)
+	if _ug_leaves != null:
+		out.append(_ug_leaves)
+	return out
+
+
+func undergrowth_cost(k: int) -> int:
+	if k < 0:
+		return 0
+	return TreeUndergrowth.cost(seed_value, k, leaves_on)
+
+
+func _ug_shows() -> bool:
+	return undergrowth_on and undergrowth_drawn_lod >= 0 and not far and _branches != null \
+		and _branches.visible and branch_count > 0
+
+
+func _sync_undergrowth() -> void:
+	if not undergrowth_on or undergrowth_drawn_lod < 0:
+		if _ug_stems != null:
+			_ug_stems.visible = false
+		if _ug_leaves != null:
+			_ug_leaves.visible = false
+		return
+	if _branches == null or not built or branch_count == 0:
+		return
+	var ug_g := _ug_grow()
+	var ug_scale := _ug_scale() * ug_g
+	var ug_h := TreeUndergrowth.REF_HEIGHT * ug_scale
+	if _ug_stems == null:
+		_ug_stems = MultiMeshInstance3D.new()
+		_ug_stems.name = "UndergrowthStems"
+		_ug_stems.material_override = _branch_mat
+		_ug_stems.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(_ug_stems)
+		_ug_leaves = MultiMeshInstance3D.new()
+		_ug_leaves.name = "UndergrowthLeaves"
+		_ug_leaves.material_override = _leaf_mat
+		_ug_leaves.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(_ug_leaves)
+	var e := TreeUndergrowth.entry(seed_value, undergrowth_drawn_lod)
+	_ug_stems.multimesh = e["stems"]
+	_ug_leaves.multimesh = e["leaves"]
+	var box := AABB(Vector3(-1.2, -0.05, -1.2), Vector3(2.4, 1.2, 2.4))
+	_ug_stems.custom_aabb = box
+	_ug_leaves.custom_aabb = box
+	_apply_ug_xform(ug_scale)
+	_ug_stems.set_instance_shader_parameter(&"undergrowth", ug_h)
+	_ug_leaves.set_instance_shader_parameter(&"undergrowth", ug_h)
+	_fed_ug_g = ug_g
+	_ug_stems.set_instance_shader_parameter(&"undergrowth_presence", undergrowth_presence)
+	_ug_leaves.set_instance_shader_parameter(&"undergrowth_presence", undergrowth_presence)
+	_fed_ug_p = undergrowth_presence
+	_ug_stems.set_instance_shader_parameter(&"undergrowth_lod0", undergrowth_lod0)
+	_ug_leaves.set_instance_shader_parameter(&"undergrowth_lod0", undergrowth_lod0)
+	_fed_ug_w = undergrowth_lod0
+	var show := _ug_shows()
+	_ug_stems.visible = show
+	_ug_leaves.visible = show and leaves_on
+
+
+func _ug_scale() -> float:
+	# Hero stays capped at 1.0 (knee-high bed around the 4.8 m trunk), while 3 m avenue trees
+	# sit near 1.12 so the beds frame both rows with presence while keeping > 2.4 m of clear path.
+	var max_sc := 1.0 if undergrowth_fixed else 1.14
+	return clampf(pow(maxf(height_m, 0.4) / 2.6, 0.45) * 1.05, 0.52, max_sc)
+
+
+## The share of its full size a planted tree's bed has grown to: UG_GROW_MIN until UG_GROW_LAG
+## after the sprout, then a smoothstep to 1 over grow_s, so it trails the trunk early and is
+## whole before the last leaves open (grow_s + 2). A withering tree takes it back down with it.
+## 1 for every bed that does not grow (undergrowth_grows false).
+func _ug_grow() -> float:
+	if not undergrowth_grows:
+		return 1.0
+	var u := clampf((grow_t - UG_GROW_LAG) / maxf(grow_s, 0.5), 0.0, 1.0)
+	return lerpf(UG_GROW_MIN, 1.0, u * u * (3.0 - 2.0 * u))
+
+
+## Feed a new growth share: node scale and the shaders' `undergrowth` height together, so the
+## colour ramp and sway stay where the full bed has them.
+func _feed_ug_grow(ug_g: float) -> void:
+	var ug_scale := _ug_scale() * ug_g
+	_apply_ug_xform(ug_scale)
+	var ug_h := TreeUndergrowth.REF_HEIGHT * ug_scale
+	_ug_stems.set_instance_shader_parameter(&"undergrowth", ug_h)
+	_ug_leaves.set_instance_shader_parameter(&"undergrowth", ug_h)
+	_fed_ug_g = ug_g
+
+
+func _apply_ug_xform(ug_scale: float) -> void:
+	var yaw := float(posmod(seed_value * 73, 360)) * 0.0174533
+	if undergrowth_fixed:
+		yaw -= rotation.y
+	var xf := Transform3D(Basis(Vector3.UP, yaw).scaled(Vector3(ug_scale, ug_scale, ug_scale)),
+		Vector3.ZERO)
+	_ug_stems.transform = xf
+	_ug_leaves.transform = xf
+
+
 ## Handed to the far batch: the tree's own nodes go dark and give their buffers back. The
 ## shape, counts and clock stay, so it can come back with adopt().
 func release() -> void:
 	far = true
+	clear_undergrowth()
 	if _branches == null:
 		return
 	_branches.visible = false
@@ -805,6 +984,8 @@ func set_leaves(on: bool) -> void:
 	leaves_on = on
 	if _leaves != null and not far:
 		_leaves.visible = on
+	if _ug_leaves != null:
+		_ug_leaves.visible = _ug_shows() and on
 
 
 var fog_density := 0.0
@@ -860,12 +1041,50 @@ func tick(delta: float) -> void:
 		_leaves.visible = false
 		if _litter != null:
 			_litter.visible = false
+		clear_undergrowth()
 		return
 	if not _branches.visible:
 		_branches.visible = true
 		_leaves.visible = leaves_on
 		if _litter != null:
 			_litter.visible = _litter_shows()
+		if _ug_stems != null:
+			var ug := _ug_shows()
+			_ug_stems.visible = ug
+			_ug_leaves.visible = ug and leaves_on
+	if undergrowth_fixed and _ug_stems != null and _ug_stems.visible:
+		_apply_ug_xform(_ug_scale() * _ug_grow())
+	if undergrowth_on and undergrowth_drawn_lod >= 0 and _ug_stems != null:
+		var target_p := 1.0 if undergrowth_lod >= 0 else 0.0
+		if undergrowth_presence != target_p:
+			undergrowth_presence = move_toward(undergrowth_presence, target_p, delta / UNDERGROWTH_EASE_S)
+			if undergrowth_presence <= 0.0 and undergrowth_lod < 0:
+				undergrowth_presence = 0.0
+				undergrowth_drawn_lod = -1
+				_ug_stems.visible = false
+				_ug_leaves.visible = false
+		# The LOD 0-only plants ease toward the requested tier; a downgrade swaps to the LOD 1
+		# MultiMesh only once they are folded away. A revoked bed holds its weight.
+		if undergrowth_drawn_lod == 0 and undergrowth_lod >= 0:
+			var target_w := 1.0 if undergrowth_lod == 0 else 0.0
+			if undergrowth_lod0 != target_w:
+				undergrowth_lod0 = move_toward(undergrowth_lod0, target_w, delta / UNDERGROWTH_EASE_S)
+				if undergrowth_lod0 <= 0.0 and undergrowth_lod == 1:
+					undergrowth_drawn_lod = 1
+					_sync_undergrowth()
+		if _ug_stems.visible and undergrowth_presence != _fed_ug_p:
+			_ug_stems.set_instance_shader_parameter(&"undergrowth_presence", undergrowth_presence)
+			_ug_leaves.set_instance_shader_parameter(&"undergrowth_presence", undergrowth_presence)
+			_fed_ug_p = undergrowth_presence
+		if _ug_stems.visible and undergrowth_lod0 != _fed_ug_w:
+			_ug_stems.set_instance_shader_parameter(&"undergrowth_lod0", undergrowth_lod0)
+			_ug_leaves.set_instance_shader_parameter(&"undergrowth_lod0", undergrowth_lod0)
+			_fed_ug_w = undergrowth_lod0
+		# A planted tree's bed grows with it; once whole, the share stays 1 and costs nothing.
+		if undergrowth_grows and _ug_stems.visible:
+			var ug_g := _ug_grow()
+			if ug_g != _fed_ug_g:
+				_feed_ug_grow(ug_g)
 	var xf := global_transform
 	var wxf := wind_ref.global_transform if wind_ref != null else xf
 	var g := minf(grow_t, grow_s + 2.0)

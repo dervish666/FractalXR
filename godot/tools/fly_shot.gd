@@ -313,7 +313,7 @@ func _spires(w: BulbFly.World) -> bool:
 	main.xr_camera.rotation = Vector3.ZERO
 	main.xr_camera.fov = 80.0
 	# The Environment's light sources as they were before FLY: its sky turns them off, and the
-	# SKY PICK round trip below hands them to the flame sky and back.
+	# preset-sky round trip below hands them to the flame sky and back.
 	var env: Environment = main.get_node("WorldEnvironment").environment
 	var amb0 := env.ambient_light_source
 	var ref0 := env.reflected_light_source
@@ -365,7 +365,7 @@ func _spires(w: BulbFly.World) -> bool:
 				var dens := {}
 				for s in fly._chain():
 					dens[s] = float(s.material().get_shader_parameter("fog_density"))
-				# Through the SKY PICK tile, as a user takes V5's sky down: a preset shows,
+				# A preset picked, as a user takes V5's sky down with SKY: a preset shows,
 				# main._world_sky hands the backdrop over, and every level must fog flat.
 				main._step_sky_pick(1)
 				for i in 10:

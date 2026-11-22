@@ -179,6 +179,16 @@ void fragment() {
 		vec3 col;
 		if (art_style >= 5) {
 			float ao_ifs = mix(0.18, 0.96, v_meta.y);
+			if (art_style == 10) {
+				// Joint and sheltered-face weathering for verdigris instead of radial distance
+				// (which put the whole root frame at radius 0 into solid patina).
+				vec3 ap = abs(v_pos);
+				float joint = min(ap.x, min(ap.y, ap.z));
+				float mottle = 0.5 + 0.5 * sin(v_pos.x * 4.5 + v_pos.y * 3.1)
+					* cos(v_pos.z * 3.9 - v_pos.y * 2.7);
+				ao_ifs = clamp(0.86 - 0.64 * smoothstep(0.56, 0.96, joint) - 0.20 * mottle
+					+ (v_axis - 0.8) * 0.45, 0.10, 0.95);
+			}
 			float refl_y = reflect(-wview, wn).y;
 			col = physical_finish(base, hi_col, n, l, VIEW, refl_y, 1.0, ao_ifs, u);
 			col += mix(base, hi_col, 0.5) * (pulse * 0.5);

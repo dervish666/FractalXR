@@ -40,6 +40,24 @@ class_name WristMenu
 ## world-locked: it never follows your gaze. Grip on it to move it; it stays where you let
 ## go. Press again and it flies home to the arm. Pinned, either hand's ray drives it.
 ##
+## DOCK. Pinned, an open section has two DOCK buttons beside BACK, one per side. A press
+## pins that section to that side of the main panel, folded toward you, and the main panel
+## goes back to its cards so another section can open there. The docked panel keeps
+## driving the scene exactly as the main one does: its controls are the same widgets (the
+## section's box is moved into the docked panel, not copied), hit by the same ray. UNDOCK on
+## the docked panel sends the section home. One section a side; docking onto a taken side
+## sends the one there home first. A docked section's card stays on the main panel saying
+## where it went, and pressing it flashes the docked panel instead of opening the section a
+## second time. Worn on the forearm there is nowhere to put a side panel, so the docks hide
+## (and are remembered) until the panel is pinned again. On a mode change a docked section
+## stays where it is and shows the new mode's tiles; a docked picture page becomes the new
+## mode's picture page; a section the new mode does not have goes home.
+##
+## A docked panel is two more quad layers and two more SubViewports, built on dock and freed
+## on undock. Both of its viewports render only when something on them changed (a widget
+## redrew or showed or hid), for two frames, then stop; the compositor keeps showing the last
+## image, as it does for the main panel's back plane.
+##
 ## Hit testing does NOT synthesise mouse events. The controller ray is intersected with
 ## the front plane, converted to viewport pixels, and tested against each control's
 ## rect. Fewer moving parts than faking input, and it cannot get out of step with
@@ -86,6 +104,10 @@ const FLOAT_FWD := 0.40
 const FLOAT_RIGHT := 0.18
 const FLOAT_DROP := 0.22
 const FLY_S := 0.4
+## A docked panel: the gap between its edge and the main panel's, and how far it folds toward
+## you about that edge, so its far side is no further from the eyes than the main panel.
+const DOCK_GAP := 0.012
+const DOCK_FOLD_DEG := 24.0
 
 const FONT_PATH := "res://fonts/SpaceGrotesk-VF.ttf"
 const WGHT_TAG := 0x77676874
@@ -134,7 +156,8 @@ const MODE_TINT := {
 	"ifs": Color("#6FB8FF"),
 }
 
-enum Kind { ACTION, TOGGLE, SLIDER, CAROUSEL, HOLD, CARD, STATION, BACK, MORE, GRID, PICK, PAGE }
+enum Kind { ACTION, TOGGLE, SLIDER, CAROUSEL, HOLD, CARD, STATION, BACK, MORE, GRID, PICK, PAGE,
+	DOCK, UNDOCK }
 
 signal pin_changed(pinned: bool)
 
@@ -250,6 +273,7 @@ class Widget extends Control:
 	var tex: Texture2D           # the picture, or null for "not baked"
 	var strip: Array = []        # a gallery card's preview of the next few pictures
 	var dir := 0                 # a page arrow's direction
+	var sig := ""                # a docked widget's last drawn face, so a refresh redraws only a change
 	var _sb := StyleBoxFlat.new()
 	static var _f600: Font
 	static var _f500: Font
@@ -305,7 +329,7 @@ class Widget extends Control:
 				_draw_more()
 			Kind.PICK:
 				_draw_pick()
-			Kind.PAGE:
+			Kind.PAGE, Kind.DOCK, Kind.UNDOCK:
 				_draw_page()
 			Kind.GRID:
 				pass
@@ -685,6 +709,32 @@ class Ripple extends Control:
 		draw_arc(at, 12.0 + 70.0 * k, 0.0, TAU, 40, c, 1.5, true)
 
 
+## One docked section: its own two planes and two viewports, holding the section's box (the
+## same widgets the main panel would show) under a title and an UNDOCK button.
+class Dock extends RefCounted:
+	var side := 0              # -1 left of the main panel, 1 right
+	var key := ""              # the level key whose box it holds
+	var node: Node3D           # the hinge frame, a child of the menu
+	var front: Node3D          # the control plane, TILE_Z proud of the glass
+	var vp: SubViewport
+	var bvp: SubViewport
+	var broot: Control
+	var holder: VBoxContainer
+	var backdrop: Backdrop
+	var shadows: Shadows
+	var title: Label
+	var hint: Label
+	var ripple: Ripple
+	var layer: OpenXRCompositionLayerQuad
+	var blayer: OpenXRCompositionLayerQuad
+	var box: Control
+	var more := false
+	var dirty := true
+	var until := 0             # process frame its viewports may stop rendering at
+	var renders := 0           # frames rendered since docking (the shot tool reads it)
+	var mark: Callable         # connected to its widgets' draw and visibility_changed
+
+
 var items: Array[Item] = []
 var status_main: Callable = Callable()
 var status_side: Callable = Callable()
@@ -807,6 +857,15 @@ var _fly_to := Transform3D()
 var _hold_hand: XRController3D
 var _hold_off := Transform3D()
 
+# --- dock --------------------------------------------------------------------
+var _docks: Dictionary = {}        # side -> Dock, the ones built
+var _dock_want: Dictionary = {}    # side -> level key, kept while worn so a re-pin restores them
+var _dock_by_vp: Dictionary = {}   # a docked panel's front SubViewport -> its Dock
+var _dock_btns: Array[Widget] = []
+var _undock_btns: Dictionary = {}  # side -> its UNDOCK widget, made once, parked out of the tree
+var _sub_head: HBoxContainer
+var _hit_vp: Viewport              # which panel the last ray test landed on
+
 static var _base_font: Font
 static var _fonts: Dictionary = {}
 static var _field_tex: ImageTexture
@@ -867,6 +926,7 @@ func set_mode(mode: String) -> void:
 	# A new world opens at its top level: the cards you had open belong to the old one.
 	if _vp != null:
 		_go_level("", Vector2(VIEW_SIZE) * 0.5, false)
+		_remap_docks()
 		if OS.is_debug_build() and visible:
 			_log_layers.call_deferred("mode")
 
@@ -891,7 +951,11 @@ func set_pinned(on: bool, instant: bool) -> void:
 		_fly_t = 1.0 if instant else 0.0
 		if instant:
 			global_transform = _fly_to
+			_restore_docks()
 	else:
+		# Worn there is nowhere beside the panel to put a side panel: park the docks, kept in
+		# _dock_want so the next float brings them back.
+		_park_docks()
 		_hold_hand = null
 		_fly_from = global_transform
 		_fly_home = true
@@ -948,6 +1012,8 @@ func _tick_float(delta: float) -> void:
 		global_transform = _fly_from.interpolate_with(to, k)
 		if _fly_t >= 1.0 and _fly_home:
 			_land_home()
+		elif _fly_t >= 1.0:
+			_restore_docks()
 		return
 	if not _pinned:
 		return
@@ -1218,6 +1284,7 @@ func _set_focus(f: bool) -> void:
 		if _layer != null:
 			_layer.quad_size = Vector2(0.001, 0.001)
 			_blayer.quad_size = Vector2(0.001, 0.001)
+		_size_dock_layers(false)
 		_hide_pointers()
 
 
@@ -1383,11 +1450,37 @@ func _build_viewports() -> void:
 	_sub.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	_sub.visible = false
 	_stage.add_child(_sub)
+	# The level's header: BACK on the left; pinned, DOCK to the left and DOCK to the right.
+	_sub_head = HBoxContainer.new()
+	_sub_head.add_theme_constant_override("separation", 12)
+	_sub.add_child(_sub_head)
 	_back_btn = _widget(-1, Kind.BACK)
 	_back_btn.label = "BACK"
 	_back_btn.custom_minimum_size = Vector2(130, 42)
 	_back_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	_sub.add_child(_back_btn)
+	_sub_head.add_child(_back_btn)
+	var head_gap := Control.new()
+	head_gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sub_head.add_child(head_gap)
+	for side in [-1, 1]:
+		var db := _widget(-1, Kind.DOCK)
+		_tile_slot[_tiles.size() - 1] = side
+		db.dir = side
+		db.label = "DOCK"
+		db.custom_minimum_size = Vector2(150, 42)
+		db.visible = false
+		_sub_head.add_child(db)
+		_dock_btns.append(db)
+		# Its UNDOCK lives on the docked panel, so it is made now and parked out of every tree
+		# (hidden, so nothing measures it) until a dock on that side takes it in. The arrow
+		# points back at the main panel.
+		var ub := _widget(-1, Kind.UNDOCK)
+		_tile_slot[_tiles.size() - 1] = side
+		ub.dir = -side
+		ub.label = "UNDOCK"
+		ub.custom_minimum_size = Vector2(170, 42)
+		ub.visible = false
+		_undock_btns[side] = ub
 	for key in order:
 		var box := VBoxContainer.new()
 		box.add_theme_constant_override("separation", 12)
@@ -1611,7 +1704,20 @@ func _apply_theme() -> void:
 		rc.a = 0.42
 		_ray_mat.albedo_color = rc
 		_dot_mat.albedo_color = _accent
+	for side in _docks:
+		_theme_dock(_docks[side])
 	_back_dirty = true
+
+
+func _theme_dock(d: Dock) -> void:
+	d.backdrop.ink = _ink
+	d.backdrop.line = _line
+	d.backdrop.tint = _mode_col
+	d.backdrop.stops = _stops
+	d.backdrop.queue_redraw()
+	d.title.add_theme_color_override("font_color", LABEL)
+	d.hint.add_theme_color_override("font_color", _accent)
+	d.dirty = true
 
 
 func _build_layers() -> bool:
@@ -1684,6 +1790,8 @@ func update(delta: float) -> bool:
 	if _layer != null:
 		_layer.quad_size = PANEL_METRES if visible else Vector2(0.001, 0.001)
 		_blayer.quad_size = _layer.quad_size
+	if visible != was_visible:
+		_size_dock_layers(visible)
 	if visible and not was_visible and OS.is_debug_build():
 		_log_layers()
 	if not visible:
@@ -1698,12 +1806,13 @@ func update(delta: float) -> bool:
 	# Which hand points. Worn, only the free hand can; pinned, whichever ray is on it,
 	# sticky to the last one that was.
 	var hit := Vector2(-1, -1)
+	_hit_vp = null
 	if _ptr != null and _tracked(_ptr):
-		hit = _pointer_pixel(_ptr)
+		hit = _hit_any(_ptr)
 	if hit.x < 0.0 and _pinned:
 		for c in [_right, _left]:
 			if c != null and c != _ptr and _tracked(c):
-				var h := _pointer_pixel(c)
+				var h := _hit_any(c)
 				if h.x >= 0.0:
 					_show_pointer(_ptr, false, 0.0, 0.0)
 					_ptr = c
@@ -1718,7 +1827,9 @@ func update(delta: float) -> bool:
 	if on_panel and _drag < 0:
 		for i in _tiles.size():
 			var t := _tiles[i]
-			if t.visible and t.is_visible_in_tree() and t.get_global_rect().has_point(hit):
+			# Each panel has its own pixels: a tile is hit only on the panel the ray landed on.
+			if t.visible and t.is_visible_in_tree() and t.get_viewport() == _hit_vp \
+					and t.get_global_rect().has_point(hit):
 				_hovered = i
 				break
 	if _drag >= 0:
@@ -1790,11 +1901,14 @@ func _log_layers(why := "open") -> void:
 			s += " %s: vis=%s quad=%s sort=%d vp=%s mode=%d at=%s" % [pair[0],
 				l.is_visible_in_tree(), l.quad_size, l.sort_order, v.size,
 				v.render_target_update_mode, l.global_position.snapped(Vector3.ONE * 0.001)]
+	var c := debug_counts()
+	s += " docks=%s layers=%d meshes=%d viewports=%d" % [str(docked()), c["layers"], c["meshes"],
+		c["viewports"]]
 	print(s)
 
 
 func _hits_panel(c: XRController3D) -> bool:
-	return _pointer_pixel(c).x >= 0.0
+	return _hit_any(c).x >= 0.0
 
 
 func _trigger_held() -> bool:
@@ -1810,7 +1924,7 @@ func _tick_drag(hit: Vector2, _delta: float) -> void:
 		_drag = -1
 		return
 	var i := _tile_item[_drag]
-	if i < 0 or hit.x < 0.0:
+	if i < 0 or hit.x < 0.0 or _hit_vp != _tiles[_drag].get_viewport():
 		return
 	var w := _widgets[i]
 	var it := items[i]
@@ -1923,6 +2037,10 @@ func _set_live(on: bool) -> void:
 		_vp.render_target_update_mode = want
 	if not on and _bvp != null:
 		_bvp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	if not on:
+		for side in _docks:
+			(_docks[side] as Dock).vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+			(_docks[side] as Dock).bvp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 
 ## A trigger pulled with a ray on the panel. The pointing hand's trigger acts; the other
@@ -1941,20 +2059,36 @@ func activate() -> void:
 	var i := _tile_item[_hovered]
 	var w := _tiles[_hovered] as Widget
 	var centre := w.get_global_rect().get_center()
+	var dk := _dock_of_tile(_hovered)
 	match k:
 		Kind.CARD:
+			# A docked section is already open beside you: point at it rather than open it twice.
+			var side := _dock_side_of(_tile_key[_hovered])
+			if side != 0:
+				_flash_dock(_docks[side])
+				_haptic(0.4, 0.02)
+				return
 			_go_level(_tile_key[_hovered], centre, true)
 		Kind.BACK:
 			back()
 			return
+		Kind.DOCK:
+			dock(_tile_slot[_hovered])
+			return
+		Kind.UNDOCK:
+			undock(_tile_slot[_hovered])
+			return
 		Kind.MORE:
-			_more = not _more
+			if dk != null:
+				dk.more = not dk.more
+			else:
+				_more = not _more
 			_refresh()
 		Kind.STATION:
 			items[i].advance.call()
 		Kind.SLIDER:
 			_drag = _hovered
-			_tick_drag(_pointer_pixel(_ptr), 0.0)
+			_tick_drag(_hit_any(_ptr), 0.0)
 		Kind.HOLD:
 			return   # the ring does it
 		Kind.PICK:
@@ -1967,17 +2101,19 @@ func activate() -> void:
 		Kind.CAROUSEL:
 			if items[i].step.is_valid():
 				var r := w.get_global_rect()
-				var hit := _pointer_pixel(_ptr)
-				var dir := -1 if hit.x >= 0.0 and hit.x < r.position.x + r.size.x * 0.35 else 1
+				var hit := _hit_any(_ptr)
+				var on_w := hit.x >= 0.0 and _hit_vp == w.get_viewport()
+				var dir := -1 if on_w and hit.x < r.position.x + r.size.x * 0.35 else 1
 				items[i].step.call(dir)
 			else:
 				items[i].advance.call()
 		_:
 			items[i].advance.call()
 	_pulse[_hovered] = 1.0
-	_ripple.at = centre
-	_ripple.col = _mode_col if (k == Kind.CARD or k == Kind.STATION) else _accent
-	_ripple.t = 1.0
+	var rp: Ripple = dk.ripple if dk != null else _ripple
+	rp.at = centre
+	rp.col = _mode_col if (k == Kind.CARD or k == Kind.STATION) else _accent
+	rp.t = 1.0
 	_haptic(0.55, 0.025)
 	_refresh()
 
@@ -2002,7 +2138,8 @@ func _go_level(key: String, at: Vector2, zoom_in: bool) -> void:
 	_zoom_at = at
 	_zoom_t = 0.0 if _vp != null and visible else 1.0
 	for k in _boxes:
-		(_boxes[k]["box"] as Control).visible = k == key
+		if _dock_side_of(k) == 0:
+			(_boxes[k]["box"] as Control).visible = k == key
 	_sub.visible = key != ""
 	_top.visible = true
 	_open_page(key)
@@ -2032,8 +2169,11 @@ func _refresh() -> void:
 		var wide_item: int = box["wide_item"]
 		var card := _cards[c]
 		var any := false
+		var docked_side := _dock_side_of(key)
 		card.lines.clear()
 		card.swatch_cur = -1
+		if docked_side != 0:
+			card.lines.append("docked on the %s" % ("left" if docked_side < 0 else "right"))
 		# A gallery card wears the gallery's name while the gallery shows; in a mode that
 		# hides it (the tree has no flame to leaf through) it is the plain section card.
 		card.label = sec.to_upper()
@@ -2067,13 +2207,15 @@ func _refresh() -> void:
 				minors += 1
 		var more_w := box["more"] as Widget
 		more_w.visible = minors > 0
-		var ml := "LESS" if _more else "MORE"
-		var mv := "" if _more else ("1 setting" if minors == 1 else "%d settings" % minors)
+		# A docked box opens its own MORE; the main panel's belongs to the level showing there.
+		var open_more: bool = _docks[docked_side].more if docked_side != 0 else _more
+		var ml := "LESS" if open_more else "MORE"
+		var mv := "" if open_more else ("1 setting" if minors == 1 else "%d settings" % minors)
 		if more_w.label != ml or more_w.value != mv:
 			more_w.label = ml
 			more_w.value = mv
 			more_w.queue_redraw()
-		gb.visible = minors > 0 and _more
+		gb.visible = minors > 0 and open_more
 	_fit_cards()
 	# Widget faces.
 	for i in items.size():
@@ -2104,10 +2246,34 @@ func _refresh() -> void:
 			_:
 				w.sub = v
 		w.chosen = it.selected.is_valid() and bool(it.selected.call())
-		w.queue_redraw()
+		# The main panel's front plane renders every frame anyway. A docked panel renders only
+		# on a change, so its widgets redraw (and so wake it) only when their face moved.
+		if _dock_by_vp.has(w.get_viewport()):
+			var face := "%s|%s|%s|%.3f|%d|%s|%d|%d" % [w.label, w.value, w.sub, w.fill_t, w.ticks,
+				w.chosen, w.swatch_cur, int(it.index.call()) if it.index.is_valid() else -1]
+			if face != w.sig:
+				w.sig = face
+				w.queue_redraw()
+		else:
+			w.queue_redraw()
 	if title.is_valid():
 		_title_label.text = str(title.call())
-	_hint_label.text = _hint
+	# The hint goes under the title of the panel the ray is on.
+	var hint_dock := _dock_of_tile(_hint_tile) if _hint_tile >= 0 else null
+	_hint_label.text = _hint if hint_dock == null else ""
+	for side in _docks:
+		var d: Dock = _docks[side]
+		var dh := _hint if d == hint_dock else ""
+		var box: Dictionary = _boxes[d.key]
+		var dt: String = (items[box["wide_item"]].label if box["wide_item"] >= 0 else str(box["section"])).to_upper()
+		if d.hint.text != dh or d.title.text != dt:
+			d.hint.text = dh
+			d.title.text = dt
+			d.dirty = true
+	var can_dock := _pinned and _level != "" and _origin != null
+	for db in _dock_btns:
+		if db.visible != can_dock:
+			db.visible = can_dock
 	if status_side.is_valid():
 		_side_label.text = str(status_side.call())
 	if status_main.is_valid():
@@ -2207,7 +2373,7 @@ func _sync_back() -> void:
 	var last_y := -1000.0
 	for i in _tiles.size():
 		var t := _tiles[i]
-		if not t.visible or not t.is_visible_in_tree():
+		if not t.visible or not t.is_visible_in_tree() or t.get_viewport() != _vp:
 			continue
 		var k := _tile_kind[i]
 		if k == Kind.STATION or k == Kind.MORE:
@@ -2306,7 +2472,8 @@ func _animate(delta: float) -> void:
 		if absf(w.modulate.a - pour) > 0.002:
 			w.modulate.a = pour
 			moving = true
-		if moving or _zoom_t < 1.0:
+		# The main panel's zoom does not move a docked panel, so it does not redraw one.
+		if moving or (_zoom_t < 1.0 and w.get_viewport() == _vp):
 			w.hover = h
 			w.pulse = _pulse[i]
 			w.pivot_offset = w.size * 0.5
@@ -2329,6 +2496,43 @@ func _animate(delta: float) -> void:
 		elif now >= _back_until and not _debug_hold \
 				and _bvp.render_target_update_mode == SubViewport.UPDATE_ALWAYS:
 			_bvp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	_tick_docks(delta)
+
+
+## A docked panel's two viewports render for two frames after anything on them changed, then
+## stop, the way the main back plane does. A change is a widget redrawing, showing or hiding
+## (the signals _connect_dock wires up), a title or hint line, the theme, or the open fade.
+func _tick_docks(delta: float) -> void:
+	if _docks.is_empty():
+		return
+	var now := Engine.get_process_frames()
+	for side in _docks:
+		var d: Dock = _docks[side]
+		if d.ripple.t > 0.0:
+			d.ripple.t = maxf(0.0, d.ripple.t - delta / RIPPLE_S)
+			d.ripple.queue_redraw()
+			d.dirty = true
+		var fade := minf(1.0, _shown_e * 2.5)
+		if absf(d.broot.modulate.a - fade) > 0.002:
+			d.broot.modulate.a = fade
+			d.backdrop.spine_t = minf(1.0, _shown_e * 1.5)
+			d.backdrop.queue_redraw()
+			d.dirty = true
+		var want := SubViewport.UPDATE_DISABLED
+		if not visible:
+			pass
+		elif d.dirty:
+			d.dirty = false
+			d.until = now + 2
+			want = SubViewport.UPDATE_ALWAYS
+			_sync_dock_back.call_deferred(d)
+		elif now < d.until:
+			want = SubViewport.UPDATE_ALWAYS
+		if d.vp.render_target_update_mode != want:
+			d.vp.render_target_update_mode = want
+			d.bvp.render_target_update_mode = want
+		if want == SubViewport.UPDATE_ALWAYS:
+			d.renders += 1
 
 
 func _wrist_facing() -> bool:
@@ -2341,26 +2545,371 @@ func _wrist_facing() -> bool:
 ## Intersect a hand's ray with the front plane and convert to viewport pixels.
 ## Returns (-1, -1) when the ray misses.
 func _pointer_pixel(c: Node3D) -> Vector2:
-	if c == null or not is_inside_tree() or not c.is_inside_tree():
-		return Vector2(-1, -1)
-	var inv := _front.global_transform.affine_inverse()
+	var h := _plane_hit(c, _front)
+	_hit_distance = h.z if h.z >= 0.0 else 0.35
+	return Vector2(h.x, h.y) if h.z >= 0.0 else Vector2(-1, -1)
+
+
+## The ray against one plane: (pixel x, pixel y, distance), or z = -1 for a miss.
+func _plane_hit(c: Node3D, plane: Node3D) -> Vector3:
+	var miss := Vector3(-1, -1, -1)
+	if c == null or plane == null or not is_inside_tree() or not c.is_inside_tree() \
+			or not plane.is_inside_tree():
+		return miss
+	var inv := plane.global_transform.affine_inverse()
 	var origin := inv * c.global_transform.origin
 	var dir := (inv.basis * (-c.global_transform.basis.z)).normalized()
 	if absf(dir.z) < 1e-5:
-		return Vector2(-1, -1)
+		return miss
 	var t := -origin.z / dir.z
 	if t < 0.0 or t > 2.0:
-		_hit_distance = 0.35
-		return Vector2(-1, -1)
-	_hit_distance = t
+		return miss
 	var hit := origin + dir * t
 	var half := PANEL_METRES * 0.5
 	var u := (hit.x / half.x + 1.0) * 0.5
 	var v := (1.0 - hit.y / half.y) * 0.5
 	if u < 0.0 or u > 1.0 or v < 0.0 or v > 1.0:
+		return miss
+	return Vector3(u * float(VIEW_SIZE.x), v * float(VIEW_SIZE.y), t)
+
+
+## The ray against the main panel and every docked one; the nearest hit wins. Sets _hit_vp to
+## the viewport whose pixels the result is in (null on a miss) and _hit_distance for the beam.
+func _hit_any(c: Node3D) -> Vector2:
+	var best := _plane_hit(c, _front)
+	var vp: Viewport = _vp
+	for side in _docks:
+		var d: Dock = _docks[side]
+		var h := _plane_hit(c, d.front)
+		if h.z >= 0.0 and (best.z < 0.0 or h.z < best.z):
+			best = h
+			vp = d.vp
+	if best.z < 0.0:
+		_hit_vp = null
 		_hit_distance = 0.35
 		return Vector2(-1, -1)
-	return Vector2(u * float(VIEW_SIZE.x), v * float(VIEW_SIZE.y))
+	_hit_vp = vp
+	_hit_distance = best.z
+	return Vector2(best.x, best.y)
+
+
+# --- dock --------------------------------------------------------------------
+
+## Pin the section open on the main panel to one side (-1 left, 1 right). The one already on
+## that side goes home first. The main panel goes back to its cards.
+func dock(side: int) -> void:
+	var key := _level
+	if key == "" or not _pinned or _vp == null:
+		return
+	if _docks.has(side):
+		undock(side)
+	var other := _dock_side_of(key)   # one section, one panel: never on both sides
+	if other != 0:
+		undock(other)
+	_make_dock(side, key)
+	_dock_want[side] = key
+	_haptic(0.5, 0.03)
+	_go_level("", _zoom_at, false)
+	if OS.is_debug_build():
+		_log_layers.call_deferred("dock")
+
+
+## Send one side's section home to the main panel and free its planes.
+func undock(side: int) -> void:
+	_dock_want.erase(side)
+	if not _docks.has(side):
+		return
+	_free_dock(side)
+	_haptic(0.4, 0.02)
+	_refresh()
+	if OS.is_debug_build():
+		_log_layers.call_deferred("undock")
+
+
+func docked() -> Dictionary:
+	var out := {}
+	for side in _docks:
+		out[side] = (_docks[side] as Dock).key
+	return out
+
+
+func _dock_side_of(key: String) -> int:
+	for side in _docks:
+		if (_docks[side] as Dock).key == key:
+			return side
+	return 0
+
+
+func _dock_of_tile(tile: int) -> Dock:
+	if tile < 0 or tile >= _tiles.size() or _docks.is_empty():
+		return null
+	return _dock_by_vp.get(_tiles[tile].get_viewport(), null)
+
+
+## Something on the level key would show in the current mode (the test _refresh makes for a
+## card, made from the visibility closures so it holds at any level).
+func _key_has_content(key: String) -> bool:
+	if not _boxes.has(key):
+		return false
+	var box: Dictionary = _boxes[key]
+	var wi: int = box["wide_item"]
+	var sec: String = box["section"]
+	for i in items.size():
+		var it := items[i]
+		var mine := i == wi or (it.section == sec and it.card_of == "" and not it.bar \
+			and it.section != MODE_SECTION)
+		if mine and (not it.visible_when.is_valid() or bool(it.visible_when.call())):
+			return true
+	return false
+
+
+func _flash_dock(d: Dock) -> void:
+	var ub: Widget = _undock_btns[d.side]
+	d.ripple.at = ub.get_global_rect().get_center() if ub.is_inside_tree() else Vector2(VIEW_SIZE) * 0.5
+	d.ripple.col = _mode_col
+	d.ripple.t = 1.0
+	d.dirty = true
+
+
+func _make_dock(side: int, key: String) -> void:
+	var d := Dock.new()
+	d.side = side
+	d.key = key
+	d.mark = _mark_dock.bind(side)
+	d.node = Node3D.new()
+	d.node.name = "Dock%s" % ("L" if side < 0 else "R")
+	add_child(d.node)
+	# Hinged on the main panel's edge and folded toward you about it.
+	var hw := PANEL_METRES.x * 0.5
+	d.node.transform = Transform3D(Basis(Vector3.UP, -float(side) * deg_to_rad(DOCK_FOLD_DEG)),
+		Vector3(float(side) * (hw + DOCK_GAP * 0.5), 0.0, 0.0)) \
+		* Transform3D(Basis(), Vector3(float(side) * (DOCK_GAP * 0.5 + hw), 0.0, 0.0))
+	# Back plane: the glass, the section's name and the hint line.
+	d.bvp = _dock_viewport(d.node)
+	d.broot = Control.new()
+	d.broot.set_anchors_preset(Control.PRESET_FULL_RECT)
+	d.bvp.add_child(d.broot)
+	d.backdrop = Backdrop.new()
+	d.backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	d.broot.add_child(d.backdrop)
+	d.shadows = Shadows.new()
+	d.shadows.set_anchors_preset(Control.PRESET_FULL_RECT)
+	d.broot.add_child(d.shadows)
+	d.title = _label("", 36, LABEL, 600)
+	d.title.position = Vector2(MARGIN_L, MARGIN_T - 2)
+	d.title.size = Vector2(VIEW_SIZE.x - MARGIN_L - MARGIN_R - 40, 46)
+	d.title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	d.broot.add_child(d.title)
+	d.hint = _label("", 17, _accent, 500)
+	d.hint.position = Vector2(MARGIN_L, MARGIN_T + 50)
+	d.hint.size = Vector2(VIEW_SIZE.x - MARGIN_L - MARGIN_R, 22)
+	d.hint.clip_text = true
+	d.hint.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	d.broot.add_child(d.hint)
+	# Front plane: UNDOCK on the edge nearest the main panel, then the section's own box.
+	d.vp = _dock_viewport(d.node)
+	var root := Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	d.vp.add_child(root)
+	var pad := MarginContainer.new()
+	pad.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pad.add_theme_constant_override("margin_left", MARGIN_L)
+	pad.add_theme_constant_override("margin_right", MARGIN_R)
+	pad.add_theme_constant_override("margin_top", MARGIN_T + int(HEADER_H))
+	pad.add_theme_constant_override("margin_bottom", MARGIN_B + 26)
+	root.add_child(pad)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 12)
+	pad.add_child(col)
+	var head := HBoxContainer.new()
+	col.add_child(head)
+	var gap := Control.new()
+	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var ub: Widget = _undock_btns[side]
+	if side < 0:
+		head.add_child(gap)
+		head.add_child(ub)
+	else:
+		head.add_child(ub)
+		head.add_child(gap)
+	ub.visible = true
+	d.holder = VBoxContainer.new()
+	col.add_child(d.holder)
+	d.ripple = Ripple.new()
+	d.ripple.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(d.ripple)
+	# The section's box moves in: the same widgets, so the same closures and the same tiles.
+	d.box = _boxes[key]["box"]
+	d.box.get_parent().remove_child(d.box)
+	d.holder.add_child(d.box)
+	d.box.visible = true
+	# The planes, as the main panel's: two quad layers on the headset, two meshes on the desktop.
+	d.front = Node3D.new()
+	d.front.position = Vector3(0, 0, TILE_Z)
+	d.node.add_child(d.front)
+	if _layer != null:
+		d.blayer = OpenXRCompositionLayerQuad.new()
+		d.blayer.quad_size = PANEL_METRES if visible else Vector2(0.001, 0.001)
+		d.blayer.layer_viewport = d.bvp
+		d.blayer.alpha_blend = true
+		d.blayer.sort_order = 1
+		d.node.add_child(d.blayer)
+		d.layer = OpenXRCompositionLayerQuad.new()
+		d.layer.quad_size = d.blayer.quad_size
+		d.layer.layer_viewport = d.vp
+		d.layer.alpha_blend = true
+		d.layer.sort_order = 2
+		d.front.add_child(d.layer)
+	else:
+		d.node.add_child(_plane_mesh(d.bvp, 90))
+		d.front.add_child(_plane_mesh(d.vp, 91))
+	_docks[side] = d
+	_dock_by_vp[d.vp] = d
+	_connect_dock(d, true)
+	_theme_dock(d)
+	for w in _widgets_in(d.box):
+		w.sig = ""   # its first refresh in the dock redraws it
+	_refresh()
+
+
+func _dock_viewport(parent: Node) -> SubViewport:
+	var v := SubViewport.new()
+	v.size = VIEW_SIZE
+	v.transparent_bg = true
+	v.disable_3d = true
+	v.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	parent.add_child(v)
+	return v
+
+
+func _free_dock(side: int) -> void:
+	var d: Dock = _docks[side]
+	_connect_dock(d, false)
+	if _hovered >= 0 and _dock_of_tile(_hovered) == d:
+		_hovered = -1
+		_drag = -1
+	# The box goes back under the main panel's stage, hidden unless its level is showing there.
+	d.holder.remove_child(d.box)
+	_sub.add_child(d.box)
+	d.box.visible = d.key == _level
+	var ub: Widget = _undock_btns[side]
+	ub.visible = false
+	ub.get_parent().remove_child(ub)
+	_dock_by_vp.erase(d.vp)
+	_docks.erase(side)
+	d.node.queue_free()
+
+
+func _widgets_in(n: Node) -> Array[Widget]:
+	var out: Array[Widget] = []
+	for ch in n.get_children():
+		if ch is Widget:
+			out.append(ch)
+		out.append_array(_widgets_in(ch))
+	return out
+
+
+## Every canvas item under the docked box (and its UNDOCK) wakes the dock when it redraws or
+## shows or hides.
+func _connect_dock(d: Dock, on: bool) -> void:
+	var nodes: Array[Node] = [d.box, _undock_btns[d.side]]
+	var k := 0
+	while k < nodes.size():
+		var n := nodes[k]
+		k += 1
+		nodes.append_array(n.get_children())
+		if not (n is CanvasItem):
+			continue
+		var ci := n as CanvasItem
+		for sig in [ci.draw, ci.visibility_changed]:
+			if on and not sig.is_connected(d.mark):
+				sig.connect(d.mark)
+			elif not on and sig.is_connected(d.mark):
+				sig.disconnect(d.mark)
+
+
+func _mark_dock(side: int) -> void:
+	if _docks.has(side):
+		(_docks[side] as Dock).dirty = true
+
+
+func _sync_dock_back(d: Dock) -> void:
+	if not is_instance_valid(d.node) or not _docks.has(d.side) or _docks[d.side] != d:
+		return
+	d.shadows.rects.clear()
+	var nodes := PackedFloat32Array()
+	var last_y := -1000.0
+	for i in _tiles.size():
+		var t := _tiles[i]
+		if not t.visible or not t.is_visible_in_tree() or t.get_viewport() != d.vp \
+				or _tile_kind[i] == Kind.MORE:
+			continue
+		var r := t.get_global_rect()
+		if r.size.y <= 0.0:
+			continue
+		d.shadows.rects.append(r)
+		if absf(r.position.y - last_y) > 20.0:
+			last_y = r.position.y
+			nodes.append(r.position.y + minf(r.size.y * 0.5, 40.0))
+	d.shadows.queue_redraw()
+	d.backdrop.nodes = nodes
+	d.backdrop.queue_redraw()
+
+
+func _size_dock_layers(on: bool) -> void:
+	for side in _docks:
+		var d: Dock = _docks[side]
+		if d.layer != null:
+			d.layer.quad_size = PANEL_METRES if on else Vector2(0.001, 0.001)
+			d.blayer.quad_size = d.layer.quad_size
+		d.dirty = d.dirty or on
+
+
+## Worn: free the docked panels, keeping which section was on which side.
+func _park_docks() -> void:
+	for side in _docks.keys():
+		_free_dock(side)
+
+
+## Pinned again: bring back what was docked, unless it is the level open on the main panel or
+## the mode no longer has it.
+func _restore_docks() -> void:
+	if not _pinned or _vp == null:
+		return
+	var built := false
+	for side in _dock_want.keys():
+		var key: String = _dock_want[side]
+		if _docks.has(side) or key == _level or _dock_side_of(key) != 0 or not _key_has_content(key):
+			continue
+		_make_dock(side, key)
+		built = true
+	if built:
+		_refresh()
+
+
+## A new mode: a docked section the mode also has stays and shows the mode's own tiles; a
+## docked picture page becomes this mode's picture page; anything else goes home.
+func _remap_docks() -> void:
+	for side in _dock_want.keys():
+		var key: String = _dock_want[side]
+		if _key_has_content(key):
+			continue
+		var swap := ""
+		if key.begins_with("item:") and items[int(key.substr(5))].kind == Kind.GRID:
+			for k in _card_keys:
+				if k.begins_with("item:") and items[int(k.substr(5))].kind == Kind.GRID \
+						and _key_has_content(k) and _dock_side_of(k) == 0:
+					swap = k
+					break
+		if _docks.has(side):
+			_free_dock(side)
+		if swap == "":
+			_dock_want.erase(side)
+		else:
+			_dock_want[side] = swap
+			if _pinned:
+				_make_dock(side, swap)
+	_refresh()
 
 
 # --- harness hooks -----------------------------------------------------------
@@ -2397,7 +2946,8 @@ func debug_level(key: String, settled := true, t := 1.0) -> void:
 	_zoom_in = key != ""
 	_zoom_at = at
 	for k in _boxes:
-		(_boxes[k]["box"] as Control).visible = k == key
+		if _dock_side_of(k) == 0:
+			(_boxes[k]["box"] as Control).visible = k == key
 	_sub.visible = key != ""
 	_top.visible = true
 	_zoom_t = 1.0 if settled else t
@@ -2451,6 +3001,42 @@ func debug_first_tile(kind: int) -> int:
 		if _tile_kind[i] == kind and _tiles[i].visible and _tiles[i].is_visible_in_tree():
 			return i
 	return -1
+
+
+## What the compositor is being given: quad layers (headset), plane meshes (desktop) and
+## SubViewports under the menu, not counting nodes already queued for deletion.
+func debug_counts() -> Dictionary:
+	var out := {"layers": 0, "meshes": 0, "viewports": 0}
+	var nodes: Array[Node] = [self]
+	var k := 0
+	while k < nodes.size():
+		var n := nodes[k]
+		k += 1
+		if n.is_queued_for_deletion():
+			continue
+		nodes.append_array(n.get_children())
+		if n is OpenXRCompositionLayerQuad:
+			out["layers"] += 1
+		elif n is MeshInstance3D:
+			out["meshes"] += 1
+		elif n is SubViewport:
+			out["viewports"] += 1
+	return out
+
+
+## For the shot tool: a docked panel's own frame, glass then controls, as last rendered.
+func debug_dock_composite(side: int) -> Image:
+	if not _docks.has(side):
+		return null
+	var d: Dock = _docks[side]
+	var back := d.bvp.get_texture().get_image()
+	var front := d.vp.get_texture().get_image()
+	back.blend_rect(front, Rect2i(Vector2i.ZERO, VIEW_SIZE), Vector2i.ZERO)
+	return back
+
+
+func debug_dock(side: int) -> Dock:
+	return _docks.get(side, null)
 
 
 ## One composited frame: the glass, then the controls over it.

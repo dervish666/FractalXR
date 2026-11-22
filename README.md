@@ -44,7 +44,10 @@ An escape-time fractal is the floor and runs to the horizon. Eight families (Man
 Burning Ship, Tricorn, Celtic, Perpendicular, Buffalo, Cubic, Quartic), each with its Julia
 twin. Walk on it with the left stick, zoom about your feet with the right, and point at the
 ground and pull the trigger to glide there. ORBIT hangs the orbit of the point under your hand
-in the air as a chain of beads.
+in the air as a chain of beads. SPHERE curls the floor up round you into a bowl 2 m in radius,
+rising to eye level, where the Mandelbrot sky meets it at the horizon. Or pick globe and the
+floor carries on over your head until the whole plane wraps round you on one sphere, its far
+reaches gathering to a point straight overhead.
 
 ### TREE
 
@@ -57,6 +60,8 @@ from oak and willow to sakura, baobab and crystal.
 - **FLOOR** puts something under them: a faint fractal ground in the theme's colours, fallen
   leaves round each trunk, or both.
 - **BARK** swaps plain wood for fractal veins or Julia-set lace that wraps each branch.
+- **UNDERGROWTH** adds fractal bushes, arching ferns, sedge tufts, woodland fungi and moss
+  cushions round the foot of near trees.
 
 ### IFS
 
@@ -75,7 +80,7 @@ A sculpture of mirrored frames built by recursion, which you can edit by hand.
 - **THEME**: 26 colour themes, shared by every mode.
 - **COLOUR CYCLE**: scrolls the palette through each fractal's colours at slow, medium or
   fast, or slow plus a cross-fade to a new theme every minute.
-- **SKY PICK**: the live flame bake, or one of three pre-rendered skies (Ember, Nautilus,
+- **SKY**: off, the live flame bake, or one of three pre-rendered skies (Ember, Nautilus,
   Geode) that need no bake.
 - **PASSTHRU** on the bottom bar of the menu, at every level.
 

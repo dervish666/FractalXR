@@ -17,14 +17,21 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		WristMenu.Item.new("scene", "HOME",
 			func(): return "start view",
 			func(): m.guide.set_tour(false); m.ground.home(),
-			false, vis).hinted("Back to where this family opened"),
-		MenuShared.sky(m, vis),
-		MenuShared.sky_pick(m, vis),
+			false, vis).hinted(MenuShared.HOME_HINT),
+		# SPHERE's globe covers the whole sphere and no sky is drawn, so SKY and SKY GLOW step
+		# aside there; SPHERE off or bowl brings them back.
+		MenuShared.sky(m, func(): return vis.call() and m.ground_sphere_idx != FractalMain.GROUND_GLOBE),
+		WristMenu.Item.new("scene", "SPHERE",
+			func(): return FractalMain.GROUND_SPHERE[m.ground_sphere_idx],
+			func(): m._step_ground_sphere(1),
+			false, vis).stepping(func(d: int): m._step_ground_sphere(d)).hinted(
+			"Curves the ground round you, or all the way over"),
 		# MANDEL (mandel_sky.gd): how bright it stands against the floor. Only while it is picked.
 		WristMenu.Item.new("scene", "SKY GLOW",
 			func(): return m.flame_sky.mandel.gain_name(),
 			func(): m.flame_sky.mandel.step_gain(1),
-			false, func(): return vis.call() and m.flame_sky.is_mandel()).stepping(
+			false, func(): return vis.call() and m.flame_sky.is_mandel() \
+				and m.ground_sphere_idx != FractalMain.GROUND_GLOBE).stepping(
 			func(d: int): m.flame_sky.mandel.step_gain(d)).minor().hinted(
 			"How bright the Mandelbrot sky shines"),
 		MenuShared.turn(m, vis),
@@ -107,13 +114,14 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 				m.ground_bump_idx = wrapi(m.ground_bump_idx + d, 0, FractalMain.GROUND_BUMP.size())
 				m._apply_ground_look()).minor().hinted("How bumpy the surface looks"),
 		# The ground mirrored overhead as a ceiling. SKY is the baked sky, in every mode.
+		# Hidden while SPHERE is active (the sky or the globe owns the upper hemisphere there).
 		WristMenu.Item.new("look", "MIRROR",
 			func(): return "off" if FractalMain.GROUND_SKY[m.ground_sky_idx] == 0.0 \
 				else "%.0f m up" % FractalMain.GROUND_SKY[m.ground_sky_idx],
 			func():
 				m.ground_sky_idx = (m.ground_sky_idx + 1) % FractalMain.GROUND_SKY.size()
 				m._apply_ground_look(),
-			false, vis).stepping(func(d: int):
+			false, func(): return vis.call() and m.ground_sphere_idx == 0).stepping(func(d: int):
 				m.ground_sky_idx = wrapi(m.ground_sky_idx + d, 0, FractalMain.GROUND_SKY.size())
 				m._apply_ground_look()).slider(
 			func(): return m.ground_sky_idx, FractalMain.GROUND_SKY.size()).minor().hinted(
@@ -128,16 +136,17 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).toggle(func(): return m.ground_inside_room).minor().hinted(
 			"The black inside shows your room"),
 		# Light pillars on the small copies of the set near you; the trigger on one flies you
-		# there. Mandelbrot only: the other families have no Newton to find them by.
+		# there. Only on the Mandelbrot flat floor, since the other families have no Newton to
+		# find them by and SPHERE hides what stands on the plane.
 		WristMenu.Item.new("look", "BEACONS",
 			func(): return "on" if m.guide.enabled else "off",
 			func(): m.guide.enabled = not m.guide.enabled,
-			false, func(): return vis.call() and m.guide.applies()).toggle(
+			false, func(): return vis.call() and m.guide.applies() and m.ground_sphere_idx == 0).toggle(
 			func(): return m.guide.enabled).hinted("Lights the small copies of the set near you"),
 		WristMenu.Item.new("look", "TOUR",
 			func(): return "on" if m.guide.tour else "off",
 			func(): m.guide.set_tour(not m.guide.tour),
-			false, func(): return vis.call() and m.guide.applies()).toggle(
+			false, func(): return vis.call() and m.guide.applies() and m.ground_sphere_idx == 0).toggle(
 			func(): return m.guide.tour).hinted("Flies you from one copy to the next by itself"),
 		# The orbit of the point under the pointing hand, hung in the air over the map.
 		WristMenu.Item.new("look", "ORBIT",
@@ -145,22 +154,25 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			func():
 				m.orbit_on = not m.orbit_on
 				m.orbit.visible = false,
-			false, vis).toggle(func(): return m.orbit_on).hinted(
+			false, func(): return vis.call() and m.ground_sphere_idx == 0).toggle(func(): return m.orbit_on).hinted(
 			"Draws the path of the point you aim at"),
 		# Double the level size and max the iterations: four times the fill for a still
-		# that is sharp out to the middle distance. The status line counts it in.
+		# that is sharp out to the middle distance. The status line counts it in. On the first
+		# page, the biggest change on this card (0.75 of the picture in the menu audit), which
+		# also leaves MORE room for DETAIL. With both behind it, GLOW ran into the bar.
 		WristMenu.Item.new("look", "SHARPEST",
 			func(): return "on" if m._render_hq else "off",
 			func(): m._set_render_hq(not m._render_hq),
-			false, vis).toggle(func(): return m._render_hq).minor().hinted(
+			false, vis).toggle(func(): return m._render_hq).hinted(
 			"Sharp far detail for stills, slow to fill"),
 		# NEAR: the escape count worked per pixel where a texel spans several pixels near the
-		# set (fractal_ground.gd NEAR_STEPS). The budget is iterations a pixel.
+		# set (fractal_ground.gd NEAR_STEPS). The budget is iterations a pixel. Hidden while
+		# SPHERE is active because stereographic stretching would open the gate across the wall.
 		WristMenu.Item.new("look", "NEAR",
 			func(): return "off" if m.ground.near_iter == 0 else "%d" % m.ground.near_iter,
 			func(): m.ground.near_iter = FractalGround.NEAR_STEPS[
 				(FractalGround.NEAR_STEPS.find(m.ground.near_iter) + 1) % FractalGround.NEAR_STEPS.size()],
-			false, vis).stepping(func(d: int): m.ground.near_iter = FractalGround.NEAR_STEPS[
+			false, func(): return vis.call() and m.ground_sphere_idx == 0).stepping(func(d: int): m.ground.near_iter = FractalGround.NEAR_STEPS[
 				wrapi(FractalGround.NEAR_STEPS.find(m.ground.near_iter) + d, 0, FractalGround.NEAR_STEPS.size())]).hinted(
 			"Pixel-sharp detail close to you, costs frame time"),
 		# The frame-time dial goes after what the ground looks like, not ahead of it.

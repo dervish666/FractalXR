@@ -5,6 +5,138 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Wrist menu dock and undock, 2026-11-22
+
+- With the menu pinned, an open card shows DOCK left and DOCK right beside BACK. DOCK moves that card's controls onto a panel of their own beside the main one (same size, 12 mm gap, folded 24 degrees toward you) and returns the main panel to its cards. The docked panel has UNDOCK on its inner edge. One card per side.
+- Docked controls are the same widgets, so they change the scene live; the ray hit test (`_hit_any`) takes the nearest of the main panel and the docks. Pressing a docked card on the main panel flashes the dock rather than opening it twice.
+- Worn on the wrist, docks are freed and remembered; pinning again brings them back. A mode change keeps a docked card the new mode has (showing its tiles), swaps a docked picture page for the new mode's, and sends anything else home.
+- Each dock is two quad layers (two meshes on the desktop) and two viewports that render for two frames after a change and are otherwise off. `menu_shot.sh` has a dock check (`DOCK_ONLY=1` runs it alone): idle docks render 0 of 90 frames, and the counts return to the main panel's own after the last UNDOCK. Reach, legibility and layer cost on the Quest are untested.
+
+### Wrist menu tile fixes, 2026-11-22
+
+- A tile shows only where it does something.
+  - BULB hides COVER, OPACITY, STEADY, FIT SPLATS and BREATHE while SURFACE is solid, marched or fly, which hide the cloud. ADAPT shows only on plain splats with FIT SPLATS off, the one case where `splat.gdshader` reads the density grid. BREATHE waits until STEADY lets points move. DRIFT hides in FLY.
+  - FLAME shows SIZE and AA with SPLAT off and OPACITY with it on. ADAPT leaves FLAME, whose isotropic splats never read the density grid.
+- BULB's SPLAT becomes COVER ("0.9x", hint "How much of the surface the splats cover"), a builder of its own in `shared_items.gd`. FLAME's SPLAT keeps its meaning, off and then a size.
+- SKY takes in SKY PICK as one list (`main.gd` `_step_sky`): off, live, the pre-rendered skies, MANDEL. Any rung but off picks that sky and turns the mode's switch on. Off turns it off and keeps the pick. The tile reads the sky's name, or live, mandel, baking or no flame. In BULB the step goes past live until a flame has been baked in FLAME, since BULB's cloud holds a bulb and the live rung read "no flame" over an empty sky.
+- Readings and hints:
+  - HOME reads "Back where it started" in every mode, GROUND's start view included, so `menu_shot.sh` no longer excuses HOME from one hint per label.
+  - TREE's SPIN says "Turns your tree slowly" and LEAVES says "Leaves on every tree".
+  - IFS LEVELS reads "3 · breathing" when MOTION's live rebuild stops short of the rung on the slider. The proposal's longer wording was cut off at the slider row's 173 px.
+  - DETAIL reads "0.35x locked" on the marched bulb. WALK reads on or off.
+- DETAIL joins FOVEA and GLOW behind MORE in every mode. GROUND's SHARPEST moves up to the first page of LOOK to make room. With all three behind MORE, GLOW ran 66 px into the bar.
+- The comfort tunnel now runs during an IFS DIVE step at table size as well as room size, and during GROUND's two-hand zoom. The zoom asks for the WALK tunnel by the spread's rate in e-folds a second against the stick's full 0.9, eased over 0.1 s, with nothing below 15% so two still hands cannot flicker it. A one-hand drag moves the floor 1:1 and stays untunnelled.
+- Checks. `menu_shot.sh` gains a states check (83 checks, `STATES_ONLY=1` runs it with the vocabulary check), `logic_check.sh` gains `ground zoom tunnel`, and `ifs_family_shot.sh`'s vignette check wants the tunnel at table size. How the new tunnels feel and whether the readings are legible at arm's length are untested on the Quest.
+
+### Fractal forest undergrowth, 2026-11-22
+
+- TREE gains a fractal undergrowth layer (`scripts/tree/tree_undergrowth.gd`), toggled by `UNDERGROWTH` on TREE > LOOK (default on). Six unit-frame variants at two LOD tiers (0 full, 1 compact) are computed on a worker thread at boot (`TreeUndergrowth.prewarm()`, warning via `push_warning` if the main-thread fallback ever runs) and shared across near trees the way `TreeLitter` shares fallen leaves, with zero per-tree buffer uploads and zero builds during WALK. One deterministic pass per variant emits both tiers so every stem and leaf in LOD 1 is an exact geometric subset of LOD 0 in the same place, while `COLOR.a` flags LOD 1 persistence (`1` kept, `0` LOD 0 only).
+- Each bed places five recursive fractal plant families round the trunk inside radius 1.0 m (scaled to each tree's height, capped at 1.0 on the hero for a knee-high bed and up to 1.14 on avenue trees so rows keep at least 2.4 m of open walkway; `undergrowth_shot.sh` measures 2.93 m and asserts over 2 m):
+  - low wide multi-stemmed recursive woody bushes shifted in hue off the trunk with soft foliage clusters
+  - Barnsley-inspired arching recursive fern rosettes with swept curved two-segment pinnae and acute sub-leaflets
+  - recursively tillering golden-angle fountain sedge tussocks with slender weeping grass blades
+  - recursively budding woodland fungi clusters with 10-sided dome caps, downward-normal flared gill rings (`taper > 1`) and stipe buds
+  - recursively budded flat moss-cushion floor pads spanning the root flare into the gaps between plants (scalloped discs in `tree_leaf.gdshader` with a hard rim, a brighter lip and warped pile mottling that flattens to its mean once it would span under about 5 pixels), crowned with delicate dichotomous coral-lichen sprigs
+- Undergrowth stems and foliage share the parent tree's branch and leaf materials (`tree.gdshader`, `tree_leaf.gdshader`) via an `undergrowth` instance uniform (patch reference height), an `undergrowth_presence` instance uniform (0 to 1 eased over 0.8 s in `FractalTree.tick()`), and a per-plant hue offset in `COLOR.g`. Undergrowth sits slightly beneath the canopy ramp so tree crowns stay visually on top, counter-rotates against the hero's ambient spin (`FractalTree.undergrowth_fixed`), and follows the theme palette, `palette_phase`, `colour_cycle`, `BARK`, `LEAVES`, `WIND` (still when off), fog, `LANTERN` and all 12 `STYLE` modes.
+- Transition pops are suppressed by three shader and script mechanisms:
+  - LOD 0-only stems and leaves (`COLOR.a < 0.5`) fold down over 6.6 to 7.6 m ahead of the 7.8/9.0 m distance swap, and over 0.8 s (`undergrowth_lod0`, eased in `FractalTree.tick()`) when the budget moves a bed between LOD 0 and LOD 1. The tree swaps the MultiMesh only while that weight is 0, so the swap itself changes no visible pixels; a budget change shows as the LOD 0-only plants folding away or growing back over 0.8 s
+  - whole beds fold into the floor over 10.0 to 14.0 m inside the 14.2/15.2 m `UNDERGROWTH_FAR` cut
+  - grants and revocations ease `undergrowth_presence` over 0.8 s, keeping revoked beds drawn and counted until presence reaches 0 (manual toggle off, `release()` into the far batch and WALK `_recycle()` remain instantaneous)
+- `Forest._lod_items()` reserves a LOD 1 floor for the nearest 4 trees (up to 1150 instances, shrinking linearly to 0 between a budget of 7800 and `BUDGET_MIN` 6000) right after every tree's coarsest form is reserved, before trees take extra detail, so COUNT 250, COUNT 500 and throttled Quest budgets still keep a near forest floor (3 grove beds one governor step under the grove's own tree cost, 4 at COUNT 500 one and two steps down); extra beds and LOD 0 upgrades come from remaining headroom (`UNDERGROWTH_BUDGET_MAX = 6400`). The pass counts each bed at the tier it draws, so a bed easing out or down costs its drawn tier for up to about 1.3 s (the 0.8 s ease, plus one 0.5 s pass when a bed easing down is then revoked) and tree detail is never cut to pay for it. In GROVE it ranks by distance from the hero with sticky holders, grants new beds only to growing trees (`grow_rate > 0`), keeps withering holders drawn until they ease out, and limits beds to the hero plus up to 4 inner trees at least 1.05 m tall and 0.72 m apart. In AVENUE and WALK it applies sticky rank, distance and budget hysteresis, clears beds on `_recycle()`, and draws none in `FarForest`. `tools/thumb_bake.gd` turns undergrowth off while baking tree species gallery tiles. Verified on Mac renders via `tools/undergrowth_shot.sh` and `tools/tree_check.sh`; Quest stereo, comfort and frame time are untested.
+- Trees you plant now get a bed of their own, and it grows up with them. Before, a planted tree in GROVE almost never got one. GROVE ranked beds by distance from the hero (planted trees stand 1.8 to 2.4 m out, the inner holders under 1.1 m) and capped them at 4, so the cap was always full of inner trees, with budget to spare; a planted tree beside a bed was also crowded out by the 0.72 m spacing. Planted trees are 1.5 m or taller, so the 1.05 m height floor never excluded them. In AVENUE they competed with the avenue trees by distance, and at 8.7 and 12.2 m lost to nearer ones. Now `Forest._lod_items()` puts planted trees first at every stage, in GROVE and AVENUE alike:
+  - each one adds a bed and its LOD 1 cost to the floor, so all 12 stand on it at the start budget (24000) and the farthest lose theirs first as the budget shrinks, before any inner grove or avenue tree gets one; at `BUDGET_MIN` there is none
+  - they are ranked by distance from your eye with the sticky bonus, tiered at 7.8/9.0 m and cut at 14.2/15.2 m like avenue beds, and sit outside the grove's 4-bed and the avenue's 16-bed caps (PLANT_MAX bounds them)
+  - an inner grove bed within 0.72 m of a planted tree gives way and eases out; spacing still holds between sown beds and against planted ones, never among planted
+  - LOD 0 upgrades go to planted beds first, inside the same `UNDERGROWTH_BUDGET_MAX`, so 12 planted at the 40000 ceiling draw 4 at LOD 0 and 8 at LOD 1, and at 24000 with 28 trees all 12 draw LOD 1 because the trees take the headroom first, as before
+  - the hero's bed, the inner grove's cap, rank, spacing and succession are unchanged; WALK still sows over every planted tree, and planting again after standing still grows a bed
+- A planted tree's bed grows with it (`FractalTree.undergrowth_grows`, set by `plant_at()`). The bed node's scale and its `undergrowth` shader height follow `_ug_grow()`: 3% until 0.5 s after the sprout, then a smoothstep to full size over the tree's `grow_s`, so the trunk leads and the bed is whole about 0.4 s after the last branches (before the leaves finish at `grow_s + 2`). The plants' own birth times still stagger them on top. Measured on a 6.2 s birch, bed size against tree progress: 1% at 10%, 11% at 25%, 47% at 55%, 87% at 85%, whole at 6.57 s; its on-screen pixels 0%, 0%, 15%, 73%. REGROW restarts it with the tree. Sown beds and the hero's are full size as before. `tools/planted_shot.sh` checks all of this.
+
+### GROUND on a sphere, 2026-11-22
+
+- GROUND gains a `SPHERE` tile on SCENE (off, bowl, globe; default off) that bends the existing
+  radial mesh onto a sphere round you by inverse stereographic projection from the zenith in
+  `ground.gdshader`'s `vertex()`. A plane point at radius r from the nadir lands at angle φ from
+  it, with r = H tan(φ/2), H being the plane radius that lands on the equator. No new compute
+  fill or texture is added.
+  - `bowl` stops the map at the equator, with a 2 m sphere radius, H = 45 m and rim fog from
+    0.90 of H into the sky.
+  - `globe` carries the same map on over the top. The whole plane wraps round you and its point
+    at infinity sits straight overhead, the Riemann sphere. It keeps the bowl's 2 m radius and
+    45 m horizon, and draws no sky. MANDEL SKY and the other skies stay hidden in GROUND while it
+    is on, their SKY and SKY GLOW tiles hide, and SPHERE back to off or bowl brings them back.
+- How the globe fills the sphere:
+  - The radial mesh's 320 m now stands for the whole plane. Mesh radius r maps to plane radius
+    r / (1 - r / 320), so the outer ring lands on the zenith. From 50 degrees above the horizon
+    up, each vertex's direction comes from H / plane radius, which stays finite to the top.
+  - The clipmap runs two stages coarser than the zoom asks for (`GLOBE_STAGE_BIAS`). Level 0
+    becomes 6 to 12 mm, still finer than the 17 mm a Quest pixel covers at the nadir, and the
+    coarsest level reaches 700 to 1400 m of plane, 3.6 to 7.3 degrees from the zenith.
+    `relief_unit` keeps HEIGHT and RIDGES the same in metres and `iter_floor()` goes by the
+    zoom's own stage, so the floor looks as it does in the bowl.
+  - Past the data the fragment works the escape count itself, with `near_escape()` and at most
+    32 iterations, crossfaded in between 360 and 600 m of plane radius (14 to 8.6 degrees from
+    the zenith). That edge follows the coarsest finished level's reach, so while new levels fill
+    it closes in rather than showing a hole. At home the region is the far exterior, which
+    escapes in under ten iterations and matches the stored data to a mean of 0.0003. Deep in, it
+    draws the set's large shapes at 32 iterations.
+  - Relief displacement and its shading fade to flat between 20 and 50 degrees above the
+    horizon, so COAST, HEIGHT and BUMP do not hang overhead. The vault is lit in the plane's own
+    frame, as the floor is, so the sun falls the same way on both halves.
+  - There is no rim fog, horizon veil or distance fog, so the plane runs on through the equator.
+- From the centre the radius does not change the picture, only H and the bowl's fog do. The
+  radius sets stereo depth. Both options use 2 m, since the 2 m bowl worked on the headset and a
+  40 m basin was too much; on the globe it puts the vault 2 m from your eyes.
+- Bowl relief displaces inward by the local conformal scale (clamped, and tapered to zero at the
+  equator). Normals for relief, bump, COAST waves, the physical finishes and LANTERN rotate by
+  the rational tangent frame `sphere_frame()`, which only the sphere path computes.
+- The bowl's rim fades into `fog_colour`, or, with MANDEL on SKY PICK, into the sky's own horizon
+  colour at the same azimuth, so the two halves meet without a dark ring. `MandelSky._feed_rim()`
+  hands the sky's data texture and view to `ground.gdshader`'s `sky_rim_colour()`, one fetch on
+  the fogged rim pixels. The sky shader is unchanged.
+- The sphere's centre holds still in the world while the head moves within 0.55 m sideways and
+  0.3 m up or down, then follows the head (exponential, rate 4 per second) until within 0.05 m
+  and 0.03 m. A head turn no longer swings the sphere round with the neck. A translucent glass
+  disc (`ground_stand.gdshader`, two triangles at y = 0, 0.75 m radius) sits on that centre,
+  shrinks when a tall eye height leaves less floor inside the bowl, and hides on the flat floor
+  and in passthrough.
+- Trigger glides aim by ray-sphere intersection (`FractalGround.ray_to_plane()`). In the bowl a
+  ray that hits the wall glides there instead of zooming the sky. On the globe every ray hits
+  the floor, overhead included, and glides that way under the usual limits (6 m of surface at
+  1.5 m/s). Grab and stick movement scale by plane metres per surface metre at the nadir (11.25
+  on both), so the floor stays under the hand, and the WALK vignette scales by the optic flow
+  (0.8). Stick zoom, grip zoom and smooth turn keep their tunnel. NEAR, MIRROR, BEACONS, TOUR
+  and ORBIT turn off and hide their tiles, and the right stick click no longer toggles the
+  hidden orbit.
+- Cost on the Mac, measured as frame time at 2x render scale because Mac GPU timestamps read 0.
+  The bowl matches the flat floor and the globe runs 1.45 to 1.5 times it, level and looking 60
+  degrees up. Quest frame time is unmeasured.
+- With SPHERE off the flat floor renders as before. A flat shot before and after a bowl and globe
+  round trip differs by a mean of 0.0009, the same as refilling the floor in place with nothing
+  changed (0.0008), since the fill is not bit-repeatable on the set's edge.
+- SPHERE keeps its setting on leaving GROUND but does nothing there, since the other modes do not
+  draw the ground and the sky reads none of its state. Verified on Mac renders in
+  `tools/mandel_sky_shot.sh`. Quest stereo, comfort and frame time are untested.
+
+### Physical finishes, 2026-11-22
+
+- STYLE gains four ALU-only finishes in SOLID, MARCHED, FLY (SPIRES and VAULT), GROUND, TREE and
+  IFS (indices 9 to 12, leaving styles 1 to 8 unchanged):
+  - `opal` (9), dark midnight-indigo potch body with smoky Tyndall scattering, replaced inside
+    crossed integer-cycle Bragg domains by squared cosine spectral fire, plus glass clearcoat.
+  - `verdigris` (10), satin antique brown-bronze ridges with chalky pale sage mineral patina
+    in AO crevices (keyed only on AO and whole-number `film_key` cycles, with joint weathering
+    in IFS and rain-streak weathering in TREE) and a darkened cuprite margin between them.
+  - `frost` (11), dark clear glacial sapphire-teal facing the eye, backlit transmission, two
+    crossed sixth-power crystal-plane facets, icy Fresnel reflection, chalky white rime on
+    grazing edges and ridges, and sharp specular highlights.
+  - `velvet` (12), deep royal crimson-burgundy dye gently tinted by the palette (1.25x chroma
+    cap), inverted-Fresnel light-trapping core, bounded microfiber grazing sheen with no
+    specular hot spot, and a whole-number `film_key` nap wave.
+- `_sync_glow()` enables Glow only for styles 1, 4 and 6 on GROUND, BULB and IFS, so styles 9
+  to 12 keep Glow off there (saving the blur pass) and keep FLY's world sky. Verified on Mac
+  renders across SOLID, MARCHED, FLY (SPIRES and VAULT), GROUND, TREE and IFS; Quest stereo
+  and frame time are untested.
+
 ### Visual upgrades V1-V12, 2026-11-21
 
 Written by Gemini Neon without a headset, then reviewed by a four-model council and fixed.

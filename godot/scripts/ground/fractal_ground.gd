@@ -1,7 +1,11 @@
 extends Node3D
 class_name FractalGround
 
-## The ground viewer: you stand on the fractal and it runs to the horizon.
+## The ground viewer: you stand on the fractal and it runs to the horizon. With SPHERE on it
+## curves round you instead, mapped onto a 2 m sphere by inverse stereographic projection from
+## the zenith in ground.gdshader, with a translucent glass disc at y = 0 to stand on: bowl
+## bends the plane's inner 45 m onto the lower hemisphere under the sky, and globe carries the
+## same map over the top, the whole plane on the sphere with infinity at the zenith.
 ##
 ## A clipmap. LEVELS square textures of n_tex texels, level i with texels twice the size of
 ## level i-1, every window centred under the viewer. ground.glsl fills them (escape-time
@@ -206,7 +210,58 @@ var _tex: RID
 var _texture := Texture2DArrayRD.new()
 var _mesh_instance: MeshInstance3D
 var _sky: MeshInstance3D
+var _stand: MeshInstance3D
+var _stand_mat: ShaderMaterial
 var _material: ShaderMaterial
+## Sphere mode (SPHERE tile). sphere_radius is in metres (0 = flat floor),
+## sphere_horizon_r is the plane radius mapped to the equator, and _sphere_fog_start is the
+## fraction of that radius where the bowl's rim fog begins. sphere_globe carries the map past
+## the equator to the zenith and has no rim.
+var sphere_radius := 0.0
+var sphere_horizon_r := 60.0
+var _sphere_fog_start := 0.85
+var sphere_globe := false
+## GLOBE runs the clipmap this many stages coarser than the zoom asks for. Seen from the
+## centre, the nadir's pixel covers H / 2 plane metres a radian (17 mm on the Quest at
+## H = 45), so the finest two levels (1.5 to 6 mm) were never sampled there; two stages
+## coarser, level 0 is 6 to 12 mm and still finer than that pixel, and the coarsest level
+## reaches four times as far, 700 to 1400 m, 3.6 to 7.3 degrees from the zenith at H = 45.
+## Changing it is a zoom of four as far as the fill goes: the two new coarse levels fill
+## while the cap closes over them (_tick_globe_cap).
+const GLOBE_STAGE_BIAS := 2
+var _stage_bias := 0
+## The stage the zoom alone asks for, before that bias. iter_floor() and the shader's
+## relief_unit go by it, so the land keeps its height in metres and the fill its iterations.
+var _zoom_stage := 0
+## GLOBE's cap: past the data the fragment works the escape count itself, crossfading in
+## between plane radii GLOBE_CAP_FADE * _globe_cap_m and _globe_cap_m. That radius eases out to
+## GLOBE_CAP_M behind the coarsest level's reach and snaps in at once if the reach falls short. 600 m is 8.6 degrees from the
+## zenith at H = 45 and inside the coarsest level's 650 m minimum. From 420 to 590 m out (by
+## the stage) that level's texels fall below a Quest pixel, so the fade also hides the shimmer.
+const GLOBE_CAP_M := 600.0
+const GLOBE_CAP_FADE := 0.6
+const GLOBE_CAP_MIN_M := 1.0
+var _globe_cap_m := GLOBE_CAP_MIN_M
+var _eye_y := 1.6
+## The sphere's centre and the standing glass disc under it are anchored in the world. A head
+## turn swings the eyes 8 to 10 cm round the neck and looking down drops them about 10 cm; a
+## centre on the eye carried the 2 m bowl with every glance, against the stand and the
+## controllers. The centre holds still while the head stays within STAND_HOLD_M across and
+## STAND_HOLD_Y_M up or down, and eases after it (time constant 0.25 s) once you walk or crouch
+## further, until it sits within the settle distance again. The disc lies at y = 0 and hides
+## on the flat floor and in passthrough.
+const STAND_RADIUS := 0.75
+const STAND_HOLD_M := 0.55
+const STAND_SETTLE_M := 0.05
+const STAND_HOLD_Y_M := 0.3
+const STAND_SETTLE_Y_M := 0.03
+var _stand_xz := Vector2.ZERO
+var _sphere_cy := 1.6
+var _stand_set := false
+var _stand_chasing := false
+var _cy_chasing := false
+var _stand_passthrough := false
+var _stand_fits := true
 var _stage := 0
 var _rot := 0
 var _win_lo: Array[Vector2i] = []
@@ -284,6 +339,18 @@ func _init() -> void:
 	_sky.rotation.x = PI      # face down
 	_sky.visible = false
 	add_child(_sky)
+	# Real-floor standing glass disc for VR comfort in sphere mode (bowl and globe).
+	_stand_mat = ShaderMaterial.new()
+	_stand_mat.shader = load("res://shaders/ground_stand.gdshader")
+	var stand_plane := PlaneMesh.new()
+	stand_plane.size = Vector2(STAND_RADIUS * 2.0, STAND_RADIUS * 2.0)
+	_stand = MeshInstance3D.new()
+	_stand.name = "Stand"
+	_stand.mesh = stand_plane
+	_stand.material_override = _stand_mat
+	_stand.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_stand.visible = false
+	add_child(_stand)
 	for i in LEVELS:
 		_win_lo.append(Vector2i.ZERO)
 		_have.append(false)
@@ -542,6 +609,8 @@ func home() -> void:
 	_cx = h.x - _head_xz.x / wpu
 	_cy = h.y - _head_xz.y / wpu
 	_level_set = false
+	_stand_set = false
+	_stand_chasing = false
 	_sync_stage()
 
 
@@ -551,10 +620,13 @@ func stop_glide() -> void:
 	_glide = Vector2.ZERO
 
 
-## Glide so that the world point `target_xz` ends up under the viewer. Eased over about
-## a second; a new target replaces the old.
+## Glide so that the world point `target_xz` ends up under the viewer (at the sphere's nadir
+## in sphere mode, scaled by sphere_pan_scale() so bowl glides cover real surface metres).
+## Eased over about a second; a new target replaces the old.
 func glide_to(target_xz: Vector2) -> void:
-	_glide = (target_xz - _head_xz).limit_length(GLIDE_MAX_M)
+	var sc := sphere_pan_scale()
+	var from := _stand_xz if sphere_radius > 0.0 else _head_xz
+	_glide = (target_xz - from).limit_length(GLIDE_MAX_M * sc)
 
 
 ## 0..1 fill progress of the work queued since the queue was last empty.
@@ -642,9 +714,10 @@ func set_max_iter(n: int) -> void:
 ## across one rebuilds the stack, as changing ITER does; shallower than stage 10 nothing
 ## changes.
 func iter_floor() -> int:
-	if not auto_iter or _stage < 10:
+	# Depth, not the clipmap's stage: GLOBE runs the clipmap coarser at the same zoom.
+	if not auto_iter or _zoom_stage < 10:
 		return 0
-	return mini(4096, 512 << ((_stage - 10) / 3))
+	return mini(4096, 512 << ((_zoom_stage - 10) / 3))
 
 
 ## NEAR: the per-pixel escape budget for the shader's near field (ground.gdshader), 0 off.
@@ -656,8 +729,12 @@ var near_iter := 0
 
 
 func _set_near(vx: float, vy: float) -> void:
-	_material.set_shader_parameter("near_iter", near_iter)
-	if near_iter <= 0:
+	# Stereographic stretching on the sphere makes texels coarser than pixels over most of the
+	# wall, which would trigger per-pixel escape almost everywhere; force NEAR off there.
+	var eff_near := 0 if sphere_radius > 0.0 else near_iter
+	_material.set_shader_parameter("near_iter", eff_near)
+	# The globe works the escape past its data with the same uniforms (ground.gdshader).
+	if eff_near <= 0 and not sphere_globe:
 		return
 	var f := PackedFloat32Array([vx, vy])
 	_material.set_shader_parameter("near_c", Vector4(f[0], vx - f[0], f[1], vy - f[1]))
@@ -712,11 +789,16 @@ func _window(i: int) -> Rect2i:
 
 
 func _sync_stage() -> void:
-	var want := clampi(int(floor(log(wpu / WPU_BASE) / log(2.0))), STAGE_MIN, STAGE_MAX)
+	_zoom_stage = clampi(int(floor(log(wpu / WPU_BASE) / log(2.0))), STAGE_MIN, STAGE_MAX)
+	var want := clampi(_zoom_stage - _stage_bias, STAGE_MIN, STAGE_MAX)
 	while _stage < want:
 		_shift_in()
 	while _stage > want:
 		_shift_out()
+	if _material != null:
+		# The clipmap's level-0 texel against the zoom's own: 1 off the globe, 1/4 on it, and
+		# less than that bias at the widest zoom, where STAGE_MIN stops the clipmap going coarser.
+		_material.set_shader_parameter(&"relief_unit", pow(2.0, float(_stage - _zoom_stage)))
 
 
 ## Zoomed in past 2x: level i becomes level i+1 (same texel size, same absolute grid, so
@@ -764,8 +846,9 @@ func _shift_out() -> void:
 # --- per frame --------------------------------------------------------------------
 
 ## Called by the host every frame while the ground is showing. head_xz is the viewer's
-## world position on the plane.
-func update(head_xz: Vector2, delta: float = 0.0) -> void:
+## world position on the plane; eye_y is the eyes' height in metres (sphere mode anchors the
+## lower hemisphere's centre near it, so the equator sits on the horizon).
+func update(head_xz: Vector2, delta: float = 0.0, eye_y: float = 1.6) -> void:
 	if not _ready_ok:
 		return
 	if sun_orbit and sun_applies and delta > 0.0 and _material != null:
@@ -774,17 +857,52 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 		_material.set_shader_parameter(&"light_dir",
 			Vector3(cos(_sun_angle) * r, DEFAULT_LIGHT_DIR.y, sin(_sun_angle) * r))
 	_head_xz = head_xz
-	# The mesh is finest at its centre; keep that under the viewer.
-	_mesh_instance.position = Vector3(head_xz.x, 0.0, head_xz.y)
+	_eye_y = eye_y
+	if sphere_radius > 0.0:
+		if not _stand_set or delta <= 0.0:
+			_stand_xz = head_xz
+			_sphere_cy = eye_y
+			_stand_set = true
+			_stand_chasing = false
+			_cy_chasing = false
+		else:
+			var ease := 1.0 - exp(-delta * 4.0)
+			if (head_xz - _stand_xz).length() > STAND_HOLD_M:
+				_stand_chasing = true
+			if _stand_chasing:
+				_stand_xz = _stand_xz.lerp(head_xz, ease)
+				if (head_xz - _stand_xz).length() < STAND_SETTLE_M:
+					_stand_chasing = false
+			if absf(eye_y - _sphere_cy) > STAND_HOLD_Y_M:
+				_cy_chasing = true
+			if _cy_chasing:
+				_sphere_cy = lerpf(_sphere_cy, eye_y, ease)
+				if absf(eye_y - _sphere_cy) < STAND_SETTLE_Y_M:
+					_cy_chasing = false
+		# The mesh is centred under the sphere's centre, not the eye (see STAND_HOLD_M).
+		_mesh_instance.position = Vector3(_stand_xz.x, 0.0, _stand_xz.y)
+		_stand.position = Vector3(_stand_xz.x, 0.002, _stand_xz.y)
+		# The bowl's wall crosses the real floor sqrt(R^2 - cy^2) out (1.2 m at a 1.6 m eye
+		# height); a taller eye pulls that in, so the disc shrinks to stay inside the wall
+		# rather than slip behind it.
+		var cross := sqrt(maxf(0.0, sphere_radius * sphere_radius - _sphere_cy * _sphere_cy))
+		var fit := clampf(cross * 0.9 / STAND_RADIUS, 0.0, 1.0)
+		_stand.scale = Vector3(fit, 1.0, fit) if fit > 0.05 else Vector3.ONE
+		_stand_fits = fit > 0.05
+	else:
+		# The mesh is finest at its centre; keep that under the viewer.
+		_mesh_instance.position = Vector3(head_xz.x, 0.0, head_xz.y)
 	_sky.position.x = head_xz.x
 	_sky.position.z = head_xz.y
+	_stand.visible = sphere_radius > 0.0 and not _stand_passthrough and _stand_fits
 	glide_mps = 0.0
-	if _glide.length() > 0.02 and delta > 0.0:
+	var pan_sc := sphere_pan_scale()
+	if _glide.length() > 0.02 * pan_sc and delta > 0.0:
 		var f := 1.0 - exp(-delta * 3.5)
-		var step := (_glide * f).limit_length(GLIDE_MAX_MPS * delta)
+		var step := (_glide * f).limit_length(GLIDE_MAX_MPS * pan_sc * delta)
 		pan(step)
 		_glide -= step
-		glide_mps = step.length() / delta
+		glide_mps = (step.length() / pan_sc) / delta
 	else:
 		_glide = Vector2.ZERO
 	if effective_iter() != _iter_used:
@@ -836,6 +954,8 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 		min_level = LEVELS - 1
 		max_level = LEVELS - 1
 	_material.set_shader_parameter("clean_rect", _clean)
+	if sphere_globe:
+		_tick_globe_cap(max_level, delta)
 	_material.set_shader_parameter("texel0", t0)
 	_material.set_shader_parameter("wpu", wpu)
 	_material.set_shader_parameter("head_xz", head_xz)
@@ -849,6 +969,9 @@ func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	_material.set_shader_parameter("max_level", max_level)
 	_material.set_shader_parameter("fog_end",
 		float(n_tex / 2 - SLACK - 2) * _texel(LEVELS - 1) * wpu)
+	_material.set_shader_parameter(&"sphere_centre_y", _sphere_cy)
+	_material.set_shader_parameter(&"sphere_off",
+		_stand_xz - head_xz if sphere_radius > 0.0 else Vector2.ZERO)
 	_set_near(vx, vy)
 	_keep_reference(vx, vy)
 	RenderingServer.call_on_render_thread(_flush)
@@ -1301,6 +1424,128 @@ func set_sky(height: float) -> void:
 	_sky.position.y = height
 
 
+## Configures sphere mode. A radius of 0 returns to the flat plane, and a positive radius
+## bends the radial mesh onto a sphere of `radius` metres round the anchored centre
+## (_stand_xz, _sphere_cy), mapping plane radius `horizon_r` to the equator. The bowl stops
+## there, with rim fog from `fog_start` of that radius; `globe` carries on over the top and
+## runs the clipmap GLOBE_STAGE_BIAS stages coarser. Turning it on centres it on the head.
+func set_sphere(radius: float, horizon_r: float, fog_start: float, passthrough_on := false,
+		globe := false) -> void:
+	var was_on := sphere_radius > 0.0
+	sphere_radius = maxf(0.0, radius)
+	sphere_horizon_r = maxf(1.0, horizon_r)
+	_sphere_fog_start = clampf(fog_start, 0.0, 0.99)
+	_stand_passthrough = passthrough_on
+	var was_globe := sphere_globe
+	sphere_globe = globe and sphere_radius > 0.0
+	_stage_bias = GLOBE_STAGE_BIAS if sphere_globe else 0
+	_sync_stage()
+	if sphere_globe and not was_globe:
+		_globe_cap_m = GLOBE_CAP_MIN_M
+	if not was_on and sphere_radius > 0.0:
+		_stand_xz = _head_xz
+		_sphere_cy = _eye_y
+		_stand_set = false
+		_stand_chasing = false
+		_cy_chasing = false
+	_stand.visible = sphere_radius > 0.0 and not _stand_passthrough
+	if _material != null:
+		_material.set_shader_parameter(&"sphere_radius", sphere_radius)
+		_material.set_shader_parameter(&"sphere_horizon_r", sphere_horizon_r)
+		_material.set_shader_parameter(&"sphere_fog_start", _sphere_fog_start)
+		_material.set_shader_parameter(&"sphere_globe", 1.0 if sphere_globe else 0.0)
+		_material.set_shader_parameter(&"sphere_mesh_r", MESH_R_MAX)
+		_material.set_shader_parameter(&"globe_cap",
+			Vector2(GLOBE_CAP_FADE * _globe_cap_m, _globe_cap_m))
+		if sphere_radius > 0.0:
+			_material.set_shader_parameter(&"near_iter", 0)
+		else:
+			_material.set_shader_parameter(&"sphere_off", Vector2.ZERO)
+			_material.set_shader_parameter(&"sky_rim_mix", 0.0)
+
+
+## GLOBE's cap follows the data. The reach is the coarsest clean level's margin round the
+## viewer, as ground.gdshader's in_window() measures it (the window less the slack, and 1.5
+## texels inside the clean rect), in metres, less the stand's offset from the head. The cap's
+## outer edge stays 8% inside it: out to GLOBE_CAP_M, eased over about a third of a second as
+## new levels land, and in at once when the reach drops (a new family, a refill).
+func _tick_globe_cap(top: int, delta: float) -> void:
+	var c: Vector4 = _clean[top]
+	var margin := minf(minf(-c.x, -c.y), minf(c.z, c.w)) - 1.5
+	margin = minf(margin, float(n_tex / 2 - SLACK - 1) - 1.5)
+	var reach := margin * _texel(top) * wpu - (_stand_xz - _head_xz).length()
+	var want := clampf(reach * 0.92, GLOBE_CAP_MIN_M, GLOBE_CAP_M)
+	if want < _globe_cap_m or delta <= 0.0:
+		_globe_cap_m = want
+	else:
+		_globe_cap_m += (want - _globe_cap_m) * (1.0 - exp(-delta / 0.35))
+	_material.set_shader_parameter(&"globe_cap", Vector2(GLOBE_CAP_FADE * _globe_cap_m, _globe_cap_m))
+
+
+## How far the sphere's rim fades into MANDEL SKY's horizon colour rather than fog_colour, 0..1.
+## main.gd passes the sky's fade-in while MANDEL is on show, else 0. The sky's view and data
+## reach the material from MandelSky.tick().
+func set_sphere_sky_rim(mix_k: float) -> void:
+	if _material == null:
+		return
+	_material.set_shader_parameter(&"sky_rim_mix",
+		clampf(mix_k, 0.0, 1.0) if sphere_radius > 0.0 else 0.0)
+
+
+## Plane metres per sphere surface metre at the nadir (1.0 on the flat floor). Inverse of the
+## nadir conformal scale 2 * R / R_H so hand grabs stay 1:1 underfoot and stick walks move at
+## surface speed on the bowl instead of 1/11 speed.
+func sphere_pan_scale() -> float:
+	if sphere_radius <= 0.0:
+		return 1.0
+	return sphere_horizon_r / (2.0 * sphere_radius)
+
+
+## Ratio of nadir angular optic flow on the sphere to the flat floor (1.0 on flat), clamped to
+## 1.0 so the WALK comfort vignette scales with visual flow rate.
+func sphere_flow_scale() -> float:
+	if sphere_radius <= 0.0:
+		return 1.0
+	return clampf(_eye_y / sphere_radius, 0.0, 1.0)
+
+
+## Where a world ray (origin `o`, direction `dir`) hits the ground as world XZ on the fractal
+## plane for trigger glides. The flat floor intersects y = 0. Sphere mode intersects the sphere
+## centred at (_stand_xz.x, _sphere_cy, _stand_xz.y) and maps the hit back to the plane by
+## stereographic projection from the zenith. In the bowl a hit on the upper half is no hit; on
+## the globe every ray from inside hits the floor, up to plane radii in the thousands of
+## metres near the zenith (glide_to() caps the trip).
+func ray_to_plane(o: Vector3, dir: Vector3) -> Variant:
+	if dir.length_squared() < 1e-8:
+		return null
+	var d := dir.normalized()
+	if sphere_radius <= 0.0:
+		if d.y > -0.05:
+			return null
+		var t := -o.y / d.y
+		var hit := o + d * t
+		return Vector2(hit.x, hit.z)
+	var c := Vector3(_stand_xz.x, _sphere_cy, _stand_xz.y)
+	var oc := o - c
+	var b := oc.dot(d)
+	var disc := b * b - (oc.dot(oc) - sphere_radius * sphere_radius)
+	if disc < 0.0:
+		return null
+	var t := -b + sqrt(disc)
+	if t <= 0.0:
+		return null
+	var p := o + d * t
+	var s := (p - c) / sphere_radius
+	if sphere_globe:
+		return _stand_xz + Vector2(s.x, s.z) / maxf(1.0 - s.y, 1e-6) * sphere_horizon_r
+	if s.y > 0.0:
+		return null
+	var u := Vector2(s.x, s.z) / maxf(1.0 - s.y, 1e-3)
+	if u.length_squared() > 1.0:
+		u = u.normalized()
+	return _stand_xz + u * sphere_horizon_r
+
+
 ## Fog's colour: the shader's default, or a STYLE's sky (main.gd _art_sky).
 const FOG_COLOUR := Color(0.02, 0.02, 0.04)
 ## V10: slowly orbiting low sun sweeping relief shadows across the fractal terrain.
@@ -1340,6 +1585,11 @@ func set_palette(pal: Array) -> void:
 		var c: Vector3 = a.lerp(b, 0.35)
 		c = Vector3(maxf(c.x, 0.055), maxf(c.y, 0.06), maxf(c.z, 0.085))
 		_material.set_shader_parameter("inside_colour", Color(c.x, c.y, c.z))
+		if _stand_mat != null:
+			_stand_mat.set_shader_parameter(&"tint", Color(c.x * 0.7, c.y * 0.7, c.z * 0.7))
+			if pal.size() >= 4:
+				var hi: Vector3 = (pal[3] as Vector3).lerp(Vector3(0.85, 0.90, 0.98), 0.72)
+				_stand_mat.set_shader_parameter(&"ring_col", Color(hi.x, hi.y, hi.z))
 
 
 func set_palette_cycles(n: float) -> void:

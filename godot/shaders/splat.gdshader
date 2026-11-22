@@ -298,6 +298,8 @@ void vertex() {
 				int flat_i = (gc.z * density_grid + gc.y) * density_grid + gc.x;
 				float n_here = max(1.0, texelFetch(density_tex, ivec2(flat_i & 511, flat_i >> 9), 0).r);
 				float rel = clamp(pow(density_nominal / n_here, density_exponent), 0.4, 2.5);
+				// ADAPT's 50% rung: halfway between the global radius and the density size.
+				rel = mix(1.0, rel, density_strength);
 				l1 *= rel;
 				l2 *= rel;
 			}

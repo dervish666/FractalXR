@@ -98,6 +98,14 @@ func _init() -> void:
 	for i in 12:
 		forest.govern_step(13.5, 13.89)
 	forest.apply_lod(eye3)
+	# An undergrowth bed the hot pass moved off LOD 0 still draws, and counts, LOD 0 until its
+	# LOD 0-only plants fold away (FractalTree.UNDERGROWTH_EASE_S, 0.8 s), so the cost is read
+	# again once that has run out.
+	var hot_cost_now := forest.visible_cost
+	var settle_ms := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - settle_ms < 1200:
+		await process_frame
+	forest.apply_lod(eye3)
 	var hot_budget := forest.budget
 	var hot_cost := forest.visible_cost
 	var lods := {}
@@ -111,9 +119,9 @@ func _init() -> void:
 	forest.apply_lod(eye3)
 	var governor_ok: bool = hot_budget < budget0 and hot_cost < cost0 and fits \
 		and forest.budget > hot_budget and forest.visible_cost > hot_cost
-	print("FORESTSHOT governor %s budget %d->%d->%d drawn %d->%d->%d lods_hot=%s" % [
+	print("FORESTSHOT governor %s budget %d->%d->%d drawn %d->%d (%d before the ease)->%d lods_hot=%s" % [
 		"PASS" if governor_ok else "FAIL", budget0, hot_budget, forest.budget,
-		cost0, hot_cost, forest.visible_cost, str(lods)])
+		cost0, hot_cost, hot_cost_now, forest.visible_cost, str(lods)])
 
 	# The planting ring has to agree with the planting ray, and has to give up when the
 	# ray does. Aim down at a known floor point, then aim at the ceiling, and require the

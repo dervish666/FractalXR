@@ -27,6 +27,11 @@ class_name MandelSky
 ## nears float32's grid. Past the filled square (below the horizon, or the rim during a zoom
 ## out) the shader draws a flat far-exterior colour. JULIA on the ground hides the marker:
 ## the floor's points are z0 there, not c.
+##
+## SPHERE (GROUND's lower-sphere floor). The floor's rim fades into this sky's colour on the
+## horizon at the same azimuth, so the two hemispheres meet with no band. tick() copies the
+## data on show and the view into the ground's material for that (_feed_rim) and changes
+## nothing on the sky itself, so no SPHERE state reaches the sky in another mode.
 
 const RES_STEPS := [2048, 3072, 4096]
 const RES_NAMES := ["2k", "3k", "4k"]
@@ -69,6 +74,13 @@ const MOVE_HOLD_MS := 200
 ## MANDEL SKY tile: how bright the sky stands against the floor.
 const GAINS := [0.25, 0.4, 0.6, 0.85, 1.2]
 const GAIN_DEFAULT := 2
+## mandel_sky.gdshader's dusk and floor_keep (never set from here), and what the floor dimming
+## leaves at d.y = 0: mix(floor_keep, 1, smoothstep(-0.35, 0.05, 0)). _feed_rim passes them on.
+const DUSK := 0.2
+const FLOOR_KEEP := 0.12
+var _horizon_keep := lerpf(FLOOR_KEEP, 1.0, smoothstep(-0.35, 0.05, 0.0))
+var _rim_front := -1
+var _rim_mat: ShaderMaterial
 
 var sky := Sky.new()
 var res: int = RES_STEPS[RES_DEFAULT]
@@ -240,6 +252,8 @@ func tick(ground: FractalGround, active: bool, here: bool) -> void:
 		_mat.set_shader_parameter(&"data_r", fr)
 	var m: Transform2D = ground._m
 	_mat.set_shader_parameter(&"rot", Vector4(m.x.x, m.x.y, m.y.x, m.y.y))
+	if here and ground.sphere_radius > 0.0:
+		_feed_rim(ground)
 	var on := here and not ground.julia
 	_mat.set_shader_parameter(&"here_on", 1.0 if on else 0.0)
 	if on:
@@ -248,6 +262,28 @@ func tick(ground: FractalGround, active: bool, here: bool) -> void:
 		var r2 := w.length_squared()
 		_mat.set_shader_parameter(&"here_dir",
 			Vector3(2.0 * w.x, 1.0 - r2, 2.0 * w.y) / (1.0 + r2))
+
+
+## For SPHERE, the sky on show goes to ground.gdshader's sky_rim_colour(). The texture goes
+## only when the slot on show changes; the view and tone go every frame, as the sky's own do.
+func _feed_rim(ground: FractalGround) -> void:
+	var gm: ShaderMaterial = ground._material
+	if gm == null:
+		return
+	if gm != _rim_mat:
+		_rim_mat = gm
+		_rim_front = -1
+	if _front < 0:
+		gm.set_shader_parameter(&"sky_rim_tone", Vector4(1.0, DUSK, 0.0, 0.0))
+		return
+	if _front != _rim_front:
+		_rim_front = _front
+		gm.set_shader_parameter(&"sky_rim_data", _tex[_front])
+	var fr: float = _front_p["r"]
+	gm.set_shader_parameter(&"sky_rim_view", Vector4((_cx - float(_front_p["x"])) / fr,
+		(_cy - float(_front_p["y"])) / fr, _r / fr, HALF_W))
+	gm.set_shader_parameter(&"sky_rim_tone", Vector4(float(_mat.get_shader_parameter(&"fill_frac")),
+		DUSK, GAINS[gain_idx] * _horizon_keep, 1.0))
 
 
 ## What a fill for the view on show would be. Iterations grow with depth, as the ground's do,

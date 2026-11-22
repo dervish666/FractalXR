@@ -59,6 +59,8 @@ func _init() -> void:
 
 
 func _styles(mode: String) -> void:
+	const MIN_DIFF := 0.05
+	const MIN_LIT_RATIO := 0.35
 	for st in FractalMain.ART_NAMES.size():
 		main._set_art(st)
 		for i in 30:
@@ -69,6 +71,73 @@ func _styles(mode: String) -> void:
 		var sp := _spread(img)
 		ok = ok and sp > 0.02
 		print("STYLESHOT %s %s spread=%.3f" % [name, "PASS" if sp > 0.02 else "FAIL", sp])
+
+	# Frozen distinctness sweep for physical finishes (5..12): still moving geometry and
+	# overlays that ignore art_style (TREE's wind, leaves and motes; IFS's ambient breath,
+	# echoes clock and palette scroll) so identical shaders compare near zero.
+	var ifs_amb0: bool = main.ifs.ambient
+	if mode == "tree":
+		main._set_forest_wind(0.0)
+		main.forest._motes.visible = false
+		main._set_forest_leaves(false)
+		for i in 8:
+			await process_frame
+	elif mode == "ifs":
+		main.ifs.ambient = false
+		main.ifs.build(false)
+		main.ifs._mat.set_shader_parameter("scroll", 0.0)
+		for p in main.ifs_echoes._pool:
+			p._mat.set_shader_parameter("scroll", 0.0)
+		for i in 6:
+			await process_frame
+	main._set_art(0)
+	for i in 4:
+		await process_frame
+	var nat: Image = root.get_viewport().get_texture().get_image()
+	var nat_lit := _lit_frac(nat)
+	var shots: Dictionary = {}
+	for st in range(5, FractalMain.ART_NAMES.size()):
+		main._set_art(st)
+		for i in 4:
+			await process_frame
+		shots[st] = root.get_viewport().get_texture().get_image()
+	# Unmapped style index: exercises physical_finish's plain fallback so a deleted branch or
+	# fall-through finish matches it and fails.
+	RenderingServer.global_shader_parameter_set(&"art_style", 99)
+	for i in 4:
+		await process_frame
+	var fb: Image = root.get_viewport().get_texture().get_image()
+	main._set_art(0)
+	if mode == "tree":
+		main._set_forest_wind(FractalMain.TREE_WIND[main.tree_wind_idx])
+		main.forest._motes.visible = true
+		main._set_forest_leaves(true)
+	elif mode == "ifs":
+		main.ifs.ambient = ifs_amb0
+		main.ifs._mat.set_shader_parameter("scroll", FractalIFS.SCROLL)
+		for p in main.ifs_echoes._pool:
+			p._mat.set_shader_parameter("scroll", FractalIFS.SCROLL)
+	for st in range(5, FractalMain.ART_NAMES.size()):
+		var img: Image = shots[st]
+		var sname: String = FractalMain.ART_NAMES[st]
+		var sp := _spread(img)
+		var lit_ratio := _lit_frac(img) / maxf(nat_lit, 1e-4)
+		var d_nat := _lit_diff(nat, img)
+		var d_fb := _lit_diff(fb, img)
+		var near_d := 1e9
+		var near_name := ""
+		for other in range(5, FractalMain.ART_NAMES.size()):
+			if other == st:
+				continue
+			var dp := _lit_diff(img, shots[other])
+			if dp < near_d:
+				near_d = dp
+				near_name = FractalMain.ART_NAMES[other]
+		var f_ok := sp > 0.02 and lit_ratio >= MIN_LIT_RATIO and d_nat >= MIN_DIFF \
+			and d_fb >= MIN_DIFF and near_d >= MIN_DIFF
+		ok = ok and f_ok
+		print("STYLESHOT %s finish %s %s lit_ratio=%.2f vs_nat=%.4f vs_fb=%.4f nearest=%s(%.4f)" % [
+			mode, sname, "PASS" if f_ok else "FAIL", lit_ratio, d_nat, d_fb, near_name, near_d])
 	# STYLE must put the old look back. Natural, a style, natural again a few frames apart,
 	# so palette drift and wind have no time to move anything.
 	main._set_art(0)
@@ -171,6 +240,35 @@ func _diff(a: Image, b: Image) -> float:
 			var ca := a.get_pixel(x, y)
 			var cb := b.get_pixel(x, y)
 			sum += absf((ca.r + ca.g + ca.b) - (cb.r + cb.g + cb.b)) / 3.0
+			n += 1
+	return sum / float(maxi(n, 1))
+
+
+## Share of the sample grid with luminance above 0.02.
+func _lit_frac(img: Image) -> float:
+	var n := 0
+	var lit := 0
+	var step := maxi(1, img.get_width() / 80)
+	for y in range(0, img.get_height(), step):
+		for x in range(0, img.get_width(), step):
+			n += 1
+			if img.get_pixel(x, y).get_luminance() > 0.02:
+				lit += 1
+	return float(lit) / float(maxi(n, 1))
+
+
+## Mean per-channel RGB difference over the union of lit (luma > 0.02) pixels.
+func _lit_diff(a: Image, b: Image) -> float:
+	var n := 0
+	var sum := 0.0
+	var step := maxi(1, a.get_width() / 80)
+	for y in range(0, a.get_height(), step):
+		for x in range(0, a.get_width(), step):
+			var ca := a.get_pixel(x, y)
+			var cb := b.get_pixel(x, y)
+			if ca.get_luminance() <= 0.02 and cb.get_luminance() <= 0.02:
+				continue
+			sum += (absf(ca.r - cb.r) + absf(ca.g - cb.g) + absf(ca.b - cb.b)) / 3.0
 			n += 1
 	return sum / float(maxi(n, 1))
 

@@ -155,10 +155,11 @@ var tint_levels := false
 ## for a change the harness shots barely show.
 var pixel_shadows := false
 ## FLY's STYLE (bulb_solid.gdshader art_style): 0 natural, 1 neon, 2 toon, 3 pencil,
-## 4 circuit, 5 iridescent, 6 magma, 7 jade, 8 chrome. Names in main.gd.
+## 4 circuit, 5 iridescent, 6 magma, 7 jade, 8 chrome, 9 opal, 10 verdigris, 11 frost,
+## 12 velvet. Names in main.gd.
 var art := 0
 ## Neon's night: a dark blue haze to hold the silhouettes, nearly black overhead.
-## Each STYLE's sky, and so its fog (natural and iridescent/jade/chrome keep the world's).
+## Each STYLE's sky, and so its fog (natural and the non-magma finishes keep the world's).
 ## By art: neon, toon, pencil (the paper), circuit, magma (volcanic twilight).
 const STYLE_SKY := {1: Color(0.02, 0.025, 0.06), 2: Color(0.45, 0.72, 1.0),
 	3: Color(0.92, 0.9, 0.85), 4: Color(0.01, 0.03, 0.02), 6: Color(0.03, 0.012, 0.015)}

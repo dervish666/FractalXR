@@ -63,6 +63,17 @@ uniform float litter_gain = 0.9;
 uniform vec2 litter_fade = vec2(9.0, 13.0);
 // V6: avenue atmospheric distance attenuation (0 off for hero tree or passthrough).
 uniform float fog_density = 0.0;
+// Fractal forest undergrowth foliage/spores/moss cushions (scripts/tree/tree_undergrowth.gd):
+// non-zero holds the patch's reference height in metres, matching tree.gdshader's sway and fade.
+// INSTANCE_CUSTOM.y > 0.5 marks flat floor-hugging moss discs; COLOR.g carries per-plant hue;
+// COLOR.a flags LOD 1 persistence (0 = LOD 0 only, folded out over undergrowth_lod0_fade and
+// by the eased undergrowth_lod0, as in tree.gdshader).
+instance uniform float undergrowth = 0.0;
+instance uniform float undergrowth_presence = 1.0;
+instance uniform float undergrowth_lod0 = 1.0;
+uniform float undergrowth_gain = 0.88;
+uniform vec2 undergrowth_lod0_fade = vec2(6.6, 7.6);
+uniform vec2 undergrowth_fade = vec2(10.0, 14.0);
 
 vec3 hue_turn(vec3 c, float a) {
 	const vec3 k = vec3(0.57735027);
@@ -72,6 +83,8 @@ vec3 hue_turn(vec3 c, float a) {
 
 varying vec2 v_uv;
 varying flat vec3 v_col;
+varying flat float v_flat_disc;
+varying flat float v_flat_phase;
 
 // The flutter phase comes from the point's place in the tree, not from its branch: with a
 // phase per branch, a parent's tip ring and its child's base ring fluttered apart by up to
@@ -82,27 +95,52 @@ float flutter_phase(vec3 w0) {
 
 vec3 sway(vec3 w, float phase) {
 	if (wind <= 0.0 || sway_gain <= 0.0) return w;
-	float h = clamp(dot(w - tree_origin, tree_up) / max(tree_height * tree_scale, 1e-3), 0.0, 1.5);
+	float th = undergrowth > 0.0 ? undergrowth : tree_height;
+	float h = clamp(dot(w - tree_origin, tree_up) / max(th * tree_scale, 1e-3), 0.0, 1.5);
 	float t = TIME + sway_phase;
-	float g = sin(t * 0.7) * 0.6 + sin(t * 1.9 + h * 2.0) * 0.25 + sin(t * 3.1 + phase) * 0.15;
+	float g;
+	float amp;
+	if (undergrowth > 0.0) {
+		g = sin(t * 1.15 + phase * 0.4) * 0.55
+			+ sin(t * 2.4 + h * 2.6 + phase * 0.7) * 0.30
+			+ sin(t * 3.7 + phase) * 0.15;
+		amp = wind * 0.042 * h * h * tree_scale * (undergrowth / 0.72);
+	} else {
+		g = sin(t * 0.7) * 0.6 + sin(t * 1.9 + h * 2.0) * 0.25 + sin(t * 3.1 + phase) * 0.15;
+		amp = wind * 0.12 * h * h * tree_scale * sway_gain;
+	}
 	vec3 lateral = cross(tree_up, cross(wind_dir, tree_up));
 	lateral = normalize(lateral + vec3(1e-5, 0.0, 0.0));
-	float amp = wind * 0.12 * h * h * tree_scale * sway_gain;
 	return w + lateral * (amp * g) - tree_up * (amp * 0.2 * abs(g));
 }
 
 void vertex() {
 	float birth = INSTANCE_CUSTOM.x;
+	bool is_ug = undergrowth > 0.0 && !batch && litter < 0.5;
+	bool is_moss = is_ug && INSTANCE_CUSTOM.y > 0.5;
+	v_flat_disc = is_moss ? 1.0 : 0.0;
+	v_flat_phase = INSTANCE_CUSTOM.w;
 	float phase_t = (batch ? INSTANCE_CUSTOM.y : palette_phase) + colour_cycle;
 	float hue = 1.0 - abs(fract(COLOR.r * 0.5 + phase_t) * 2.0 - 1.0);
-	vec3 c = (hue < 0.5) ? mix(pal2, pal3, hue * 2.0) : mix(pal3, pal4, (hue - 0.5) * 2.0);
-	float lh = batch ? INSTANCE_CUSTOM.z : leaf_hue;
-	if (leaf_mix > 0.0 || lh != 0.0) {
+	vec3 c;
+	if (is_moss) {
+		c = mix(pal1, pal2, 0.15 + hue * 0.45);
+	} else {
+		c = (hue < 0.5) ? mix(pal2, pal3, hue * 2.0) : mix(pal3, pal4, (hue - 0.5) * 2.0);
+	}
+	float ug_hue = is_ug ? (COLOR.g - 0.5) * 6.2831853 : 0.0;
+	if (is_moss) {
+		ug_hue -= 0.30;
+	}
+	float lh = batch ? INSTANCE_CUSTOM.z : (is_ug ? leaf_hue * 0.25 + ug_hue : leaf_hue);
+	float lmix = is_ug ? leaf_mix * 0.18 : leaf_mix;
+	if (lmix > 0.0 || lh != 0.0) {
 		c = max(hue_turn(c, lh), vec3(0.0));
 		float luma = dot(c, vec3(0.299, 0.587, 0.114));
-		c = mix(c, leaf_tint * max(luma * 1.4, 0.08), leaf_mix);
+		c = mix(c, leaf_tint * max(luma * 1.4, 0.08), lmix);
 	}
-	v_col = c * brightness * leaf_gain * (litter > 0.5 ? litter_gain : 1.0);
+	float gain_k = litter > 0.5 ? litter_gain : (is_moss ? undergrowth_gain * 1.82 : (is_ug ? undergrowth_gain : 1.0));
+	v_col = c * brightness * leaf_gain * gain_k;
 
 	vec3 center = MODEL_MATRIX[3].xyz;
 	if (fog_density > 0.0 && litter < 0.5) {
@@ -116,15 +154,33 @@ void vertex() {
 		w = center + (MODEL_MATRIX[0].xyz * VERTEX.x + MODEL_MATRIX[2].xyz * VERTEX.y) * lg;
 	} else {
 		// Leaves open after their branch has finished extending.
-		float g = clamp((grow_t - (birth * grow_s + 0.8)) / 1.2, 0.0, 1.0);
+		float g = clamp((grow_t - (birth * grow_s + (is_moss ? 0.1 : 0.8))) / 1.2, 0.0, 1.0);
 		g = g * g * (3.0 - 2.0 * g);
-		float size = length(MODEL_MATRIX[0].xyz) * g;
-		vec3 right = INV_VIEW_MATRIX[0].xyz;
-		vec3 up = INV_VIEW_MATRIX[1].xyz;
-		float a = sin(TIME * 2.7 + INSTANCE_CUSTOM.w) * 0.4 * (0.3 + wind);
-		float ca = cos(a), sa = sin(a);
-		vec2 q = vec2(VERTEX.x * ca - VERTEX.y * sa, VERTEX.x * sa + VERTEX.y * ca);
-		w = sway(center, flutter_phase(center)) + right * (q.x * size) + up * (q.y * size);
+		if (is_ug) {
+			float cam_d = distance(tree_origin, CAMERA_POSITION_WORLD);
+			float uf = 1.0 - smoothstep(undergrowth_fade.x, undergrowth_fade.y, cam_d);
+			if (COLOR.a < 0.5) {
+				float lw = clamp(undergrowth_lod0, 0.0, 1.0);
+				uf *= (1.0 - smoothstep(undergrowth_lod0_fade.x, undergrowth_lod0_fade.y, cam_d))
+					* lw * lw * (3.0 - 2.0 * lw);
+			}
+			float p = clamp(undergrowth_presence, 0.0, 1.0);
+			p = p * p * (3.0 - 2.0 * p);
+			g *= uf * p;
+		}
+		if (is_moss) {
+			w = center + (MODEL_MATRIX[0].xyz * VERTEX.x + MODEL_MATRIX[2].xyz * VERTEX.y) * g;
+		} else {
+			float size = length(MODEL_MATRIX[0].xyz) * g;
+			vec3 right = INV_VIEW_MATRIX[0].xyz;
+			vec3 up = INV_VIEW_MATRIX[1].xyz;
+			float a = is_ug
+				? (wind > 0.0 ? sin(TIME * 2.7 + INSTANCE_CUSTOM.w) * 0.35 * wind : 0.0)
+				: sin(TIME * 2.7 + INSTANCE_CUSTOM.w) * 0.4 * (0.3 + wind);
+			float ca = cos(a), sa = sin(a);
+			vec2 q = vec2(VERTEX.x * ca - VERTEX.y * sa, VERTEX.x * sa + VERTEX.y * ca);
+			w = sway(center, flutter_phase(center)) + right * (q.x * size) + up * (q.y * size);
+		}
 	}
 	v_uv = VERTEX.xy;
 	POSITION = PROJECTION_MATRIX * (VIEW_MATRIX * vec4(w, 1.0));
@@ -133,9 +189,38 @@ void vertex() {
 void fragment() {
 	float r2 = dot(v_uv, v_uv);
 	float d;
-	if (leaf_shape <= 0.5) {
+	float a;
+	if (v_flat_disc > 0.5) {
+		// Scalloped moss cushion: a lobed silhouette with a hard rim (the outer 9% of the radius,
+		// widened to 1.5 pixels when the disc is small on screen) and a brighter lip just inside
+		// it, so overlapping discs read as separate cushions. Pile comes from three crossed waves
+		// at about six cycles across the disc, on a warped domain so they make irregular tufts
+		// rather than a quilt, over two slow clump waves. The fine pile flattens to its mean as a
+		// cycle shrinks from about 10 pixels to 5, so a far bed reads as a soft pool, not a net
+		// that shimmers between the eyes.
+		float ang = atan(v_uv.y, v_uv.x);
+		float lobe = 0.84 + 0.10 * sin(ang * 3.0 + v_flat_phase)
+			+ 0.06 * cos(ang * 5.0 - v_flat_phase * 1.7);
+		d = sqrt(r2) * 2.0 / lobe;
+		float aa = fwidth(d);
+		float mfade = 1.0 - smoothstep(0.035, 0.07, fwidth(v_uv.x) + fwidth(v_uv.y));
+		if (d > 1.0) { discard; }
+		vec2 q = v_uv + 0.05 * vec2(sin(v_uv.y * 23.0 + v_flat_phase),
+			sin(v_uv.x * 19.0 - v_flat_phase * 1.4));
+		float m1 = sin(dot(q, vec2(31.0, 12.9)) + v_flat_phase);
+		float m2 = sin(dot(q, vec2(-16.2, 36.0)) - v_flat_phase * 1.3);
+		float m3 = sin(dot(q, vec2(22.3, -26.7)) + v_flat_phase * 0.7);
+		float clump = sin(dot(v_uv, vec2(11.3, 4.7)) + v_flat_phase)
+			* sin(dot(v_uv, vec2(-5.9, 13.1)) - v_flat_phase * 1.3);
+		float tuft = 0.80 + 0.10 * mfade * (m1 + m2 + m3) + 0.10 * clump;
+		float body = 0.62 + 0.38 * (1.0 - d * d);
+		float rim = 1.0 - smoothstep(1.0 - max(0.09, 1.5 * aa), 1.0, d);
+		float lip = 1.0 + 0.40 * smoothstep(0.70, 0.90, d) * rim;
+		a = body * rim * lip * tuft * 0.58;
+	} else if (leaf_shape <= 0.5) {
 		if (r2 > 0.25) { discard; }
 		d = sqrt(r2) * 2.0;
+		a = pow(1.0 - d, 1.6);
 	} else {
 		float th = atan(v_uv.y, v_uv.x);
 		float edge;
@@ -148,8 +233,8 @@ void fragment() {
 		}
 		d = sqrt(r2) * 2.0 / edge;
 		if (d > 1.0) { discard; }
+		a = pow(1.0 - d, 1.6);
 	}
-	float a = pow(1.0 - d, 1.6);
 	ALBEDO = v_col * a;
 	ALPHA = a;
 }

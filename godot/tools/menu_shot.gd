@@ -37,9 +37,9 @@ const ANIM_FRAMES := 14
 ## label shared across modes must carry the same hint everywhere it shows, which is how the
 ## vocabulary check tells one meaning from two (a tile built by shared_items.gd always does).
 const SAME_MEANING := {
-	"HOME": "puts the view or the object back where it started",
 	"ECHOES": "copies of the thing round the room",
 	"LEVELS": "recursion depth",
+	"SPIN": "turns the thing in front of you; TREE's hint says that is only your tree",
 }
 
 
@@ -62,6 +62,31 @@ func _init() -> void:
 		await process_frame
 
 	var failures: Array[String] = []
+	# DOCK_ONLY=1 runs just the dock check, for iterating on it.
+	var dock_only := OS.get_environment("DOCK_ONLY") == "1"
+	if dock_only:
+		var dk := await _dock_check(main)
+		print("MENUSHOT dock %s (%d problems)" % ["PASS" if dk.is_empty() else "FAIL", dk.size()])
+		for w in dk:
+			print("MENUSHOT dock_detail %s" % w)
+		print("MENUSHOT %s shots=0 failures=%d (dock only)" % ["PASS" if dk.is_empty() else "FAIL", dk.size()])
+		quit(0 if dk.is_empty() else 1)
+		return
+	# STATES_ONLY=1 runs the vocabulary and the per-state tile checks alone.
+	if OS.get_environment("STATES_ONLY") == "1":
+		var probs := await _check_vocabulary(main)
+		print("MENUSHOT vocabulary %s (%d problems)" % ["PASS" if probs.is_empty() else "FAIL", probs.size()])
+		for w in probs:
+			print("MENUSHOT vocabulary_detail %s" % w)
+		var st := await _check_states(main)
+		print("MENUSHOT states %s (%d checks, %d problems)" % [
+			"PASS" if st.is_empty() else "FAIL", _state_checks, st.size()])
+		for w in st:
+			print("MENUSHOT states_detail %s" % w)
+		probs.append_array(st)
+		print("MENUSHOT %s shots=0 failures=%d (states only)" % ["PASS" if probs.is_empty() else "FAIL", probs.size()])
+		quit(0 if probs.is_empty() else 1)
+		return
 	# The device path. Every shot below goes through debug_level(), which once hid two
 	# device bugs: a fresh panel opening with no cards, and a panel left blank after a
 	# card. This walk uses only what a hand can do: open the float, aim the right ray at
@@ -93,6 +118,11 @@ func _init() -> void:
 	print("MENUSHOT float %s (%d problems)" % ["PASS" if fl.is_empty() else "FAIL", fl.size()])
 	for w in fl:
 		print("MENUSHOT float_detail %s" % w)
+	var dk := await _dock_check(main)
+	failures.append_array(dk)
+	print("MENUSHOT dock %s (%d problems)" % ["PASS" if dk.is_empty() else "FAIL", dk.size()])
+	for w in dk:
+		print("MENUSHOT dock_detail %s" % w)
 	main.menu.set_pinned(false, true)
 	main.menu._shown = 0.0
 	for i in 5:
@@ -212,6 +242,12 @@ func _init() -> void:
 		await _settle(lmenu)
 	print("MENUSHOT lines tiles %s (%d of 2 showing)" % ["PASS" if line_tiles == 2 else "FAIL", line_tiles])
 	main.line_idx = 0
+	var states := await _check_states(main)
+	failures.append_array(states)
+	print("MENUSHOT states %s (%d checks, %d problems)" % [
+		"PASS" if states.is_empty() else "FAIL", _state_checks, states.size()])
+	for w in states:
+		print("MENUSHOT states_detail %s" % w)
 
 	# The pin: fly off the arm to the float and home again, instantly, and check the panel
 	# really changed parent each time. The float's feel is headset work; the reparent is not.
@@ -247,6 +283,221 @@ func _init() -> void:
 	print("MENUSHOT %s shots=%d failures=%d" % [
 		"PASS" if verdict else "FAIL", shots, failures.size()])
 	quit(0 if verdict else 1)
+
+
+var _state_checks := 0
+
+
+## A tile shows only in the states where it does something, and its value says what is built.
+## Main's own variables are set between frames and put back; visible_when and read are the
+## closures the menu itself calls on a refresh. After the sweep, so no shot sees these states.
+func _check_states(main) -> Array[String]:
+	var bad: Array[String] = []
+	var m = main.menu
+	var dev := OS.is_debug_build()
+	_state_checks = 0
+	for mode in MODES:
+		main._set_mode(mode)
+		for i in 4:
+			await process_frame
+		# SKY took SKY PICK's list; the frame-time dials wait behind MORE wherever they show.
+		_want(bad, m, mode, {"SKY": true, "SKY PICK": false})
+		for it in m.items:
+			if it.label in ["DETAIL", "FOVEA", "GLOW"] and _vis(it):
+				_state_checks += 1
+				if it.primary:
+					bad.append("%s: %s is on the first page, wanted under MORE" % [mode, it.label])
+
+	# FLAME: points have SIZE and AA, splats have OPACITY, and ADAPT never shows.
+	main._set_mode("flame")
+	for i in 4:
+		await process_frame
+	var splat0: bool = main.splat_on
+	main.splat_on = false
+	_want(bad, m, "flame points", {"SIZE": true, "AA": dev, "OPACITY": false, "ADAPT": false})
+	main.splat_on = true
+	_want(bad, m, "flame splats", {"SIZE": false, "AA": false, "OPACITY": true, "ADAPT": false})
+	main.splat_on = splat0
+
+	# BULB: the splat tiles only over particles, BREATHE only once STEADY lets them move,
+	# ADAPT only on plain splats with FIT SPLATS off, DRIFT everywhere but FLY.
+	main._set_mode("bulb")
+	for i in 4:
+		await process_frame
+	var keep := [main.surface_idx, main.line_idx, main.auto_bake, main.bulb_stability_idx]
+	var cloud_tiles := ["COVER", "OPACITY", "STEADY", "FIT SPLATS"]
+	var all_on := func(on: bool, extra: Dictionary) -> Dictionary:
+		var d := {}
+		for l in cloud_tiles:
+			d[l] = on
+		d.merge(extra, true)
+		return d
+	main.surface_idx = 0
+	main.line_idx = 0
+	main.auto_bake = false
+	main.bulb_stability_idx = 0
+	_want(bad, m, "bulb splats frozen", all_on.call(true, {"ADAPT": dev, "BREATHE": false,
+		"DRIFT": true, "SPLAT": false}))
+	main.auto_bake = true
+	_want(bad, m, "bulb splats fitted", {"ADAPT": false})
+	main.auto_bake = false
+	main.bulb_stability_idx = 1
+	_want(bad, m, "bulb splats moving", {"BREATHE": true, "ADAPT": dev})
+	main.line_idx = 1
+	_want(bad, m, "bulb lines moving", all_on.call(true, {"BREATHE": true, "ADAPT": false}))
+	main.line_idx = 0
+	for st in [["solid", 4], ["fly", FractalMain.SURFACE_FLY_IDX]]:
+		main.surface_idx = st[1]
+		_want(bad, m, "bulb %s moving" % st[0], all_on.call(false, {"BREATHE": false,
+			"ADAPT": false, "DRIFT": st[0] != "fly"}))
+	# Marched through the real path, so DETAIL reads the pinned eye buffer.
+	main.surface_idx = 1
+	main._apply_surface()
+	for i in 2:
+		await process_frame
+	_want(bad, m, "bulb marched moving", all_on.call(false, {"BREATHE": false, "ADAPT": false,
+		"DRIFT": true}))
+	_read(bad, m, "bulb marched", "DETAIL", "%.2fx locked" % FractalMain.MARCH_RENDER_SCALE)
+	main.surface_idx = 0
+	main._apply_surface()
+	for i in 2:
+		await process_frame
+	_read(bad, m, "bulb splats", "DETAIL", "%.2fx" % FractalMain.RENDER_STEPS[main.render_idx])
+	main.line_idx = keep[1]
+	main.auto_bake = keep[2]
+	main.bulb_stability_idx = keep[3]
+	if main.surface_idx != keep[0]:
+		main.surface_idx = keep[0]
+		main._apply_surface()
+
+	# SKY, one list: off, live, the presets. BULB, whose cloud holds no flame to bake.
+	var pick0: int = main.flame_sky.pick
+	if main._sky_switch():
+		main._toggle_sky()
+	main.flame_sky.set_pick(0)
+	_read(bad, m, "bulb sky", "SKY", "off")
+	# With a flame baked in FLAME, one step from off is that live sky. No frame runs before
+	# ready goes back, so nothing draws from the borrowed flag.
+	var ready0: bool = main.flame_sky.ready
+	main.flame_sky.ready = true
+	main._step_sky(1)
+	var live := _reads(m, "SKY")
+	_state_checks += 1
+	if not main._sky_switch() or main.flame_sky.pick != 0 or live != "live":
+		bad.append("bulb sky baked: one step from off reads '%s', switch %s, pick %d (wanted live, on, 0)" % [
+			live, main._sky_switch(), main.flame_sky.pick])
+	if main._sky_switch():
+		main._toggle_sky()
+	main.flame_sky.ready = false
+	if main.flame_sky.presets.is_empty():
+		bad.append("bulb sky: no preset skies to step onto")
+	else:
+		# With none, the live rung would read "no flame" over an empty sky: the step goes past it.
+		main._step_sky(1)
+		_read(bad, m, "bulb sky unbaked", "SKY", str(main.flame_sky.presets[0]["name"]))
+		main._step_sky(-1)
+		_state_checks += 1
+		if main._sky_switch() or main.flame_sky.pick != 1:
+			bad.append("bulb sky unbaked: one step back from the first preset left switch %s, pick %d (wanted off, 1)" % [
+				main._sky_switch(), main.flame_sky.pick])
+		_read(bad, m, "bulb sky unbaked", "SKY", "off")
+	main.flame_sky.ready = ready0
+	main.flame_sky.set_pick(pick0)
+
+	# IFS: at the top rung with MOTION breathing, LEVELS says what is built.
+	main._set_mode("ifs")
+	for i in 4:
+		await process_frame
+	var lv0: int = main.ifs_detail_idx
+	var amb0: bool = main.ifs.ambient
+	var top: int = FractalMain.IFS_DETAIL.size() - 1
+	main._step_ifs_detail(top - main.ifs_detail_idx)
+	if not main.ifs.ambient:
+		main._toggle_ifs_motion()
+	for i in 6:
+		await process_frame
+	var want_top: int = FractalMain.IFS_DETAIL[top]
+	var built: int = main.ifs.levels_built
+	_state_checks += 1
+	if built >= want_top:
+		bad.append("ifs: breathing built %d levels at the top rung; the cap this reads cannot be tested" % built)
+	else:
+		_read(bad, m, "ifs breathing", "LEVELS", "%d · breathing" % built)
+		# Drawn, and measured. A slider's value shares its row with the label, and
+		# Widget._draw_slider clips it to the right 55% less the pad.
+		m.debug_level("make")
+		await _settle(m)
+		m.debug_force(1.0, _first_control(m))
+		await _settle(m)
+		var r := await _shoot(m, "ifs_make_breathing", "make")
+		if r != "":
+			bad.append(r)
+		for i in m.items.size():
+			if m.items[i].label == "LEVELS" and _vis(m.items[i]) and m._widgets[i] != null:
+				var w = m._widgets[i]
+				var room: float = w.size.x * 0.55 - 18.0
+				var need: float = w._f500.get_string_size(w.value, HORIZONTAL_ALIGNMENT_LEFT, -1, 21).x
+				_state_checks += 1
+				if need > room:
+					bad.append("ifs breathing: LEVELS '%s' needs %.0f px, the row holds %.0f" % [w.value, need, room])
+				print("MENUSHOT states LEVELS '%s' %.0f of %.0f px" % [w.value, need, room])
+		m.debug_level("")
+		await _settle(m)
+	main._toggle_ifs_motion()
+	for i in 2:
+		await process_frame
+	_read(bad, m, "ifs still", "LEVELS", "%d · %d copies" % [want_top, main.ifs.instance_count])
+	if main.ifs.ambient != amb0:
+		main._toggle_ifs_motion()
+	main._step_ifs_detail(lv0 - main.ifs_detail_idx)
+
+	# TREE: WALK reads on or off, like every other switch.
+	main._set_mode("tree")
+	for i in 4:
+		await process_frame
+	var walking0: bool = main.forest.walking()
+	if walking0:
+		main._toggle_walk()
+	_read(bad, m, "tree", "WALK", "off")
+	main._toggle_walk()
+	_read(bad, m, "tree walking", "WALK", "on")
+	if main.forest.walking() != walking0:
+		main._toggle_walk()
+	return bad
+
+
+func _vis(it) -> bool:
+	return not it.visible_when.is_valid() or bool(it.visible_when.call())
+
+
+func _shows(menu, label: String) -> bool:
+	for it in menu.items:
+		if it.label == label and _vis(it):
+			return true
+	return false
+
+
+func _reads(menu, label: String) -> String:
+	for it in menu.items:
+		if it.label == label and _vis(it):
+			return str(it.read.call())
+	return "<hidden>"
+
+
+func _want(bad: Array[String], menu, state: String, shown: Dictionary) -> void:
+	for label in shown:
+		_state_checks += 1
+		var got := _shows(menu, label)
+		if got != bool(shown[label]):
+			bad.append("%s: %s %s, wanted it %s" % [state, label, "shows" if got else "is hidden",
+				"shown" if shown[label] else "hidden"])
+
+
+func _read(bad: Array[String], menu, state: String, label: String, want: String) -> void:
+	_state_checks += 1
+	var got := _reads(menu, label)
+	if got != want:
+		bad.append("%s: %s reads '%s', wanted '%s'" % [state, label, got, want])
 
 
 ## Every m.<name> and FractalMain.<NAME> in scripts/menu/ must exist on main. GDScript looks
@@ -985,6 +1236,414 @@ func _float_check(main) -> Array[String]:
 			m.get_parent().name])
 	cam.global_transform = Transform3D(Basis(), Vector3(0.0, 1.6, 0.0))
 	return bad
+
+
+# --- dock and undock, by hand -------------------------------------------------
+
+## The right ray through a pixel of any front plane: the main panel's or a dock's.
+func _aim_plane(main, plane: Node3D, pixel: Vector2) -> void:
+	var m = main.menu
+	var half: Vector2 = m.PANEL_METRES * 0.5
+	var u := pixel.x / float(m.VIEW_SIZE.x)
+	var v := pixel.y / float(m.VIEW_SIZE.y)
+	var f: Transform3D = plane.global_transform
+	var p := f * Vector3((u * 2.0 - 1.0) * half.x, (1.0 - 2.0 * v) * half.y, 0.0)
+	var n := f.basis.z.normalized()
+	main.right_hand.global_transform = Transform3D(Basis(), p + n * 0.15).looking_at(p, f.basis.y.normalized())
+
+
+## As _press, but on whichever panel holds the tile.
+func _press_any(main, tile: int) -> bool:
+	var m = main.menu
+	if tile < 0:
+		return false
+	var c: Control = m._tiles[tile]
+	for k in 30:
+		var d = m._dock_of_tile(tile)
+		_aim_plane(main, m._front if d == null else d.front, c.get_global_rect().get_center())
+		await process_frame
+		if m._hovered == tile:
+			m.trigger(true)
+			return true
+	return false
+
+
+## Point the right ray at the ceiling, off every panel.
+func _aim_away(main) -> void:
+	main.right_hand.global_transform = Transform3D(Basis.from_euler(Vector3(deg_to_rad(80.0), 0.0, 0.0)),
+		Vector3(0.6, 1.2, 0.3))
+
+
+func _kind_tile(m, kind: int, side: int) -> int:
+	for i in m._tiles.size():
+		if m._tile_kind[i] == kind and m._tile_slot[i] == side:
+			return i
+	return -1
+
+
+func _label_tile(m, label: String, box: Control) -> int:
+	for i in m._tiles.size():
+		var ii: int = m._tile_item[i]
+		if ii >= 0 and m.items[ii].label == label and box.is_ancestor_of(m._tiles[i]) \
+				and m._tiles[i].is_visible_in_tree():
+			return i
+	return -1
+
+
+func _counts_str(c: Dictionary) -> String:
+	return "layers=%d meshes=%d viewports=%d" % [c["layers"], c["meshes"], c["viewports"]]
+
+
+## Planes (quad layers on a headset, meshes on the desktop) and viewports over the baseline.
+func _counts_over(m, base: Dictionary) -> Vector2i:
+	var c: Dictionary = m.debug_counts()
+	return Vector2i(int(c["layers"]) + int(c["meshes"]) - int(base["layers"]) - int(base["meshes"]),
+		int(c["viewports"]) - int(base["viewports"]))
+
+
+## The labels showing on a docked panel, each checked against its own visibility closure.
+func _dock_labels(m, side: int, bad: Array[String], tag: String) -> Array[String]:
+	var out: Array[String] = []
+	var d = m.debug_dock(side)
+	if d == null:
+		bad.append("%s: nothing docked on side %d" % [tag, side])
+		return out
+	for i in m._tiles.size():
+		var ii: int = m._tile_item[i]
+		if ii < 0 or not d.box.is_ancestor_of(m._tiles[i]) or not m._tiles[i].is_visible_in_tree():
+			continue
+		var it = m.items[ii]
+		if it.visible_when.is_valid() and not bool(it.visible_when.call()):
+			bad.append("%s: %s shows on the dock but is hidden in this mode" % [tag, it.label])
+		out.append(it.label)
+	if out.is_empty():
+		bad.append("%s: the docked %s shows no controls" % [tag, d.key])
+	return out
+
+
+## The 3D scene alone: every menu plane hidden for the frame grab.
+func _scene_grab(main) -> Image:
+	var hidden: Array[MeshInstance3D] = []
+	var nodes: Array[Node] = [main.menu]
+	var k := 0
+	while k < nodes.size():
+		var n := nodes[k]
+		k += 1
+		nodes.append_array(n.get_children())
+		if n is MeshInstance3D and (n as MeshInstance3D).visible:
+			(n as MeshInstance3D).visible = false
+			hidden.append(n)
+	for i in 3:
+		await process_frame
+	var img := root.get_texture().get_image()
+	for mi in hidden:
+		mi.visible = true
+	return img
+
+
+func _frame_diff(a: Image, b: Image) -> float:
+	var x := a.duplicate() as Image
+	var y := b.duplicate() as Image
+	for im in [x, y]:
+		(im as Image).convert(Image.FORMAT_RGB8)
+		(im as Image).resize(160, 100, Image.INTERPOLATE_BILINEAR)
+	var s := 0.0
+	for j in 100:
+		for i in 160:
+			var p := x.get_pixel(i, j)
+			var q := y.get_pixel(i, j)
+			s += absf(p.r - q.r) + absf(p.g - q.g) + absf(p.b - q.b)
+	return s / (160.0 * 100.0 * 3.0)
+
+
+func _same(a: Dictionary, b: Dictionary) -> bool:
+	if a.size() != b.size():
+		return false
+	for k in a:
+		if not b.has(k) or b[k] != a[k]:
+			return false
+	return true
+
+
+func _gallery_key(m) -> String:
+	for c in m._cards.size():
+		var k: String = m._card_keys[c]
+		if m._cards[c].is_visible_in_tree() and _grid_item(m, k) >= 0:
+			return k
+	return ""
+
+
+## Dock and undock through the hand's own path, pinned: a card, its DOCK button, a control on
+## the docked panel driving the scene, the rail with things docked, a gallery and a section
+## the next mode lacks, wearing the menu and pinning it again, and UNDOCK. The plane and
+## viewport counts must come back to the main panel's own when nothing is docked.
+func _dock_check(main) -> Array[String]:
+	var bad: Array[String] = []
+	var m = main.menu
+	_worn = false
+	_main = main
+	main.help.close()
+	var cam: XRCamera3D = main.xr_camera
+	cam.global_transform = Transform3D(Basis(), Vector3(0.0, 1.6, 0.0))
+	m.set_pinned(true, true)
+	await _settle_walk(m)
+	if not await _press(main, _station(m, "flame")):
+		bad.append("flame station not pressable")
+		return bad
+	await _settle_walk(m)
+	var base: Dictionary = m.debug_counts()
+	print("MENUSHOT dock base %s" % _counts_str(base))
+
+	# 1. LOOK to the left, through the DOCK button inside its card.
+	if not await _press(main, _card_tile(m, "look")):
+		bad.append("flame look card not pressable")
+		return bad
+	await _settle_walk(m)
+	var dl := _kind_tile(m, m.Kind.DOCK, -1)
+	if dl < 0 or not m._tiles[dl].is_visible_in_tree():
+		bad.append("inside look, pinned: no DOCK button showing")
+		return bad
+	if not await _press(main, dl):
+		bad.append("DOCK left not pressable")
+		return bad
+	await _settle_walk(m)
+	if not _same(m.docked(), {-1: "look"}):
+		bad.append("after DOCK left: docked=%s" % m.docked())
+		return bad
+	if m._level != "":
+		bad.append("after DOCK the main panel stayed on '%s', not its cards" % m._level)
+	var over := _counts_over(m, base)
+	if over != Vector2i(2, 2):
+		bad.append("one dock: %d planes and %d viewports over the main panel's, wanted 2 and 2" % [over.x, over.y])
+	print("MENUSHOT dock one docked: +%d planes +%d viewports (%s)" % [over.x, over.y, _counts_str(m.debug_counts())])
+	var d = m.debug_dock(-1)
+	if not d.holder.is_ancestor_of(m._boxes["look"]["box"]):
+		bad.append("the look box is not on the dock")
+	# Its card on the main panel says where it went; pressing it flashes the dock, no zoom.
+	var ct := _card_tile(m, "look")
+	if not ("docked on the left" in m._tiles[ct].lines):
+		bad.append("look card reads %s, not 'docked on the left'" % [m._tiles[ct].lines])
+	d.ripple.t = 0.0
+	if not await _press(main, ct):
+		bad.append("docked look card not pressable")
+	for k in 3:
+		await process_frame
+	if m._level != "" or d.ripple.t <= 0.0:
+		bad.append("pressing the docked card: level '%s', dock flash %.2f" % [m._level, d.ripple.t])
+
+	# 2. Idle, the ray elsewhere: the dock's viewports stay off.
+	_aim_away(main)
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 1500:
+		await process_frame
+	var r0: int = d.renders
+	for k in 90:
+		await process_frame
+	var idle: int = d.renders - r0
+	if idle != 0 or d.vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+		bad.append("idle dock rendered %d of 90 frames (mode %d)" % [idle, d.vp.render_target_update_mode])
+	print("MENUSHOT dock idle: %d renders in 90 frames, mode=%d" % [idle, d.vp.render_target_update_mode])
+
+	# 3. A control on the docked panel drives the scene: SPLAT, pressed on the dock.
+	# SPLAT sits under the section's MORE, which opens on the dock itself.
+	var st := _label_tile(m, "SPLAT", d.box)
+	if st < 0:
+		var mt: int = m._tiles.find(m._boxes["look"]["more"])
+		if not await _press_any(main, mt):
+			bad.append("MORE on the docked look panel not pressable")
+		for k in 4:
+			await process_frame
+		st = _label_tile(m, "SPLAT", d.box)
+	var splat_item = null
+	var splat_was := ""
+	if st < 0:
+		bad.append("no SPLAT on the docked look panel")
+	else:
+		var it = m.items[m._tile_item[st]]
+		var v0 := str(it.read.call())
+		splat_item = it
+		splat_was = v0
+		var img_a := await _scene_grab(main)
+		var r1: int = d.renders
+		if not await _press_any(main, st):
+			bad.append("SPLAT on the dock not pressable")
+		for k in 60:
+			await process_frame
+		var v1 := str(it.read.call())
+		var img_b := await _scene_grab(main)
+		var diff := _frame_diff(img_a, img_b)
+		img_b.save_png("res://.spike-out/menu_dock_scene.png")
+		if v1 == v0:
+			bad.append("SPLAT pressed on the dock: still reads '%s'" % v0)
+		if diff < 0.01:
+			bad.append("SPLAT pressed on the dock: the scene moved %.4f (wanted >= 0.01)" % diff)
+		if d.renders <= r1:
+			bad.append("the dock never redrew after its own control changed")
+		print("MENUSHOT dock control: SPLAT '%s' -> '%s', scene diff %.4f, dock renders +%d" % [
+			v0, v1, diff, d.renders - r1])
+
+	# 3b. A change from elsewhere (the app, not this panel) wakes an idle dock, and the new
+	# value is on its rendered face: POINTS stepped directly, the ray off every panel.
+	var pt := _label_tile(m, "POINTS", d.box)
+	if pt < 0:
+		bad.append("no POINTS on the docked look panel")
+	else:
+		var pit = m.items[m._tile_item[pt]]
+		_aim_away(main)
+		var t1 := Time.get_ticks_msec()
+		while Time.get_ticks_msec() - t1 < 1500:
+			await process_frame
+		var rect: Rect2i = Rect2i((m._tiles[pt] as Control).get_global_rect())
+		var f0: Image = m.debug_dock_composite(-1).get_region(rect)
+		var r2: int = d.renders
+		var p0 := str(pit.read.call())
+		pit.step.call(1)
+		t1 = Time.get_ticks_msec()
+		while Time.get_ticks_msec() - t1 < 1500:
+			await process_frame
+		var f1: Image = m.debug_dock_composite(-1).get_region(rect)
+		var fd := _frame_diff(f0, f1)
+		if d.renders <= r2 or fd < 0.002:
+			bad.append("POINTS changed elsewhere ('%s' -> '%s'): dock renders +%d, its face moved %.4f" % [
+				p0, str(pit.read.call()), d.renders - r2, fd])
+		print("MENUSHOT dock outside change: POINTS '%s' -> '%s', dock renders +%d, face diff %.4f" % [
+			p0, str(pit.read.call()), d.renders - r2, fd])
+		pit.step.call(-1)
+
+	# 4. COLOUR to the right. Then the pictures.
+	if not await _press(main, _card_tile(m, "colour")):
+		bad.append("flame colour card not pressable")
+	await _settle_walk(m)
+	if not await _press(main, _kind_tile(m, m.Kind.DOCK, 1)):
+		bad.append("DOCK right not pressable")
+	await _settle_walk(m)
+	over = _counts_over(m, base)
+	if not _same(m.docked(), {-1: "look", 1: "colour"}) or over != Vector2i(4, 4):
+		bad.append("two docks: docked=%s, +%d planes +%d viewports" % [m.docked(), over.x, over.y])
+	print("MENUSHOT dock two docked: +%d planes +%d viewports" % [over.x, over.y])
+	_aim_away(main)
+	for k in 8:
+		await process_frame
+	var flame_look := _dock_labels(m, -1, bad, "flame look dock")
+	await _dock_pictures(main)
+
+	# 5. The rail with both docked: they stay and show BULB's own tiles.
+	if not await _press(main, _station(m, "bulb")):
+		bad.append("bulb station not pressable")
+	await _settle_walk(m)
+	for k in 6:
+		await process_frame
+	if not _same(m.docked(), {-1: "look", 1: "colour"}):
+		bad.append("rail to bulb with look and colour docked: docked=%s" % m.docked())
+	var bulb_look := _dock_labels(m, -1, bad, "bulb look dock")
+	_dock_labels(m, 1, bad, "bulb colour dock")
+	if bulb_look == flame_look:
+		bad.append("the docked look shows the same tiles in bulb as in flame: %s" % [bulb_look])
+	print("MENUSHOT dock rail: flame look %s -> bulb look %s" % [flame_look, bulb_look])
+
+	# 6. A docked gallery becomes the next mode's gallery.
+	if not await _press_any(main, _kind_tile(m, m.Kind.UNDOCK, 1)):
+		bad.append("UNDOCK on the right dock not pressable")
+	await _settle_walk(m)
+	var gk := _gallery_key(m)
+	if gk == "" or not await _press(main, _card_tile(m, gk)):
+		bad.append("bulb gallery card not pressable")
+	await _settle_walk(m)
+	if not await _press(main, _kind_tile(m, m.Kind.DOCK, 1)):
+		bad.append("DOCK right from the gallery not pressable")
+	await _settle_walk(m)
+	if not await _press(main, _station(m, "flame")):
+		bad.append("flame station not pressable")
+	await _settle_walk(m)
+	var gk2 := _gallery_key(m)
+	var right_key: String = m.docked().get(1, "")
+	if right_key != gk2 or gk2 == gk or _grid_item(m, right_key) < 0:
+		bad.append("gallery %s docked, rail to flame: docked %s, flame's gallery is %s" % [gk, right_key, gk2])
+	print("MENUSHOT dock gallery: bulb %s -> flame %s" % [gk, right_key])
+
+	# 7. A section the next mode lacks goes home: TREE's make, then the rail to BULB.
+	if not await _press(main, _station(m, "tree")):
+		bad.append("tree station not pressable")
+	await _settle_walk(m)
+	if not await _press(main, _card_tile(m, "make")):
+		bad.append("tree make card not pressable")
+	await _settle_walk(m)
+	if not await _press(main, _kind_tile(m, m.Kind.DOCK, -1)):
+		bad.append("DOCK left from make not pressable")
+	await _settle_walk(m)
+	var tree_docked: Dictionary = m.docked()
+	if not await _press(main, _station(m, "bulb")):
+		bad.append("bulb station not pressable")
+	await _settle_walk(m)
+	for k in 3:
+		await process_frame
+	var make_box: Control = m._boxes["make"]["box"]
+	if m.docked().has(-1) or make_box.get_parent() != m._sub or make_box.visible:
+		bad.append("make docked in tree, rail to bulb: docked=%s, make box under %s, visible %s" % [
+			m.docked(), make_box.get_parent().name, make_box.visible])
+	over = _counts_over(m, base)
+	if over != Vector2i(2, 2):
+		bad.append("after make went home: +%d planes +%d viewports, wanted 2 and 2" % [over.x, over.y])
+	print("MENUSHOT dock section the mode lacks: tree %s -> bulb %s" % [tree_docked, m.docked()])
+
+	# 8. Worn, the docks are put away and remembered; pinned again, they come back.
+	var before: Dictionary = m.docked()
+	m.set_pinned(false, true)
+	for k in 4:
+		await process_frame
+	var worn_over := _counts_over(m, base)
+	if not m.docked().is_empty() or worn_over != Vector2i.ZERO:
+		bad.append("worn: docked=%s, +%d planes +%d viewports" % [m.docked(), worn_over.x, worn_over.y])
+	m.set_pinned(true, true)
+	await _settle_walk(m)
+	if not _same(m.docked(), before):
+		bad.append("pinned again: docked=%s, wanted %s" % [m.docked(), before])
+	print("MENUSHOT dock worn: docked=%s +%d/+%d, pinned again: %s" % [{}, worn_over.x, worn_over.y, m.docked()])
+
+	# 9. UNDOCK by its own button: back to the main panel's own planes and viewports.
+	if not await _press_any(main, _kind_tile(m, m.Kind.UNDOCK, 1)):
+		bad.append("UNDOCK not pressable")
+	for k in 4:
+		await process_frame
+	over = _counts_over(m, base)
+	if not m.docked().is_empty() or over != Vector2i.ZERO:
+		bad.append("after the last UNDOCK: docked=%s, +%d planes +%d viewports" % [m.docked(), over.x, over.y])
+	print("MENUSHOT dock undocked: %s" % _counts_str(m.debug_counts()))
+	# Put SPLAT back where it was.
+	if splat_item != null and str(splat_item.read.call()) != splat_was:
+		splat_item.advance.call()
+	_aim_away(main)
+	m.set_pinned(false, true)
+	return bad
+
+
+## The pictures: a flat triptych of all three panels and the camera's view of them.
+func _dock_pictures(main) -> void:
+	var m = main.menu
+	var gap := 24
+	var w: int = m.VIEW_SIZE.x
+	var h: int = m.VIEW_SIZE.y
+	var out := Image.create(w * 3 + gap * 2, h, false, Image.FORMAT_RGBA8)
+	out.fill(Color(0.04, 0.04, 0.05, 1.0))
+	var parts: Array = [m.debug_dock_composite(-1), m.debug_composite(), m.debug_dock_composite(1)]
+	for k in 3:
+		var img: Image = parts[k]
+		if img == null:
+			continue
+		img.convert(Image.FORMAT_RGBA8)
+		out.blend_rect(img, Rect2i(Vector2i.ZERO, img.get_size()), Vector2i(k * (w + gap), 0))
+	out.save_png("res://.spike-out/menu_dock_triptych.png")
+	var cam: XRCamera3D = main.xr_camera
+	var held := cam.global_transform
+	var at: Vector3 = m.global_position
+	cam.global_transform = Transform3D(Basis(), at + m.global_transform.basis.z.normalized() * 0.42
+		+ Vector3(0, 0.04, 0)).looking_at(at, Vector3.UP)
+	for k in 4:
+		await process_frame
+	root.get_texture().get_image().save_png("res://.spike-out/menu_dock_3d.png")
+	cam.global_transform = held
+	for k in 2:
+		await process_frame
 
 
 func _tap_key(code: Key) -> void:
