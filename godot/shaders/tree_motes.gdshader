@@ -1,6 +1,6 @@
 // V7: Wind-carried ambient petals, spores and fireflies for TREE AVENUE / WALK.
 // One GPU-driven MultiMesh wrapping seamlessly around the camera in a world-space box:
-// zero CPU updates per frame, stereo-coherent world positions, and near_fade near the eyes.
+// three uniforms a frame from forest.gd (walk, drift, clock), stereo-coherent world positions, near_fade near the eyes.
 shader_type spatial;
 render_mode unshaded, cull_disabled, blend_add, depth_draw_never, fog_disabled, shadows_disabled;
 
@@ -9,9 +9,12 @@ uniform vec3 pal3 = vec3(0.9, 0.8, 0.3);
 uniform vec3 pal4 = vec3(1.0, 0.95, 0.7);
 uniform float brightness = 1.0;
 uniform float gain = 0.28;
-uniform float wind = 0.3;
-uniform vec3 wind_dir = vec3(1.0, 0.0, 0.0);
 uniform vec3 walk_offset = vec3(0.0);   // avenue scroll in metres, so motes flow with WALK
+// Wind drift so far, integrated on the CPU (forest.gd): a WIND change alters the speed from
+// now on, where speed * TIME moved every mote by the whole history at once.
+uniform vec3 drift_offset = vec3(0.0);
+// Seconds, from forest.gd: TIME rolls over every hour and would move every mote at once.
+uniform float anim_t = 0.0;
 uniform vec3 box_size = vec3(16.0, 6.0, 16.0);
 uniform float mote_size = 0.032;
 uniform float leaf_shape = 0.0;         // 0 soft orb/spore, 1 petal, 2 needle, 3 crystal sparkle
@@ -33,12 +36,10 @@ void vertex() {
 	// INSTANCE_CUSTOM: (rx, ry, rz, phase) in [0, 1).
 	vec3 seed = INSTANCE_CUSTOM.xyz;
 	float phase = INSTANCE_CUSTOM.w * 6.2831853;
-	float t = TIME;
-	vec3 wdir = normalize(vec3(wind_dir.x, 0.0, wind_dir.z) + vec3(1e-4, 0.0, 0.0));
-	float drift_speed = 0.22 + 0.55 * wind;
+	float t = anim_t;
 	float fall_speed = mix(0.06, 0.22, fract(seed.y * 7.13));
 	// World-space drift wrapped smoothly into a box centred on the camera.
-	vec3 raw = seed * box_size + wdir * (t * drift_speed) - vec3(0.0, t * fall_speed, 0.0) + walk_offset;
+	vec3 raw = seed * box_size + drift_offset - vec3(0.0, t * fall_speed, 0.0) + walk_offset;
 	vec3 cam = CAMERA_POSITION_WORLD;
 	vec3 box_origin = cam - box_size * 0.5;
 	vec3 p = box_origin + mod(raw - box_origin, box_size);
@@ -52,7 +53,7 @@ void vertex() {
 	float box_fade = 1.0 - smoothstep(0.72, 1.0, max(edge_d.x, max(edge_d.y, edge_d.z)));
 	float cam_d = distance(p, cam);
 	float near_f = smoothstep(0.45, 1.1, cam_d);
-	float twinkle = 0.65 + 0.35 * sin(t * 2.1 + phase * 2.0);
+	float twinkle = 0.65 + 0.35 * sin(t * 0.8 + phase * 2.0);
 
 	float hue = 1.0 - abs(fract(seed.z * 0.5 + colour_cycle) * 2.0 - 1.0);
 	vec3 c = (hue < 0.5) ? mix(pal2, pal3, hue * 2.0) : mix(pal3, pal4, (hue - 0.5) * 2.0);
@@ -64,7 +65,9 @@ void vertex() {
 	v_col = c * brightness * gain * box_fade * near_f * twinkle;
 
 	float sz = mote_size * (0.65 + 0.7 * fract(seed.x * 13.7));
-	float ang = t * (0.9 + 0.6 * wind) + phase;
+	// Spin and twinkle slow and independent of WIND, which would twitch every mote's angle
+	// when it changed (and the slow-ambient rule wants under about 1 rad/s).
+	float ang = t * 0.4 + phase;
 	float ca = cos(ang), sa = sin(ang);
 	vec2 q = vec2(VERTEX.x * ca - VERTEX.y * sa, VERTEX.x * sa + VERTEX.y * ca);
 	vec3 right = INV_VIEW_MATRIX[0].xyz;

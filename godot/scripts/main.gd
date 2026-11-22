@@ -184,9 +184,17 @@ var art := 0
 var _fly_sky: Sky = null
 var _fly_sky_mat: ShaderMaterial = null
 var _fly_sky_shown := false
+## What the Environment's light sources were before the FLY sky turned them off, and the sun
+## direction last written (writing a sky uniform re-renders its radiance, so only on change).
+var _fly_saved_ambient := Environment.AMBIENT_SOURCE_BG
+var _fly_saved_reflect := Environment.REFLECTION_SOURCE_BG
+var _fly_sun_last := Vector3.INF
 ## V9: hand-held proximity lantern from the active tracked controller.
-var hand_lantern_on := true
+## Off by default: it changes every lit mode's look near the hand, and nobody has seen it in
+## the headset yet (the desktop harnesses have no controllers).
+var hand_lantern_on := false
 var _hand_lantern_lit := false
+var _lantern_gain := 0.0   # eased toward 0.95, or 0.25 while the menu is in use
 ## V11: FLAME GALAXY aerial depth separation state.
 var _depth_grade := 0.0
 ## V12: smooth exposure ease when switching modes in XR (disabled on desktop harnesses).
@@ -670,6 +678,8 @@ func _ready() -> void:
 	cloud.add_child(fly)
 	cloud.add_child(tree)
 	cloud.add_child(forest)
+	# Only _set_tree_mode shows it: hidden from the start, or V7's motes draw in every mode.
+	forest.visible = false
 	cloud.add_child(ifs)
 	ifs.add_child(ifs_edit)
 	ifs_edit.setup(ifs)
@@ -1531,6 +1541,15 @@ func _apply_ground_look() -> void:
 	# skipped in compute when neither wants it.
 	ground.set_texture_on(GROUND_TEXTURE[ground_texture_idx] > 0.0 or GROUND_BUMP[ground_bump_idx] > 0.0)
 	ground.set_palette_cycles(COLOUR_CYCLES[colour_idx])
+	ground.sun_applies = _ground_sun_lights()
+
+
+## ground.gdshader lights by light_dir under relief or bump (its relief_on), or in a physical
+## finish (art_style 5 and up). Flat, unbumped ground in natural or a line STYLE ignores it,
+## so SUN has nothing to move there: the tile hides and the orbit stops writing.
+func _ground_sun_lights() -> bool:
+	return int(GROUND_RELIEF_MODE[ground_relief_idx]) != 0 \
+		or float(GROUND_BUMP[ground_bump_idx]) > 0.0 or art >= 5
 
 
 func _set_bulb_mode(on: bool) -> void:
@@ -2008,8 +2027,6 @@ func _tick_flame_scale(delta: float) -> void:
 	if _in_own_world():
 		if was_sky != flame_sky.is_shown():
 			_world_sky(true)
-		elif _fly_sky_shown:
-			_sync_fly_sky_sun()
 	if ground_mode and was_sky != flame_sky.is_shown():
 		_sync_ground_horizon_fog()
 
@@ -2568,6 +2585,10 @@ func _process_frame(delta: float) -> void:
 			or not _xr_focused or help.is_open() or (_menu_active and not grab.is_grabbing())
 		grab.update(delta)
 	_handle_input(delta)
+	# After input: TURN and a grab move the world this frame, and the sky's sun moves with it.
+	# Synced before input, it trailed a snap turn by a frame while the walls had turned.
+	if _fly_sky_shown:
+		_sync_fly_sky_sun()
 	_update_hud(delta)
 	if not _setup_done:
 		return
@@ -3130,6 +3151,10 @@ func _apply_surface() -> void:
 		# A solid still growing leaves the splats up until it lands (_tick_solid).
 		cloud.set_visible_cloud(not marching and not solid.visible and not _in_own_world())
 	_sync_glow()
+	# _art_sky paints a STYLE sky behind SOLID and MARCHED, so a SURFACE change must repaint it:
+	# pencil's paper otherwise stays behind the additive splats.
+	if not _in_own_world():
+		_art_sky()
 
 
 ## SOLID on, off, or at a new grid. Entering it re-homes the bulb to the render's framing;
@@ -3199,11 +3224,13 @@ func _apply_solid() -> void:
 	var key_state := (cloud.global_transform.basis.orthonormalized().inverse()
 		* SOLID_KEY_WORLD.normalized())
 	solid.request(_bulb, n, key_state)
-	solid.material().set_shader_parameter(&"art_style", art)
 	if flying:
+		fly.art = art
 		fly.begin(solid, _bulb, key_state, cloud.center, cloud.fit)
 		if grab != null:
 			grab.max_scale = FLY_MAX_SCALE
+	# After begin(): it calls end(), which re-dresses the base material.
+	solid.material().set_shader_parameter(&"art_style", art)
 
 
 ## Leaving SOLID puts back what entering it switched off. Each one only if it still holds
@@ -3264,6 +3291,7 @@ func _set_art(st: int) -> void:
 	RenderingServer.global_shader_parameter_set(&"art_style", st)
 	solid.material().set_shader_parameter(&"art_style", st)
 	fly.set_art(st)
+	ground.sun_applies = _ground_sun_lights()
 	if _in_own_world():
 		_world_sky(true)
 	else:
@@ -3323,24 +3351,28 @@ func _sync_forest_fog() -> void:
 	forest.set_fog(0.018, fog_col)
 
 
-## V8: when a sky hangs over GROUND (and STYLE isn't overriding it), warm the outer horizon
-## fog toward the active theme so the floor dissolves into the sky instead of a dark ring.
+## GROUND's horizon fog when no STYLE sky sets it. V8 tinted it from the theme under a SKY,
+## but the fog then matched neither a baked sky nor MANDEL (its colours are not the theme's)
+## and snapped while the sky faded in, so it is the plain fog again until the fog can read
+## the sky it meets.
 func _sync_ground_horizon_fog() -> void:
 	if BulbFly.STYLE_SKY.has(art):
 		return
-	if flame_sky.is_shown() and not passthrough:
-		var pal := _theme_palette()
-		if pal.size() >= 2:
-			var h: Vector3 = (pal[0] as Vector3).lerp(pal[1] as Vector3, 0.4) * 0.45
-			ground.set_fog_colour(Color(h.x, h.y, h.z))
-			return
 	ground.set_fog_colour(FractalGround.FOG_COLOUR)
 
 
 ## V9: soft proximity lantern carried by the active tracked controller. Silent on desktop
 ## harnesses (xr == null) and dimmed gently while pointing at the wrist menu.
+## Whether a shader would draw the lantern here: lit surfaces (not FLAME, splats or LINES), in
+## natural or a finish (the four NPR styles never read it). logic_check.gd asserts this table.
+func _lantern_wanted() -> bool:
+	var lit_surface := ground_mode or tree_mode or ifs_mode \
+		or (bulb_mode and (int(SURFACE_SOLID[surface_idx]) > 0 or int(SURFACE_STEPS[surface_idx]) > 0))
+	return lit_surface and not (art >= 1 and art <= 4)
+
+
 func _tick_hand_lantern() -> void:
-	var lit := hand_lantern_on and xr != null and _xr_focused
+	var lit := hand_lantern_on and xr != null and _xr_focused and _lantern_wanted()
 	var hand: XRController3D = null
 	if lit:
 		if right_hand != null and right_hand.get_has_tracking_data():
@@ -3348,6 +3380,7 @@ func _tick_hand_lantern() -> void:
 		elif left_hand != null and left_hand.get_has_tracking_data():
 			hand = left_hand
 	if hand == null:
+		_lantern_gain = 0.0
 		if _hand_lantern_lit:
 			_hand_lantern_lit = false
 			RenderingServer.global_shader_parameter_set(&"hand_light_col", Vector3.ZERO)
@@ -3359,7 +3392,10 @@ func _tick_hand_lantern() -> void:
 		var am := maxf(accent.x, maxf(accent.y, accent.z))
 		if am > 0.05:
 			col = col.lerp(accent / am, 0.25)
-	var gain := 0.25 if _menu_active else 0.95
+	# Eased, not stepped: the ray touching the menu used to drop it 0.95 to 0.25 in one frame.
+	var want := 0.25 if _menu_active else 0.95
+	_lantern_gain = move_toward(_lantern_gain, want, get_process_delta_time() * 3.5)
+	var gain := _lantern_gain
 	RenderingServer.global_shader_parameter_set(&"hand_light_pos", hand.global_position)
 	RenderingServer.global_shader_parameter_set(&"hand_light_col", col * gain)
 	_hand_lantern_lit = true
@@ -3400,6 +3436,11 @@ func _sync_fly_sky_sun() -> void:
 	var p := fly.world_sky_params()
 	var s_state: Vector3 = p["sun_state"]
 	var s_world := (cloud.global_transform.basis.orthonormalized() * s_state).normalized()
+	# Called every frame. Any write dirties the QUALITY sky's radiance, so write on change only:
+	# that is while TURN or a grab turns the world.
+	if s_world.is_equal_approx(_fly_sun_last):
+		return
+	_fly_sun_last = s_world
 	_fly_sky_mat.set_shader_parameter(&"sun_dir", s_world)
 
 
@@ -3412,33 +3453,46 @@ func _world_sky(on: bool) -> void:
 	if on:
 		var p := fly.world_sky_params()
 		var use_proc := bool(p["procedural"]) and not passthrough and not flame_sky.is_shown()
+		fly.set_sky_backdrop(use_proc)
 		if use_proc:
 			_ensure_fly_sky()
 			var h: Color = p["horizon"]
 			var z: Color = p["zenith"]
 			_fly_sky_mat.set_shader_parameter(&"horizon_colour", Vector3(h.r, h.g, h.b))
 			_fly_sky_mat.set_shader_parameter(&"zenith_colour", Vector3(z.r, z.g, z.b))
-			_fly_sky_mat.set_shader_parameter(&"nadir_colour", Vector3(h.r, h.g, h.b) * 0.25)
 			_fly_sky_mat.set_shader_parameter(&"sun_colour", p["sun_colour"])
 			_fly_sky_mat.set_shader_parameter(&"sun_scatter", float(p["sun_scatter"]))
+			if not _fly_sky_shown:
+				_fly_saved_ambient = env.ambient_light_source
+				_fly_saved_reflect = env.reflected_light_source
 			env.ambient_light_source = Environment.AMBIENT_SOURCE_DISABLED
 			env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 			env.sky = _fly_sky
 			env.background_mode = Environment.BG_SKY
 			_fly_sky_shown = true
+			_fly_sun_last = Vector3.INF
 			_sync_fly_sky_sun()
 			return
-		if _fly_sky_shown and not flame_sky.is_shown():
-			env.background_mode = Environment.BG_COLOR
-			env.sky = null
-		_fly_sky_shown = false
+		_drop_fly_sky(env)
 		env.background_color = Color(0, 0, 0, 0) if passthrough else fly.sky_colour()
 	else:
-		if _fly_sky_shown and not flame_sky.is_shown():
-			env.background_mode = Environment.BG_COLOR
-			env.sky = null
-		_fly_sky_shown = false
+		_drop_fly_sky(env)
 		env.background_color = Color(0, 0, 0, 0) if passthrough else Color(0, 0, 0, 1)
+
+
+## Take the FLY sky down and put back the light sources it turned off. If the flame SKY has
+## already taken the background over, it inherits them for its own hide instead.
+func _drop_fly_sky(env: Environment) -> void:
+	if not _fly_sky_shown:
+		return
+	_fly_sky_shown = false
+	if flame_sky.is_shown():
+		flame_sky.inherit_saved_light(_fly_saved_ambient, _fly_saved_reflect)
+		return
+	env.background_mode = Environment.BG_COLOR
+	env.sky = null
+	env.ambient_light_source = _fly_saved_ambient
+	env.reflected_light_source = _fly_saved_reflect
 
 
 ## The eye in the bulb's state units, and metres per state unit: the cloud's transform maps

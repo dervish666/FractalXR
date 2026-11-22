@@ -15,4 +15,6 @@ RC=0
 wait "$PID" || RC=$?
 kill "$WATCHDOG" 2>/dev/null; wait "$WATCHDOG" 2>/dev/null || true
 grep -a "MARCHSHOT\|SCRIPT ERROR\|SHADER ERROR\|Parse Error" "$PROJ/.spike-out/march_shot.log" || { tail -20 "$PROJ/.spike-out/march_shot.log"; exit 1; }
+# A SCRIPT ERROR does not stop the run, so it would otherwise ride along under a PASS.
+if grep -aq "SCRIPT ERROR\|SHADER ERROR\|Parse Error" "$PROJ/.spike-out/march_shot.log"; then exit 1; fi
 exit $RC

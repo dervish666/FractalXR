@@ -6,6 +6,8 @@ source "$(dirname "$0")/env.sh"
 OUT="$PROJ/.spike-out/ifs-2026-09-16"
 LOG="$OUT/ifs_mode_shot.log"
 mkdir -p "$OUT"
+STAMP="$OUT/.run-stamp"
+touch "$STAMP"
 {
 	echo "revision: $(git -C "$PROJ" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 	echo "dirty:    $(git -C "$PROJ" status --porcelain | wc -l | tr -d ' ') files"
@@ -25,9 +27,18 @@ wait "$PID"
 RC=$?
 kill "$WATCHDOG" 2>/dev/null; wait "$WATCHDOG" 2>/dev/null || true
 grep -a "IFSMODE\|SCRIPT ERROR\|SHADER ERROR\|Parse Error" "$LOG" || { tail -30 "$LOG"; exit 1; }
+# A script error aborts the coroutine it hits, and the checks after it never run, so the
+# summary can still say PASS. Any error fails the run.
+if grep -aq "SCRIPT ERROR\|SHADER ERROR\|Parse Error" "$LOG"; then
+	echo "IFSMODE FAIL errors in $LOG"
+	exit 1
+fi
+# Every capture must be from this run: one per preset (the .gd lists them as it shoots), plus
+# the fixed shots, each newer than the log's start.
+SHAPES=$(grep -ao "shape-[a-z]*\.png" "$LOG" | sort -u)
+[ "$(echo "$SHAPES" | wc -l | tr -d ' ')" -ge 12 ] || { echo "IFSMODE FAIL only $(echo "$SHAPES" | wc -l | tr -d ' ') shape shots"; exit 1; }
 for png in mode-ifs.png mode-ifs-reset.png sculpt-guides.png sculpt-drag.png sculpt-undo.png \
-	shape-frames.png shape-tetra.png shape-star.png shape-cross.png shape-twist.png \
-	mode-ifs-motion.png; do
-	[ -s "$OUT/$png" ] || { echo "IFSMODE FAIL missing $OUT/$png"; exit 1; }
+	mode-ifs-motion.png $SHAPES; do
+	[ -s "$OUT/$png" ] && [ "$OUT/$png" -nt "$STAMP" ] || { echo "IFSMODE FAIL missing or stale $OUT/$png"; exit 1; }
 done
 exit $RC

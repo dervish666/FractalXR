@@ -98,6 +98,14 @@ func _init() -> void:
 		print("FLYSHOT %s across=%.2fm s2w=%.1f %s settled=%s in %d frames (%d ms)" % [
 			tag, across, main._fly_s2w(), fly.describe(), str(settled), frames,
 			Time.get_ticks_msec() - t0])
+		# LANTERN: one strength on every level at each scale, or level 0 draws a seam round
+		# the finer levels' holes.
+		var ks := {}
+		for s in fly._chain():
+			var k = s.material().get_shader_parameter("lantern_k")
+			ks[snappedf(float(k) if k != null else 0.25, 0.001)] = true
+		ok = ok and ks.size() == 1
+		print("FLYSHOT %s lantern_k %s %s" % [tag, str(ks.keys()), "PASS" if ks.size() == 1 else "FAIL"])
 		for k in fly.want:
 			var s: BulbSolid = fly.levels[k]
 			if s.is_ready():
@@ -118,18 +126,47 @@ func _init() -> void:
 			print("FLYSHOT %s eye solid ms=%.3f prims=%d" % [tag, await _time_eye(surf, across), last_prims])
 		fly.show_levels = true
 
+	# LANTERN's ramp is set by the bulb's width against SOLID's hand size: SOLID's quarter at
+	# 0.35 m across, full by 1.4 m, the same value on every level.
+	for pair: Array in [[0.35, 0.25], [1.4, 1.0]]:
+		await _frames(surf, pair[0], 5)
+		var off := []
+		for s in fly._chain():
+			var k = s.material().get_shader_parameter("lantern_k")
+			if k == null or not is_equal_approx(float(k), pair[1]):
+				off.append("%s=%s" % [s.name, str(k)])
+		ok = ok and off.is_empty()
+		print("FLYSHOT lantern_k %.2f at %.2fm across %s %s" % [pair[1], pair[0],
+			"on every level" if off.is_empty() else ", ".join(off), "PASS" if off.is_empty() else "FAIL"])
+
 	ok = await _flight(surf) and ok
 
+	# The marcher from the same eyes. Leaving FLY ends the stack, and must put SOLID's quarter
+	# LANTERN back on every level.
+	main.surface_idx = main.SURFACE_STEPS.find(80)
+	main._apply_surface()
+	var left := []
+	for s in [main.solid] + Array(fly.levels):
+		var k = s.material().get_shader_parameter("lantern_k")
+		if k != null and not is_equal_approx(float(k), 0.25):
+			left.append("%s=%.2f" % [s.name, float(k)])
+	ok = ok and left.is_empty()
+	print("FLYSHOT bulb leave lantern_k %s %s" % ["all 0.25" if left.is_empty() else ", ".join(left),
+		"PASS" if left.is_empty() else "FAIL"])
 	if not quick:
-		# The marcher from the same eyes. Leaving FLY ends the stack.
-		main.surface_idx = main.SURFACE_STEPS.find(80)
-		main._apply_surface()
 		for across: float in list:
 			await _frames(surf, across, 30)
 			_shot("march_%s.png" % _tag(across))
 			print("FLYSHOT %s march surface=%s" % [_tag(across), main.SURFACE_NAMES[main.surface_idx]])
 	print("FLYSHOT %s" % ("PASS" if ok else "FAIL"))
 	quit(0 if ok else 1)
+
+
+## V5's sky is what the Environment draws, not only what main.gd's flag says: bound and in
+## sky mode.
+func _fly_sky_up(env: Environment) -> bool:
+	return main._fly_sky_shown and main._fly_sky != null and env.sky == main._fly_sky \
+		and env.background_mode == Environment.BG_SKY
 
 
 func _tag(across: float) -> String:
@@ -254,6 +291,13 @@ func _flight(surf: Array) -> bool:
 	# the floor; then flight may only have held the clearance it started with.
 	var good: bool = min_clear >= minf(start_clear, main.FLY_MIN_CLEAR_M) * 0.98 and absf(ratio / want - 1.0) < 0.02 \
 		and speeds.size() == 4 and speeds[3] <= speeds[0]
+	# Shrunk far into the bulb its walls are room scale: LANTERN at full strength on every level.
+	var full := true
+	for s in fly._chain():
+		var k = s.material().get_shader_parameter("lantern_k")
+		full = full and k != null and is_equal_approx(float(k), 1.0)
+	print("FLYSHOT flight lantern_k 1 on every level %s" % ("PASS" if full else "FAIL"))
+	good = good and full
 	_shot("flight_end.png")
 	print("FLYSHOT flight start_clear=%.3fm min_clear=%.3fm (floor %.2f) speeds m/s=%s unsettled=%d/288 shrink=%.3f (want %.3f) %s %s" % [
 		start_clear, min_clear, main.FLY_MIN_CLEAR_M, str(speeds.map(func(v): return snappedf(v, 0.01))),
@@ -268,6 +312,13 @@ func _spires(w: BulbFly.World) -> bool:
 	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
 	main.xr_camera.rotation = Vector3.ZERO
 	main.xr_camera.fov = 80.0
+	# The Environment's light sources as they were before FLY: its sky turns them off, and the
+	# SKY PICK round trip below hands them to the flame sky and back.
+	var env: Environment = main.get_node("WorldEnvironment").environment
+	var amb0 := env.ambient_light_source
+	var ref0 := env.reflected_light_source
+	var bg0 := env.background_mode
+	var sky0 := env.sky
 	main._set_fly_world(w)
 	var wn: String = main.FLY_WORLD_NAMES[w] + ("_" + main.ART_NAMES[main.art] if main.art > 0 else "")
 	var good := true
@@ -296,6 +347,58 @@ func _spires(w: BulbFly.World) -> bool:
 			_shot("%s_x%d_%s.png" % [wn, int(shrink), v[0]])
 		main.xr_camera.rotation = Vector3.ZERO
 		if shrink == 1.0:
+			# Toward the sun (V5): the disc, the halo and the fog's sunward scatter, which no
+			# other view looks at. The procedural sky is natural's only (a STYLE sky is flat).
+			var sun_w: Vector3 = (main.cloud.global_transform.basis.orthonormalized() * fly._light).normalized()
+			main.xr_camera.rotation = Vector3(asin(clampf(sun_w.y, -1.0, 1.0)), atan2(-sun_w.x, -sun_w.z), 0.0)
+			for i in 3:
+				await process_frame
+			_shot("%s_x1_sun.png" % wn)
+			var want_sky: bool = not BulbFly.STYLE_SKY.has(main.art)
+			var sky_up := _fly_sky_up(env)
+			print("FLYSHOT %s sun sky=%s %s" % [wn, str(sky_up),
+				"PASS" if sky_up == want_sky else "FAIL"])
+			good = good and sky_up == want_sky
+			# The fog's zenith and sun glow follow V5's sky only while it is shown: as under
+			# passthrough or the flame SKY, take it down and every level must fog flat, no glow.
+			if want_sky:
+				var dens := {}
+				for s in fly._chain():
+					dens[s] = float(s.material().get_shader_parameter("fog_density"))
+				# Through the SKY PICK tile, as a user takes V5's sky down: a preset shows,
+				# main._world_sky hands the backdrop over, and every level must fog flat.
+				main._step_sky_pick(1)
+				for i in 10:
+					await process_frame
+				var handed: bool = main.flame_sky.is_shown() and not main._fly_sky_shown \
+					and env.background_mode == Environment.BG_SKY and env.sky != null \
+					and env.sky != main._fly_sky
+				var stuck := []
+				for s in fly._chain():
+					var m := s.material()
+					var sc: float = m.get_shader_parameter("sun_scatter")
+					var fz: Vector3 = m.get_shader_parameter("fog_zenith")
+					var fc: Vector3 = m.get_shader_parameter("fog_colour")
+					# And update()'s density survives the re-dress (it is not dropped to 0).
+					var fd := float(m.get_shader_parameter("fog_density"))
+					if sc != 0.0 or not fz.is_equal_approx(fc) or absf(fd - dens[s]) > 0.05 * dens[s]:
+						stuck.append(s.name)
+				# SKY off again: V5's sky comes back, and with it the glow.
+				main._toggle_sky()
+				for i in 10:
+					await process_frame
+				var back: bool = not main.flame_sky.is_shown() and _fly_sky_up(env)
+				for s in fly._chain():
+					back = back and float(s.material().get_shader_parameter("sun_scatter")) > 0.0
+				main.flame_sky.set_pick(0)
+				var bd_ok := handed and stuck.is_empty() and back
+				var d0: float = dens.values().max() if not dens.is_empty() else 0.0
+				bd_ok = bd_ok and d0 > 0.0
+				print("FLYSHOT %s SKY preset handed over %s, flat fog %s (density %.4f kept), SKY off glow back %s %s" % [wn,
+					str(handed), "all" if stuck.is_empty() else ", ".join(stuck), d0, str(back),
+					"PASS" if bd_ok else "FAIL"])
+				good = good and bd_ok
+			main.xr_camera.rotation = Vector3.ZERO
 			# Per-pixel shadows off for the before, then which pixels march (debug 4), and
 			# with FLY_DRIVER=vulkan one Quest-sized eye's GPU time each way.
 			for on in [false, true]:
@@ -339,7 +442,41 @@ func _spires(w: BulbFly.World) -> bool:
 	var ok_flight: bool = min_clear >= minf(start_clear, main.FLY_MIN_CLEAR_M) * 0.98 and moved > 0.05
 	print("FLYSHOT %s flight moved=%.2fm start_clear=%.2fm min_clear=%.3fm unsettled=%d/288 %s %s" % [
 		wn, moved, start_clear, min_clear, unsettled, fly.describe(), "PASS" if ok_flight else "FAIL"])
-	return good and ok_flight
+	# Leaving the way a user does, by changing SURFACE: end() runs with this world's _cfg still
+	# set. SOLID keeps STYLE now, so a world-only trap left on the levels drew SPIRES' bands over a
+	# BULB flight. And FLY's sky comes down with the light sources it turned off put back.
+	# LANTERN at full strength in the world, SOLID's quarter once it is left (V9).
+	var dim := []
+	for s in fly._chain():
+		var k = s.material().get_shader_parameter("lantern_k")
+		if k == null or not is_equal_approx(float(k), 1.0):
+			dim.append(s.name)
+	main.surface_idx = main.SURFACE_STEPS.find(80)
+	main._apply_surface()
+	for i in 3:
+		await process_frame
+	# The background as it was before FLY: its mode and sky (none in natural and a STYLE) as
+	# well as the light sources. Leaving with the sky unbound but still in BG_SKY draws the
+	# clear colour of an empty sky.
+	var light_back: bool = not main._fly_sky_shown and env.background_mode == bg0 \
+		and env.sky == sky0 and env.ambient_light_source == amb0 \
+		and env.reflected_light_source == ref0
+	print("FLYSHOT %s leave sky and light sources %s (background %d -> %d, sky %s -> %s, ambient %d -> %d, reflected %d -> %d)" % [wn,
+		"PASS" if light_back else "FAIL", bg0, env.background_mode, str(sky0), str(env.sky),
+		amb0, env.ambient_light_source, ref0, env.reflected_light_source])
+	var leak := []
+	for s in [main.solid, fly._own0] + Array(fly.levels):
+		var tf = s.material().get_shader_parameter("trap_family")
+		if tf != null and int(tf) != 0:
+			leak.append("%s=%d" % [s.name, int(tf)])
+		var k = s.material().get_shader_parameter("lantern_k")
+		if k != null and not is_equal_approx(float(k), 0.25):
+			leak.append("%s lantern_k=%.2f" % [s.name, float(k)])
+	print("FLYSHOT %s lantern_k in the world %s, leave trap_family and lantern_k %s %s" % [wn,
+		"1 on every level" if dim.is_empty() else "short on " + ", ".join(dim),
+		"all reset" if leak.is_empty() else ", ".join(leak),
+		"PASS" if leak.is_empty() and dim.is_empty() else "FAIL"])
+	return good and ok_flight and leak.is_empty() and dim.is_empty() and light_back
 
 
 ## _time_eye without re-posing: the eye wherever the harness camera stands now.

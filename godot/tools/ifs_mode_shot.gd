@@ -36,6 +36,8 @@ const SAMPLE_FRAMES := 20
 ## so the numbers the standalone harness reports have something to disagree with.
 const PRESET_INSTANCES := {
 	"FRAMES": 585, "TETRA": 585, "STAR": 1885, "CROSS": 585, "TWIST": 585,
+	"MONOLITH": 585, "PAGODA": 585, "ORBIT": 585, "CATHEDRAL": 585,
+	"FERN": 585, "SNOWFLAKE": 585, "CRYSTAL": 585,
 }
 
 var _fails := 0
@@ -569,6 +571,11 @@ func _shapes(main) -> void:
 		for i in 4:
 			await process_frame
 		var name_ := FractalIFS.preset_name(main.ifs_preset_idx)
+		# A preset missing from the table is a failure, not a script error that ends the walk.
+		if not PRESET_INSTANCES.has(name_):
+			_ok("shape %s" % name_.to_lower(), false, "no PRESET_INSTANCES entry for %s" % name_)
+			shape_tile.advance.call()
+			continue
 		var want: int = int(PRESET_INSTANCES[name_])
 		var img := root.get_viewport().get_texture().get_image()
 		var file := "shape-%s.png" % name_.to_lower()
@@ -635,7 +642,10 @@ func _motion(main) -> void:
 	for i in 4:
 		await process_frame
 	var captured: bool = main.ifs_edit.is_editing()
+	# V1's pulse is light, not shape: a hold keeps it (it used to step to 0 at capture).
+	var pulse_cap: float = main.ifs._mat.get_shader_parameter("pulse_gain")
 	var held: bool = await _same_over(main, 20)
+	var pulse_held: float = main.ifs._mat.get_shader_parameter("pulse_gain")
 	_rt.set_input(&"trigger_click", false)
 	for i in 6:
 		await process_frame
@@ -643,8 +653,10 @@ func _motion(main) -> void:
 	_pose(_rt, Transform3D(Basis(), Vector3(-0.35, 1.05, 0.30)))
 	for i in 4:
 		await process_frame
-	_ok("motion holds", captured and held,
-		"handle captured=%s buffer unchanged while held=%s" % [str(captured), str(held)])
+	var pulse_kept := pulse_held > 0.0 and pulse_held >= pulse_cap
+	_ok("motion holds", captured and held and pulse_kept,
+		"handle captured=%s buffer unchanged while held=%s pulse %.3f -> %.3f kept=%s" % [
+			str(captured), str(held), pulse_cap, pulse_held, str(pulse_kept)])
 
 	tile.advance.call()
 	for i in 6:

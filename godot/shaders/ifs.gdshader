@@ -65,7 +65,8 @@ uniform vec3 light_dir = vec3(0.45, 0.82, 0.35);
 uniform float sheen = 0.72;
 uniform float gloss = 0.55;
 uniform float rim_gain = 0.52;
-uniform float pulse_gain = 0.5;
+// Off unless MOTION is on (fractal_ifs.gd tick), and slow: one swell about every 20 s.
+uniform float pulse_gain = 0.0;
 
 #define ART_GLOBAL
 #include "res://shaders/styles.gdshaderinc"
@@ -154,7 +155,10 @@ void fragment() {
 		float u = fract(v_u);
 		// AXIS_SHADE runs 0.66 to 1.0: the brightest axis is in the sun.
 		float lit = clamp((v_axis - 0.6) / 0.4, 0.0, 1.0);
-		float ndv = clamp(dot(n, VIEW), 0.0, 1.0);
+		// The unflipped normal, as before V1: a beam's visible faces wind away from the eye, so
+		// this is 0 on them and neon's edge term lights the whole wire. The flipped one dimmed
+		// IFS neon to a quarter (style_shot mean luma 30.8 -> 7.6).
+		float ndv = clamp(dot(normalize(NORMAL), VIEW), 0.0, 1.0);
 		ALBEDO = art_colour(u * neon_bands + 0.5, u * 3.999, v_pos, v_n, lit, 1.0, ndv, length(VERTEX))
 			* echo_k * brightness;
 	} else {
@@ -167,7 +171,7 @@ void fragment() {
 		vec3 l = normalize(v_light);
 		float pulse = 0.0;
 		if (pulse_gain > 0.001) {
-			float wave = 0.5 + 0.5 * sin((v_meta.x * 0.7 + v_meta.y * 0.3) * 6.2831853 - anim_t * 1.15);
+			float wave = 0.5 + 0.5 * sin((v_meta.x * 0.7 + v_meta.y * 0.3) * 6.2831853 - anim_t * 0.3);
 			float w2 = wave * wave;
 			float w8 = (w2 * w2) * (w2 * w2);
 			pulse = w8 * pulse_gain;
@@ -184,7 +188,7 @@ void fragment() {
 			float depth_ao = mix(0.76, 1.06, v_meta.y);
 			float lit = 0.26 + 0.42 * v_axis + 0.56 * ndl;
 			col = base * lit * depth_ao;
-			vec3 hv = normalize(l + VIEW);
+			vec3 hv = half_dir(l, VIEW);
 			float ndh = max(dot(n, hv), 0.0);
 			float s2 = ndh * ndh;
 			float s4 = s2 * s2;

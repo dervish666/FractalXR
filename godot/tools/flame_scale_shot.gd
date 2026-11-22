@@ -95,6 +95,13 @@ func _galaxy(main, home_s: Dictionary) -> void:
 	await _shot(main, "galaxy-back.png", Vector3(0.0, 180.0, 0.0))
 	var gs := _stats(fwd)
 	print("FLAMESCALE stats galaxy %s" % str(gs))
+	# GALAXY's entry state, read before this harness writes either uniform below. The comfort
+	# fade: nothing within NEAR_FADE_M of the eye; it lives in the shader, so the check is that
+	# the uniform is set while inside and cleared after. V11's depth grade, on the point and the
+	# splat material both: SPLAT on draws GALAXY with the quad material, which first shipped
+	# ungraded.
+	var fade_in: float = main.cloud.point_material().get_shader_parameter("near_fade")
+	var grade_in := _grades(main)
 	# The brightness ladder from inside (0.05, 0.12, 0.3), so FlameGalaxy.BRIGHT is chosen
 	# against numbers. 0.05 is the default; the two detents below it are dimmer still.
 	var keep: int = main.bright_idx
@@ -105,9 +112,39 @@ func _galaxy(main, home_s: Dictionary) -> void:
 		print("FLAMESCALE stats galaxy bright=%.3f %s" % [main.BRIGHT_STEPS[b], str(_stats(im))])
 	main.bright_idx = keep
 	main._apply_point_look()
-	# The comfort fade: nothing within NEAR_FADE_M of the eye. The fade lives in the shader, so
-	# the check is that the uniform is set while inside and cleared after.
-	var fade_in: float = main.cloud.point_material().get_shader_parameter("near_fade")
+	# V11 in a picture. The grade tints points and splats past 3.5 m toward (0.68, 0.78, 0.96):
+	# with it on the frame must lose linear luma and its blue must gain on its red, against the
+	# grade off before and after (the control: the chaos game keeps running).
+	# Points at GALAXY's own settings. Measured on this Mac: about -8% luma, blue/red +9%.
+	var pg: Array = await _grade_cmp(main, "points")
+	_ok("galaxy point grade", pg[0] > 0.03 and pg[2] > pg[1] * 1.03 and pg[3] < 0.01, pg[4])
+	# Splats. Inside GALAXY the splats between 0.6 and 3.5 m cover the far ones the grade
+	# tints, so at its own settings the frame moves about 0.2%. For this check near_fade goes to
+	# 8 m (alpha 0 inside 3.2 m) so the far splats show. Measured: -2.8%, blue/red +3%.
+	main.splat_on = true
+	main._apply_point_look()
+	# SPLAT on inside GALAXY keeps the grade on both materials. Zero both directly (not through
+	# set_depth_grade, the code under test) and clear main.gd's cached value, so its own tick
+	# must write 1 to each again with SPLAT on; the point comparison above left both at 1.
+	for m: ShaderMaterial in main.cloud._mats:
+		m.set_shader_parameter("depth_grade", 0.0)
+	main._depth_grade = -1.0
+	for i in 3:
+		await process_frame
+	var grade_splat := _grades(main)
+	_ok("galaxy splat keeps grade", grade_splat == [1.0, 1.0],
+		"depth_grade points, splats %s with SPLAT on" % str(grade_splat))
+	main.cloud.set_near_fade(8.0)
+	for i in 30:
+		await process_frame
+	var sgr: Array = await _grade_cmp(main, "splat")
+	_ok("galaxy splat grade", sgr[0] > 0.01 and sgr[2] > sgr[1] * 1.015 and sgr[3] < 0.005, sgr[4])
+	# SPLAT stays on through the exit below: leaving must clear the grade on both materials
+	# whichever one is drawing, or the points keep 1 when SPLAT goes off later.
+	main.cloud.set_near_fade(FlameGalaxy.NEAR_FADE_M)
+	for i in 6:
+		await process_frame
+
 	_ok("galaxy covers the view", gs["lit"] > home_s["lit"],
 		"lit %.3f inside against %.3f at home" % [gs["lit"], home_s["lit"]])
 
@@ -119,20 +156,34 @@ func _galaxy(main, home_s: Dictionary) -> void:
 	await process_frame
 	var s_out: float = main.cloud.global_transform.basis.get_scale().x
 	var fade_out: float = main.cloud.point_material().get_shader_parameter("near_fade")
+	var grade_out := _grades(main)
 	_ok("galaxy leaves", not main.galaxy.active and absf(s_out - 1.0) < 0.01 and main.spin and main._drift
-			and main.bright_idx == bright0 and fade_in > 0.0 and fade_out == 0.0,
-		"scale %.3f, spin %s, drift %s, bright %d, near_fade %.2f -> %.2f" % [
-			s_out, main.spin, main._drift, main.bright_idx, fade_in, fade_out])
+			and main.bright_idx == bright0 and fade_in > 0.0 and fade_out == 0.0
+			and grade_in == [1.0, 1.0] and grade_out == [0.0, 0.0],
+		"scale %.3f, spin %s, drift %s, bright %d, near_fade %.2f -> %.2f, depth_grade points, splats %s -> %s (left with SPLAT on)" % [
+			s_out, main.spin, main._drift, main.bright_idx, fade_in, fade_out, str(grade_in),
+			str(grade_out)])
 	await _shot(main, "galaxy-out.png", FWD)
-	# A recentre mid-galaxy puts everything back at once.
+	main.splat_on = false
+	main._apply_point_look()
+	for i in 6:
+		await process_frame
+	# A recentre mid-galaxy puts everything back at once, the grade included, here with SPLAT
+	# off. With the SPLAT-on exit above, set_depth_grade's four cases (SPLAT on or off, grade 0
+	# or 1) each have a check: 1 with points on entry, 1 with SPLAT on, 0 with SPLAT on, 0 here.
 	tile.advance.call()
 	for i in 30:
 		await process_frame
+	var grade_mid := _grades(main)
 	main._go_home()
-	await process_frame
+	for i in 3:
+		await process_frame
+	var grade_home := _grades(main)
 	_ok("galaxy home", not main.galaxy.active and not main.galaxy.is_moving()
-			and absf(main.cloud.global_transform.basis.get_scale().x - 1.0) < 0.01 and main.spin,
-		"X mid-grow: scale %.3f" % main.cloud.global_transform.basis.get_scale().x)
+			and absf(main.cloud.global_transform.basis.get_scale().x - 1.0) < 0.01 and main.spin
+			and grade_mid == [1.0, 1.0] and grade_home == [0.0, 0.0],
+		"X mid-grow: scale %.3f, depth_grade points, splats %s -> %s (SPLAT off)" % [
+			main.cloud.global_transform.basis.get_scale().x, str(grade_mid), str(grade_home)])
 	main.spin = false
 	main._drift = false
 	main._recenter()
@@ -301,6 +352,36 @@ func _sky(main) -> void:
 	for i in 4:
 		await process_frame
 	_ok("sky yields to passthrough", yields and env.background_mode == Environment.BG_SKY, "")
+	# CYCLE turns the sky's hue (V8) and must keep its brightness: a turn about the grey axis
+	# alone took Ember 49% brighter a third of the way round in the texture, +247% in this
+	# sky band. The shader keeps each texel's luma exactly, and ACES moves that under 2% at any
+	# exposure (modelled on the texture), yet this band reads -11.8%: not explained, most likely
+	# 8-bit quantisation near black (the band averages about 11 of 255). So the bound is 20%,
+	# which still fails the unkept turn by a factor of twelve. A preset, 40 degrees up (bright enough that 8-bit near black does not
+	# swamp it: at 70 degrees the frame averaged 10 of 255). Only the top 55% of the frame is
+	# measured: the flame and a ray reach into the lower part, and the ray, moving between the
+	# shots, took the control to 3% on its own once the display was awake.
+	main.flame_sky.set_pick(1)
+	await _settle_sky(main)
+	var up := Vector3(40.0, 0.0, 0.0)
+	RenderingServer.global_shader_parameter_set(&"colour_cycle", 0.0)
+	var c0: Image = await _shot(main, "sky-cycle-0.png", up)
+	RenderingServer.global_shader_parameter_set(&"colour_cycle", 0.33)
+	var c1: Image = await _shot(main, "sky-cycle-33.png", up)
+	RenderingServer.global_shader_parameter_set(&"colour_cycle", 0.0)
+	# The control: back at 0 it must read within 3% of before, or something else (a fade still
+	# running) moved. Two runs read 0.0% and 1.7%.
+	var c2: Image = await _shot(main, "sky-cycle-0b.png", up)
+	main.flame_sky.set_pick(0)
+	var band := Rect2i(0, 0, c0.get_width(), int(c0.get_height() * 0.55))
+	var l0 := _mean_luma(c0.get_region(band))
+	var l1 := _mean_luma(c1.get_region(band))
+	var l2 := _mean_luma(c2.get_region(band))
+	var hue_moved := _mean_rgb_diff(c0, c1)
+	var steady := absf(l2 / maxf(l0, 1e-6) - 1.0) < 0.03
+	_ok("sky cycle keeps luma", l0 > 0.002 and steady and absf(l1 / l0 - 1.0) < 0.2 and hue_moved > 0.01,
+		"Ember linear luma %.4f at 0, %.4f a third round (%+.1f%%), %.4f back at 0, colour moved %.4f" % [
+			l0, l1, 100.0 * (l1 / maxf(l0, 1e-6) - 1.0), l2, hue_moved])
 	main._set_mode("flame")
 	for i in 4:
 		await process_frame
@@ -455,6 +536,74 @@ func _settle_sky(main) -> void:
 		await process_frame
 
 
+## Mean linear luma of every sample (sRGB decoded first: Rec. 709 weights on encoded values
+## are not luminance), and the mean per-channel change between two images.
+## depth_grade on the point and the splat material (ParticleCloud._mats), 0 where never set.
+func _grades(main) -> Array:
+	var out := []
+	for m: ShaderMaterial in main.cloud._mats:
+		var g = m.get_shader_parameter("depth_grade")
+		out.append(float(g) if g != null else 0.0)
+	return out
+
+
+func _mean_luma(img: Image) -> float:
+	var sum := 0.0
+	var n := 0
+	for y in range(0, img.get_height(), 4):
+		for x in range(0, img.get_width(), 4):
+			var c := img.get_pixel(x, y).srgb_to_linear()
+			sum += 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+			n += 1
+	return sum / float(maxi(n, 1))
+
+
+## V11's grade off, on, then off again, looking ahead. Returns [dimming, blue/red off, blue/red
+## on, control drift, detail]. Leaves the grade at 1, what main.gd last wrote inside GALAXY
+## (it writes only on change).
+func _grade_cmp(main, tag: String) -> Array:
+	main.cloud.set_depth_grade(0.0)
+	var c0 := _mean_lin(await _shot(main, "galaxy-%s-grade0.png" % tag, FWD))
+	main.cloud.set_depth_grade(1.0)
+	var c1 := _mean_lin(await _shot(main, "galaxy-%s-grade1.png" % tag, FWD))
+	main.cloud.set_depth_grade(0.0)
+	var c2 := _mean_lin(await _shot(main, "galaxy-%s-grade0-again.png" % tag, FWD))
+	main.cloud.set_depth_grade(1.0)
+	var W := Vector3(0.2126, 0.7152, 0.0722)
+	var l0 := c0.dot(W)
+	var l1 := c1.dot(W)
+	var dim := (l0 - l1) / maxf(l0, 1e-6)
+	var drift := absf(c2.dot(W) - l0) / maxf(l0, 1e-6)
+	var br0 := c0.z / maxf(c0.x, 1e-6)
+	var br1 := c1.z / maxf(c1.x, 1e-6)
+	return [dim, br0, br1, drift, "luma %.5f -> %.5f (%+.1f%%), blue/red %.3f -> %.3f, control drift %.2f%%" % [
+		l0, l1, -100.0 * dim, br0, br1, 100.0 * drift]]
+
+
+## Mean linear RGB, every fourth pixel each way.
+func _mean_lin(img: Image) -> Vector3:
+	var sum := Vector3.ZERO
+	var n := 0
+	for y in range(0, img.get_height(), 4):
+		for x in range(0, img.get_width(), 4):
+			var c := img.get_pixel(x, y).srgb_to_linear()
+			sum += Vector3(c.r, c.g, c.b)
+			n += 1
+	return sum / float(maxi(n, 1))
+
+
+func _mean_rgb_diff(a: Image, b: Image) -> float:
+	var sum := 0.0
+	var n := 0
+	for y in range(0, a.get_height(), 4):
+		for x in range(0, a.get_width(), 4):
+			var ca := a.get_pixel(x, y)
+			var cb := b.get_pixel(x, y)
+			sum += (absf(ca.r - cb.r) + absf(ca.g - cb.g) + absf(ca.b - cb.b)) / 3.0
+			n += 1
+	return sum / float(maxi(n, 1))
+
+
 func _ok(name: String, pass_: bool, detail: String) -> void:
 	if not pass_:
 		_fails += 1
@@ -463,8 +612,11 @@ func _ok(name: String, pass_: bool, detail: String) -> void:
 
 func _shot(main, file: String, look: Vector3) -> Image:
 	main.xr_camera.rotation_degrees = look
+	# Six drawn frames, not six process ticks: with the window behind others on a desktop in use,
+	# ticks ran on while the viewport kept an old frame, and the first shot after a change
+	# captured the state before it.
 	for i in 6:
-		await process_frame
+		await RenderingServer.frame_post_draw
 	var img := root.get_viewport().get_texture().get_image()
 	var err := img.save_png("%s/%s" % [OUT, file])
 	if err != OK:

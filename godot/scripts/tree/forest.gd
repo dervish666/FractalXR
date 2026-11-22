@@ -239,6 +239,8 @@ var _fog_colour := Color(0.015, 0.02, 0.045)
 var motes_on := true
 var _motes: MultiMeshInstance3D
 var _motes_mat: ShaderMaterial
+var _mote_drift := Vector3.ZERO
+var _mote_t := 0.0
 
 
 func _init() -> void:
@@ -377,8 +379,6 @@ func set_wind(w: float) -> void:
 	_wind = w
 	for t in _trees:
 		t.set_wind(w)
-	if _motes_mat != null:
-		_motes_mat.set_shader_parameter(&"wind", w)
 
 
 func set_leaves(on: bool) -> void:
@@ -707,8 +707,21 @@ func tick(delta: float, cam: Vector3) -> void:
 	if layout == Layout.WALK:
 		_tick_walk(delta, cam)
 	if _motes != null and _motes.visible:
-		var walk_v := (global_transform.basis * _avenue_frame.basis.z) * _walk_s if layout == Layout.WALK else Vector3.ZERO
+		# The avenue keeps its displacement when WALK stops, so the motes keep theirs too.
+		var walk_v := (global_transform.basis * _avenue_frame.basis.z) * _walk_s \
+			if layout != Layout.GROVE else Vector3.ZERO
 		_motes_mat.set_shader_parameter(&"walk_offset", walk_v)
+		# Drift with the trees' wind (fractal_tree.gd: wind_ref's x axis, the avenue's in AVENUE
+		# and WALK, the forest's in GROVE), at the speed WIND gives it now; a breath of drift
+		# with WIND off so the air is never dead still. The clock is ours too, not TIME, which
+		# rolls over every hour and would jump every mote at once.
+		var wdir := (_avenue.global_transform.basis.x if layout != Layout.GROVE \
+			else global_transform.basis.x)
+		wdir.y = 0.0
+		_mote_drift += wdir.normalized() * (0.05 + 0.55 * _wind) * delta
+		_motes_mat.set_shader_parameter(&"drift_offset", _mote_drift)
+		_mote_t += delta
+		_motes_mat.set_shader_parameter(&"anim_t", _mote_t)
 	if _floor.visible:
 		_place_floor(cam)
 	_tier_slice()
@@ -1004,6 +1017,9 @@ func _set_layout(l: Layout) -> void:
 		_walk_s = 0.0
 		walked = 0.0
 		_avenue.transform = Transform3D()
+		# The avenue's fog is off in GROVE (main.gd _sync_forest_fog). CLEAR and an empty REGROW
+		# reach GROVE without main, and new trees adopted the avenue's fog.
+		set_fog(0.0, Color.BLACK)
 
 
 func _new_tree(species: String, parent: Node3D = self) -> FractalTree:

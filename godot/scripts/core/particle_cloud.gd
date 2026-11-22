@@ -879,8 +879,9 @@ func set_near_fade(m: float) -> void:
 
 ## V11: subtle aerial depth separation inside GALAXY (0 = off, 1 = on).
 func set_depth_grade(v: float) -> void:
-	if _material != null:
-		_material.set_shader_parameter("depth_grade", clampf(v, 0.0, 1.0))
+	# Points and splats both, as near_fade does: SPLAT on swaps the draw to the quad material.
+	for mat in _mats:
+		mat.set_shader_parameter("depth_grade", clampf(v, 0.0, 1.0))
 
 
 func request_seed() -> void:

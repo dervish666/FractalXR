@@ -29,6 +29,13 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			"How bright the Mandelbrot sky shines"),
 		MenuShared.turn(m, vis),
 		MenuShared.vignette(m, vis),
+		WristMenu.Item.new("scene", "SUN",
+			func(): return "orbiting" if m.ground.sun_orbit else "fixed",
+			func(): m.ground.set_sun_orbit(not m.ground.sun_orbit),
+			false, func(): return vis.call() and m._ground_sun_lights()).toggle(
+			func(): return m.ground.sun_orbit).minor().hinted(
+			"Slowly sweeps the sun across the ridges"),
+		MenuShared.lantern(m, vis, "scene"),
 
 		WristMenu.Item.new("look", "JULIA",
 			func(): return "from here" if m.ground.julia else "off",
@@ -99,11 +106,6 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).stepping(func(d: int):
 				m.ground_bump_idx = wrapi(m.ground_bump_idx + d, 0, FractalMain.GROUND_BUMP.size())
 				m._apply_ground_look()).minor().hinted("How bumpy the surface looks"),
-		WristMenu.Item.new("look", "SUN",
-			func(): return "orbiting" if m.ground.sun_orbit else "fixed",
-			func(): m.ground.set_sun_orbit(not m.ground.sun_orbit),
-			false, vis).toggle(func(): return m.ground.sun_orbit).minor().hinted(
-			"Slowly sweeps the sun across the ridges"),
 		# The ground mirrored overhead as a ceiling. SKY is the baked sky, in every mode.
 		WristMenu.Item.new("look", "MIRROR",
 			func(): return "off" if FractalMain.GROUND_SKY[m.ground_sky_idx] == 0.0 \
@@ -161,7 +163,6 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).stepping(func(d: int): m.ground.near_iter = FractalGround.NEAR_STEPS[
 				wrapi(FractalGround.NEAR_STEPS.find(m.ground.near_iter) + d, 0, FractalGround.NEAR_STEPS.size())]).hinted(
 			"Pixel-sharp detail close to you, costs frame time"),
-		MenuShared.lantern(m, vis),
 		# The frame-time dial goes after what the ground looks like, not ahead of it.
 		MenuShared.detail(m, vis),
 		MenuShared.fovea(m, vis),

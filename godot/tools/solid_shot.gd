@@ -63,11 +63,15 @@ func _init() -> void:
 		for n in ([128, 192] if pixel_grids else [192] if quick else GRIDS):
 			ok = await _build(bname, n) and ok
 			_shot("%s_solid_%d.png" % [bname.to_lower(), n])
+			# On the plain mesh, before the debug and PIXEL views change its state and framing.
+			if n == 192:
+				ok = await _lantern_views(bname) and ok
 			if pixel_grids:
 				ok = await _pixel_views(bname, n) and ok
 			elif n == 192:
 				await _debug_views(bname, n)
 				ok = await _pixel_views(bname, n) and ok
+
 			if not quick:
 				rows[-1]["eye_ms_msaa4"] = await _time_eye()
 				main._set_solid_msaa(false)
@@ -238,6 +242,107 @@ func _pixel_views(bname: String, n: int) -> bool:
 	var good := share > 0.02
 	print("SOLIDSHOT %s pixel %s close-up moved %.3f" % [bname, "PASS" if good else "FAIL", share])
 	return good
+
+
+## LANTERN on the solid: natural (the lantern alone turns on bulb_solid's world-space block) and
+## chrome (a finish), each lit by hand between the eye and the bulb, then put out. main.gd only
+## lights it from a tracked controller. The light only adds, so the signed gain must rise and
+## come back; logic_check.gd covers main.gd's gate.
+func _lantern_views(bname: String) -> bool:
+	var good := true
+	var eye: Vector3 = main.xr_camera.global_position
+	var at := eye.lerp(main.solid.global_position, 0.6)
+	for st in [0, 8]:
+		main._set_art(st)
+		# The framing still eases for a while after a build, and a fixed 90 frames was not
+		# always enough (Citadel's pre frame once read 0.011 darker than its put-out frame).
+		var pre: Image = await _settled_frame()
+		pre.save_png(OUT + "%s_lantern_pre_art%d.png" % [bname.to_lower(), st])
+		RenderingServer.global_shader_parameter_set(&"hand_light_pos", at)
+		RenderingServer.global_shader_parameter_set(&"hand_light_col", Vector3(1.0, 0.9, 0.76) * 0.95)
+		for i in 3:
+			await process_frame
+		var lit := root.get_viewport().get_texture().get_image()
+		lit.save_png(OUT + "%s_lantern_art%d.png" % [bname.to_lower(), st])
+		RenderingServer.global_shader_parameter_set(&"hand_light_col", Vector3.ZERO)
+		for i in 3:
+			await process_frame
+		var off := root.get_viewport().get_texture().get_image()
+		var dl := _brighter(pre, lit)
+		var doff := _brighter(pre, off)
+		# And it must not wash the bulb out: a burn is a lit pixel the lantern takes from a
+		# mid-tone (every channel under 0.9) to the top of the range. Counting every pixel that
+		# crosses 0.98 failed Citadel's pale faces, which sit at 0.96 unlit and rose by 0.01.
+		var burn := _burned(pre, lit)
+		var pass_ := dl > 0.002 and absf(doff) < 0.3 * dl and burn < 0.01
+		good = good and pass_
+		print("SOLIDSHOT %s lantern art=%d %s lit=%.4f off=%.4f burned %.4f (clipped %.3f -> %.3f)" % [
+			bname, st, "PASS" if pass_ else "FAIL", dl, doff, burn, _clipped(pre), _clipped(lit)])
+	main._set_art(0)
+	return good
+
+
+## The frame once nothing is easing: two frames ten apart within 0.0003 of each other, after at
+## least 30 frames, giving up (and saying so) after 400 more.
+func _settled_frame() -> Image:
+	for i in 30:
+		await process_frame
+	var last := root.get_viewport().get_texture().get_image()
+	for k in 40:
+		for i in 10:
+			await process_frame
+		var img := root.get_viewport().get_texture().get_image()
+		if absf(_brighter(last, img)) < 0.0003:
+			return img
+		last = img
+	print("SOLIDSHOT settle gave up after 430 frames: the lantern pair may read the ease")
+	return last
+
+
+## Share of the lit pixels that were a mid-tone in a (every channel under 0.9) and clip in b.
+func _burned(a: Image, b: Image) -> float:
+	var lit := 0
+	var burn := 0
+	var step := maxi(1, a.get_width() / 160)
+	for y in range(0, a.get_height(), step):
+		for x in range(0, a.get_width(), step):
+			var ca := a.get_pixel(x, y)
+			if ca.get_luminance() <= 0.03:
+				continue
+			lit += 1
+			var cb := b.get_pixel(x, y)
+			if maxf(ca.r, maxf(ca.g, ca.b)) < 0.9 and maxf(cb.r, maxf(cb.g, cb.b)) >= 0.98:
+				burn += 1
+	return float(burn) / float(maxi(lit, 1))
+
+
+## Share of the lit (not black) pixels with a channel at the top of the range.
+func _clipped(img: Image) -> float:
+	var lit := 0
+	var clip := 0
+	var step := maxi(1, img.get_width() / 160)
+	for y in range(0, img.get_height(), step):
+		for x in range(0, img.get_width(), step):
+			var c := img.get_pixel(x, y)
+			if c.get_luminance() > 0.03:
+				lit += 1
+				if maxf(c.r, maxf(c.g, c.b)) >= 0.98:
+					clip += 1
+	return float(clip) / float(maxi(lit, 1))
+
+
+## Mean signed brightness gain from a to b on a coarse grid.
+func _brighter(a: Image, b: Image) -> float:
+	var n := 0
+	var sum := 0.0
+	var step := maxi(1, a.get_width() / 80)
+	for y in range(0, a.get_height(), step):
+		for x in range(0, a.get_width(), step):
+			var ca := a.get_pixel(x, y)
+			var cb := b.get_pixel(x, y)
+			sum += ((cb.r + cb.g + cb.b) - (ca.r + ca.g + ca.b)) / 3.0
+			n += 1
+	return sum / float(maxi(n, 1))
 
 
 func _shot(file: String) -> void:

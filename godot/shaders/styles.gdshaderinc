@@ -35,6 +35,13 @@ uniform float style_px = 12.0;       // pattern period, in pixels, give or take 
 uniform vec3 paper = vec3(0.92, 0.9, 0.85);
 uniform vec3 graphite = vec3(0.12, 0.12, 0.15);
 
+// The half vector, safe where a + b is zero (the light exactly behind the surface from the eye):
+// normalize() of zero is NaN there, and one NaN pixel smears through glow. Same cost.
+vec3 half_dir(vec3 a, vec3 b) {
+	vec3 h = a + b;
+	return h * inversesqrt(max(dot(h, h), 1e-12));
+}
+
 // Soft world-space proximity lantern from the user's controller (V9). Skipped when off
 // (hand_light_col == 0, the desktop/harness default).
 vec3 hand_lantern(vec3 wpos, vec3 wnrm, vec3 wview, vec3 albedo) {
@@ -44,7 +51,7 @@ vec3 hand_lantern(vec3 wpos, vec3 wnrm, vec3 wview, vec3 albedo) {
 	float att = 1.0 / (1.0 + d2 * 1.8);
 	vec3 hd = hl * inversesqrt(max(d2, 1e-6));
 	float ndl = max(dot(wnrm, hd), 0.0);
-	vec3 hv = normalize(hd + wview);
+	vec3 hv = half_dir(hd, wview);
 	float ndh = max(dot(wnrm, hv), 0.0);
 	float s2 = ndh * ndh;
 	float s4 = s2 * s2;
@@ -212,13 +219,14 @@ vec3 art_colour(float f, float toon_e, vec3 pos, vec3 nrm, float lit, float ao, 
 //   7 = jade       (translucent carved jade / alabaster with wrapped light & backlit SSS)
 //   8 = chrome     (liquid mirror reflecting a 3-band horizon/sky studio gradient)
 // n, l and v must share the same coordinate space (view or world). refl_y is the world-space
-// reflection direction's Y component (-1..1).
+// reflection direction's Y component (-1..1). film_key: the caller's 0..1 colour key, which
+// shifts iridescent's film. Not named `key`: bulb_solid.gdshader has a uniform of that name.
 vec3 physical_finish(vec3 albedo, vec3 hi_col, vec3 n, vec3 l, vec3 v, float refl_y,
-		float sh, float ao, float key) {
+		float sh, float ao, float film_key) {
 	float ndl = max(dot(n, l), 0.0);
 	float ndv = clamp(dot(n, v), 0.0, 1.0);
 	float lit = ndl * sh;
-	vec3 hv = normalize(l + v);
+	vec3 hv = half_dir(l, v);
 	float ndh = max(dot(n, hv), 0.0);
 	float s2 = ndh * ndh;
 	float s4 = s2 * s2;
@@ -229,13 +237,13 @@ vec3 physical_finish(vec3 albedo, vec3 hi_col, vec3 n, vec3 l, vec3 v, float ref
 	float fres = f1 * f1 * f1;
 
 	if (art_style == 5) {
-		float phase = ndv * 2.2 + key * 0.85;
+		float phase = ndv * 2.2 + film_key * 0.85;
 		vec3 film = 0.5 + 0.5 * cos(6.2831853 * (phase + vec3(0.0, 0.33, 0.67)));
-		vec3 tint = mix(albedo, film, 0.58);
-		vec3 base = tint * (0.24 * ao + 1.15 * lit * mix(0.6, 1.0, ao));
+		vec3 film_tint = mix(albedo, film, 0.58);
+		vec3 base = film_tint * (0.24 * ao + 1.15 * lit * mix(0.6, 1.0, ao));
 		vec3 spec = film * (0.85 * (s16 * s8) + 0.9 * s64) * (0.25 + 0.75 * lit);
-		vec3 rim = film * fres * 0.75 * ao;
-		return base + spec + rim;
+		vec3 film_rim = film * fres * 0.75 * ao;
+		return base + spec + film_rim;
 	}
 	if (art_style == 6) {
 		vec3 basalt = mix(vec3(0.025, 0.025, 0.032), albedo * 0.16, 0.45);

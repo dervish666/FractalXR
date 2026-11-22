@@ -210,6 +210,9 @@ var ambient_hold := false
 ## origin the grow-in and the palette drift are both measured from. A harness can step it by
 ## calling tick() with the delta it wants, which the shader's own TIME would not allow.
 var anim_t := 0.0
+## V1's light pulse along the generations (ifs.gdshader pulse_gain), while MOTION is on.
+const PULSE_GAIN := 0.25
+var _pulse := 0.0
 var breathe_t := 0.0
 var _breathe_n := 0
 ## Morph progress, 1.0 when there is none. `morph_to` is the preset it is heading for.
@@ -661,6 +664,13 @@ func drag_detail() -> int:
 func tick(delta: float) -> bool:
 	anim_t += delta
 	_mat.set_shader_parameter("anim_t", anim_t)
+	# V1's generation pulse is ambient motion, so it runs only with MOTION, easing in and out
+	# over half a second. A hold keeps it: it is light, not shape, and dropping it at capture
+	# stepped the beams dark and brought them back at another phase on release.
+	var pulse := move_toward(_pulse, PULSE_GAIN if ambient else 0.0, delta * PULSE_GAIN * 2.0)
+	if pulse != _pulse:
+		_pulse = pulse
+		_mat.set_shader_parameter("pulse_gain", pulse)
 	if _gain_l != 1.0 or _gain_r != 1.0:
 		var f := exp(-delta / COLOUR_EASE_S)
 		_gain_l = 1.0 + (_gain_l - 1.0) * f

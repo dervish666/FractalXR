@@ -133,6 +133,8 @@ uniform float cloud_fit = 1.0;
 // points.gdshader does: a quad sized in screen space grows without bound as it nears the
 // eye, so inside the galaxy the nearest splats were filling the view around the face.
 uniform float near_fade = 0.0;
+// V11: GALAXY's aerial grade, as points.gdshader: far splats cool and dim a little.
+uniform float depth_grade = 0.0;
 // The palette coordinate is stretched by a fixed 4/3 about the centre before the ramp
 // lookup. A live version (measured mean and spread, which measure.glsl still sums)
 // was planned and never wired up; this constant stretch is the look that shipped.
@@ -218,9 +220,12 @@ void vertex() {
 
 	vec3 vc = (MODELVIEW_MATRIX * vec4(p, 1.0)).xyz;
 	vec4 clip = PROJECTION_MATRIX * vec4(vc, 1.0);
-	// Early frustum cull with generous margin (> MAX_PIXEL_RADIUS) so off-screen splats skip
-	// normal/bake/density fetches, palette lookup and covariance projection completely.
-	bool cull = bad || vc.z >= 0.0 || abs(clip.x) > clip.w * 1.4 || abs(clip.y) > clip.w * 1.4;
+	// Early frustum cull so off-screen splats skip normal/bake/density fetches, palette lookup
+	// and covariance projection completely. The margin is the largest quad (MAX_PIXEL_RADIUS)
+	// in this viewport's NDC: a fixed 1.4 was under the cap at 720 px tall and culled splats
+	// whose edge was on screen, and over it on the Quest's eye, drawing ones that could not be.
+	vec2 mrg = 1.0 + 2.0 * MAX_PIXEL_RADIUS / VIEWPORT_SIZE;
+	bool cull = bad || vc.z >= 0.0 || abs(clip.x) > clip.w * mrg.x || abs(clip.y) > clip.w * mrg.y;
 	float alpha = 0.0;
 	float shade = 1.0;
 	vec2 pixel_off = vec2(0.0);
@@ -348,31 +353,33 @@ void vertex() {
 			if (alpha < 0.002) {
 				cull = true;
 			} else {
-				// Tight opacity-aware quad bound: trim outer skirt where alpha * fall < 1/250,
-				// scaling v_off by the same ratio so the Gaussian at every drawn pixel is identical.
-				float sigma2_cut = min(MAX_STDDEV2, 2.0 * log(alpha * 250.0) * (3.0 / max(sharpness, 0.1)));
-				if (sigma2_cut <= 0.0) {
-					cull = true;
-				} else {
-					float s_frac = sqrt(sigma2_cut / MAX_STDDEV2);
-					v_off = corner * s_frac;
-					float eig_avg = 0.5 * (ca + cd);
-					float eig_del = sqrt(max(0.0, eig_avg * eig_avg - det));
-					float eig1 = eig_avg + eig_del;
-					float eig2 = max(0.0, eig_avg - eig_del);
-					vec2 ev_e = vec2(cb, eig1 - ca);
-					vec2 ev1 = dot(ev_e, ev_e) > 1e-12 ? normalize(ev_e) : vec2(1.0, 0.0);
-					vec2 ev2 = vec2(ev1.y, -ev1.x);
-					float sc1 = min(MAX_PIXEL_RADIUS, sqrt(sigma2_cut * eig1));
-					float sc2 = min(MAX_PIXEL_RADIUS, sqrt(sigma2_cut * eig2));
-					pixel_off = corner.x * ev1 * sc1 + corner.y * ev2 * sc2;
-				}
+				// Every splat that survives the cull draws its whole footprint, to MAX_STDDEV2, as
+				// before 5c155e5. That commit trimmed the quad where alpha * fall fell under 1/500:
+				// only faint splats ever reach that inside the footprint, so the trim's fill saving
+				// and the halo it cut were the same pixels (at alpha 0.003, 64% of the splat's
+				// weight), and LINES' grazing fade lives in faint splats.
+				float eig_avg = 0.5 * (ca + cd);
+				float eig_del = sqrt(max(0.0, eig_avg * eig_avg - det));
+				float eig1 = eig_avg + eig_del;
+				float eig2 = max(0.0, eig_avg - eig_del);
+				// (cb, eig1 - ca) is the eigenvector; it vanishes only for an isotropic footprint,
+				// where any axis will do. Same guard as bake_shape.glsl.
+				vec2 ev_e = vec2(cb, eig1 - ca);
+				vec2 ev1 = dot(ev_e, ev_e) > 1e-12 ? normalize(ev_e) : vec2(1.0, 0.0);
+				vec2 ev2 = vec2(ev1.y, -ev1.x);
+				float sc1 = min(MAX_PIXEL_RADIUS, sqrt(MAX_STDDEV2 * eig1));
+				float sc2 = min(MAX_PIXEL_RADIUS, sqrt(MAX_STDDEV2 * eig2));
+				pixel_off = corner.x * ev1 * sc1 + corner.y * ev2 * sc2;
 			}
 		}
 	}
 
 	v_alpha = alpha;
 	v_col = cull ? vec3(0.0) : palette(s.w) * brightness * shade;
+	if (depth_grade > 0.0 && !cull) {
+		float far_k = smoothstep(3.5, 16.0, length(vc)) * depth_grade;
+		v_col *= mix(vec3(1.0), vec3(0.68, 0.78, 0.96), far_k);
+	}
 
 	if (cull) {
 		POSITION = vec4(2.0, 2.0, 2.0, 1.0);   // outside the clip volume

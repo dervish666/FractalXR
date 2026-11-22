@@ -5,6 +5,29 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+### Visual upgrades V1-V12, 2026-11-21
+
+Written by Gemini Neon without a headset, then reviewed by a four-model council and fixed.
+Everything here is from Mac renders; none of it has been checked on a Quest. Details and
+the review's changes: `docs/visual-roadmap.md`.
+
+- STYLE gains four finishes: iridescent, magma, jade and chrome, in SOLID, MARCHED, FLY,
+  GROUND, TREE and IFS. SOLID and MARCHED bulbs now take STYLE too.
+- FLY's SPIRES and VAULT get a gradient sky with a sun, and fog that follows it.
+- IFS gets metallic shading and, with MOTION on, a slow light pulse along the generations.
+- GROUND COAST's sea moves, and a SUN tile (GROUND, SCENE) turns the light once every six minutes. It shows only where the sun lights the ground: under RELIEF other than flat, BUMP, or a finish.
+- TREE gets drifting petals (PETALS, LOOK) and fog down the avenue.
+- LANTERN (LOOK; SCENE in GROUND), off by default: a soft light from the controller in hand,
+  a quarter on a hand-sized SOLID bulb, rising to full strength as FLY shrinks you into it, and
+  full in SPIRES and VAULT.
+- GALAXY cools and dims distant flame a little.
+- In the headset, a mode switch fades in from dark.
+- SKY's hue follows CYCLE, keeping its brightness.
+- IFS gains seven shapes: MONOLITH, PAGODA, ORBIT, CATHEDRAL, FERN, SNOWFLAKE, CRYSTAL.
+- Fixed before release: FLY and SOLID drew black (a shader that did not compile), GROUND's
+  LOOK page hid FOVEA and GLOW under the bar, the petals drew in every mode, and MIRROR's
+  ceiling shaded its sea and LANTERN as if seen from below.
+
 ### Sky and coast, 2026-11-18
 
 - RELIEF on GROUND gains COAST: the contour lines become heights. Each line out from the

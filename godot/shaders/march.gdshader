@@ -147,9 +147,9 @@ void fragment() {
 	// discard, with misses parked at their exit point, so every quad pixel contributes.
 	vec3 pos = ro + rd * (hit ? t : t1);
 	vec3 dn = cross(dFdx(pos), dFdy(pos));
-	// A budget miss must stay a miss. Treating it as a hit painted the enclosing seed
-	// sphere when a low-step ray had not reached the actual DE surface yet.
-	if (!hit) { discard; }
+	// Natural and the finishes take no derivatives past this point, so a miss leaves now and
+	// pays for no shading. The four NPR styles (art_colour's fwidth) keep it alive to the end.
+	if (!hit && (art_style < 1 || art_style > 4)) { discard; }
 	// Degenerate at a silhouette where a neighbour missed: face the ray rather than NaN.
 	vec3 n = dot(dn, dn) > 1e-24 ? normalize(dn) : -rd;
 	vec3 v = -rd;
@@ -193,7 +193,7 @@ void fragment() {
 			// V4: two-tone hemisphere ambient + metallic sheen & tight gloss highlight.
 			vec3 hemi = mix(vec3(0.10, 0.11, 0.16), vec3(0.26, 0.30, 0.38), wn.y * 0.5 + 0.5);
 			c = albedo * (hemi + vec3(0.32 * ndv + 0.92 * ndk)) * ao * crawl;
-			vec3 hv = normalize(KEY + v);
+			vec3 hv = half_dir(KEY, v);
 			float ndh = max(dot(n, hv), 0.0);
 			float s2 = ndh * ndh;
 			float s4 = s2 * s2;
@@ -212,4 +212,8 @@ void fragment() {
 
 	vec4 clip = PROJECTION_MATRIX * vec4(hit_view, 1.0);
 	DEPTH = clip.z / clip.w;
+	// A budget miss must stay a miss. Treating it as a hit painted the enclosing seed
+	// sphere when a low-step ray had not reached the actual DE surface yet. Under an NPR style
+	// it is discarded here, last, so art_colour's fwidth had every pixel of the quad alive.
+	if (!hit) { discard; }
 }

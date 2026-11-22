@@ -54,12 +54,16 @@ uniform vec3 sky_tint = vec3(1.0);
 uniform vec3 key_colour = vec3(1.0);
 uniform vec3 fog_colour = vec3(0.6, 0.7, 0.85);
 uniform float fog_density = 0.0;
-// V5: directional Mie-like sun in-scattering in the distance fog (FLY worlds set this > 0).
+// V5: directional Mie-like sun in-scattering in the distance fog (FLY worlds set this > 0),
+// and the sky's zenith colour, so fog seen looking up matches fly_sky.gdshader's gradient.
 uniform float sun_scatter = 0.0;
+uniform vec3 fog_zenith = vec3(0.6, 0.7, 0.85);
 // A soft lamp at the eye, for inside a closed shape where the sun never reaches (VAULT):
 // diffuse toward the viewer, falling off over lamp_m metres. 0 = off.
 uniform float head_light = 0.0;
 uniform float lamp_m = 6.0;
+// LANTERN's strength (V9): a quarter on SOLID, 1 in FLY's worlds (BulbFly._set_look).
+uniform float lantern_k = 0.25;
 #define PAPER_LIFT 1.18
 #include "res://shaders/styles.gdshaderinc"
 // FLY's SPIRES: the sun's shadow marched per pixel where the baked one cannot draw it.
@@ -289,9 +293,16 @@ void fragment() {
 		float lum2 = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
 		albedo = max(mix(vec3(lum2), albedo, saturation), vec3(0.0));
 
-		vec3 wpos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
-		vec3 wn = normalize(mat3(INV_VIEW_MATRIX) * n);
-		vec3 wview = normalize(CAMERA_POSITION_WORLD - wpos);
+		// World space only for a finish's reflection or the lantern: natural pays nothing for it.
+		bool lantern = dot(hand_light_col, hand_light_col) > 1e-6;
+		vec3 wpos = vec3(0.0);
+		vec3 wn = n;
+		vec3 wview = VIEW;
+		if (lantern || art_style >= 5) {
+			wpos = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+			wn = normalize(mat3(INV_VIEW_MATRIX) * n);
+			wview = normalize(CAMERA_POSITION_WORLD - wpos);
+		}
 		vec3 c;
 		if (art_style >= 5 && debug_view == 0) {
 			float refl_y = reflect(-wview, wn).y;
@@ -301,7 +312,7 @@ void fragment() {
 			// Metal, not plastic: a broad sheen tinted by the surface and a tight glint that stays
 			// mostly the surface's colour. Plastic's highlight is white.
 			if (lit > 0.0) {
-				vec3 hv = normalize(l + VIEW);
+				vec3 hv = half_dir(l, VIEW);
 				float ndh = max(dot(n, hv), 0.0);
 				c += albedo * sheen * pow(ndh, shininess) * lit;
 				c += mix(albedo, vec3(1.0), 0.3) * gloss * pow(ndh, 90.0) * lit;
@@ -313,7 +324,13 @@ void fragment() {
 			float fall = lamp_m * lamp_m / (lamp_m * lamp_m + dot(VERTEX, VERTEX));
 			c += albedo * key_colour * head_light * ndv * fall * mix(0.4, 1.0, v_ao);
 		}
-		c += hand_lantern(wpos, wn, wview, albedo);
+		// Shaded by AO like head_light above, so the crevices stay dark. lantern_k is a quarter
+		// on SOLID, a hand-sized object a hand reaches into, well inside the lantern's
+		// room-scale falloff: at full strength it washed the bulb to cream, and solid_shot.sh
+		// fails if it takes more than 1% of lit pixels from a mid-tone to clipped. FLY's worlds
+		// are room scale, so BulbFly._set_look writes 1 there.
+		if (lantern)
+			c += hand_lantern(wpos, wn, wview, albedo) * mix(0.4, 1.0, v_ao) * lantern_k;
 		ALBEDO = c * gain * grow * tint;
 	}
 	// Squared, so the near city keeps its colour and the haze gathers toward the edge.
@@ -322,10 +339,14 @@ void fragment() {
 		float fd = fog_density * vdist;
 		vec3 fcol = fog_colour;
 		if (sun_scatter > 0.0) {
-			float sdot = max(dot(VERTEX / max(vdist, 1e-5), v_light), 0.0);
+			vec3 vd = VERTEX / max(vdist, 1e-5);
+			// fly_sky.gdshader: mix(zenith, horizon, (1 - h)^3) above the horizon, horizon below.
+			float hi = 1.0 - clamp((mat3(INV_VIEW_MATRIX) * vd).y, 0.0, 1.0);
+			fcol = mix(fog_zenith, fog_colour, hi * hi * hi);
+			float sdot = max(dot(vd, v_light), 0.0);
 			float s2 = sdot * sdot;
 			float s6 = s2 * s2 * s2;
-			fcol = mix(fog_colour, key_colour * 1.15, s6 * sun_scatter);
+			fcol = mix(fcol, key_colour * 1.15, s6 * sun_scatter);
 		}
 		ALBEDO = mix(fcol, ALBEDO, exp(-fd * fd));
 	}

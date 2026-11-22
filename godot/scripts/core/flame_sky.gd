@@ -278,6 +278,14 @@ func sync(want: bool, delta: float) -> void:
 		_env.background_energy_multiplier = _saved_energy * smoothstep(0.0, 1.0, _fade)
 
 
+## FLY's sky (main.gd _world_sky) also turns the Environment's light sources off. When this sky
+## takes over from it, what to put back on hide is what FLY saved, not FLY's "disabled".
+func inherit_saved_light(ambient: Environment.AmbientSource,
+		reflect: Environment.ReflectionSource) -> void:
+	_saved_ambient = ambient
+	_saved_reflect = reflect
+
+
 func _set_shown(on: bool) -> void:
 	_shown = on
 	if on:

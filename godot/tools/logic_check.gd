@@ -46,6 +46,9 @@ func _init() -> void:
 	await _edit_focus(main)
 	await _owners(main)
 	await _unfocused(main)
+	await _lantern(main)
+	await _ground_sun(main)
+	await _forest_fog(main)
 
 	print("LOGICCHECK control=%s (a steady 72 fps run must not pass as a cut)" % (
 		"PASS" if control_cut else "FAIL"))
@@ -553,3 +556,110 @@ func _unfocused(main) -> void:
 	_ok("ambient cycle unfocused", main._cycle != cycle, "colour clock still runs")
 	main._on_session_focussed()
 	main._leave_galaxy(false)
+
+
+## LANTERN's gate: where a shader reads hand_light_* it may light, nowhere else. A wrong table
+## passes every render harness (they set the globals by hand) and only the headset would notice.
+func _lantern(main) -> void:
+	var cases := [
+		["flame", 0, 0, false], ["ground", 0, 0, true], ["ground", 0, 1, false],
+		["ground", 0, 4, false], ["ground", 0, 5, true], ["tree", 0, 0, true], ["ifs", 0, 3, false],
+		["ifs", 0, 8, true], ["bulb", 0, 0, false], ["bulb", 1, 0, true], ["bulb", 5, 8, true],
+		["bulb", 5, 2, false], ["bulb", 7, 0, true],
+	]
+	var bad := []
+	var art0: int = main.art
+	var surf0: int = main.surface_idx
+	for c in cases:
+		main._set_mode(c[0])
+		for i in 3:
+			await process_frame
+		main.surface_idx = c[1]
+		main.art = c[2]
+		if main._lantern_wanted() != c[3]:
+			bad.append("%s surface %s art %d -> %s" % [c[0], main.SURFACE_NAMES[c[1]], c[2],
+				str(main._lantern_wanted())])
+	main.art = art0
+	main.surface_idx = surf0
+	main._set_mode("flame")
+	for i in 3:
+		await process_frame
+	_ok("lantern gate", bad.is_empty(), "%d cases%s" % [cases.size(),
+		"" if bad.is_empty() else ": " + "; ".join(bad)])
+
+
+## GROUND's SUN moves light_dir, which ground.gdshader reads only under relief or bump, or in a
+## physical finish. With the orbit live, each trigger on its own must show the tile and move the
+## light; flat, unbumped natural ground must hide it and hold the light still. Each case changes
+## only what its own path refreshes: RELIEF and BUMP through _apply_ground_look() with STYLE held,
+## STYLE through _set_art() with RELIEF and BUMP held, so a caller that forgets the gate fails.
+func _ground_sun(main) -> void:
+	main._set_mode("ground")
+	for i in 3:
+		await process_frame
+	var relief0: int = main.ground_relief_idx
+	var bump0: int = main.ground_bump_idx
+	var art0: int = main.art
+	var tile = null
+	for it in main.menu.items:
+		if it.label == "SUN" and it.section == "scene":
+			tile = it
+	if tile == null:
+		_ok("ground sun gate", false, "no SUN tile")
+		return
+	var mat: ShaderMaterial = main.ground._material
+	main._set_art(0)
+	main.ground.set_sun_orbit(true)
+	# RELIEF, BUMP, STYLE, whether the sun lights it.
+	var cases := [["terrain", 0.0, "natural", true], ["flat", 1.0, "natural", true],
+		["flat", 0.0, "natural", false], ["flat", 0.0, "magma", true]]
+	var bad := []
+	for c in cases:
+		var r: int = main.GROUND_RELIEF.find(c[0])
+		var b: int = main.GROUND_BUMP.find(c[1])
+		if r != main.ground_relief_idx or b != main.ground_bump_idx:
+			main.ground_relief_idx = r
+			main.ground_bump_idx = b
+			main._apply_ground_look()
+		var a: int = main.ART_NAMES.find(c[2])
+		if a != main.art:
+			main._set_art(a)
+		for i in 3:
+			await process_frame
+		# Untyped: null until something writes light_dir (the shader's default then applies).
+		var l0 = mat.get_shader_parameter(&"light_dir")
+		for i in 10:
+			await process_frame
+		var moved: bool = mat.get_shader_parameter(&"light_dir") != l0
+		var shown := bool(tile.visible_when.call())
+		if shown != c[3] or moved != c[3] or main.ground.sun_applies != c[3]:
+			bad.append("%s bump %.1f %s: shown %s, moved %s" % [c[0], c[1], c[2], str(shown),
+				str(moved)])
+	main.ground.set_sun_orbit(false)
+	main._set_art(art0)
+	main.ground_relief_idx = relief0
+	main.ground_bump_idx = bump0
+	main._apply_ground_look()
+	main._set_mode("flame")
+	for i in 3:
+		await process_frame
+	_ok("ground sun gate", bad.is_empty(), "%d cases%s" % [cases.size(),
+		"" if bad.is_empty() else ": " + "; ".join(bad)])
+
+
+## The avenue's fog belongs to AVENUE and WALK. CLEAR goes back to GROVE without main.gd's fog
+## sync, and the next trees adopted the avenue's fog. Starts from the fogged avenue.
+func _forest_fog(main) -> void:
+	main._set_mode("tree")
+	for i in 10:
+		await process_frame
+	main._sow_avenue(false)
+	for i in 10:
+		await process_frame
+	var on: float = main.forest._fog_density
+	main._clear_forest()
+	var off: float = main.forest._fog_density
+	_ok("forest fog clear", on > 0.0 and off == 0.0, "avenue %.3f, after CLEAR %.3f" % [on, off])
+	main._set_mode("flame")
+	for i in 3:
+		await process_frame

@@ -715,6 +715,13 @@ void fragment() {
 	vec3 n_w = vec3(0.0, 1.0, 0.0);
 	vec3 L = normalize(light_dir);
 	vec3 V = normalize(CAMERA_POSITION_WORLD - v_world);
+	// MIRROR draws this ground again overhead, turned face down (fractal_ground.gd _sky), and
+	// its normals stay +Y. Take the view as the floor would see it in a mirror, so every
+	// view-dependent term (relief gloss, V2's Fresnel, V3's sea) shows the floor's reflection
+	// rather than a ceiling seen edge-on from below. coast_shot.sh checks the two match.
+	if (MODEL_MATRIX[1].y < 0.0) {
+		V.y = -V.y;
+	}
 	vec3 base_albedo = col;
 	if (relief_on) {
 		mat2 m = mat2(rot.xy, rot.zw);
@@ -732,7 +739,7 @@ void fragment() {
 		float diff = max(dot(n, L), 0.0);
 		float spec = 0.0;
 		if (sharp > 0.0 && inside < 1.0) {
-			float ndh = max(dot(normalize(L + V), n), 0.0);
+			float ndh = max(dot(half_dir(L, V), n), 0.0);
 			float s2 = ndh * ndh;
 			float s4 = s2 * s2;
 			float s8 = s4 * s4;
@@ -774,26 +781,39 @@ void fragment() {
 		float heavy = 1.0 - smoothstep(0.0, wd * 2.0 + 0.02, f4);
 		float fade = (1.0 - smoothstep(0.15, 0.4, wd)) * smoothstep(0.1, 0.5, band);
 		col *= 1.0 - clamp(0.35 * line + 0.3 * heavy, 0.0, 0.6) * fade * (1.0 - inside);
+		// Outside the branches below: fwidth in a non-uniform branch is undefined.
+		float wpx = length(fwidth(v_world.xz));
 		if (art_style == 0 && inside_passthrough < 0.5) {
 			// V3: Living ocean in COAST's interior sea + luminous shoreline foam band.
 			if (inside > 0.01) {
-				float wpx = length(fwidth(v_world.xz));
 				float wave_fade = 1.0 - smoothstep(0.08, 0.45, wpx);
 				vec2 wp2 = v_world.xz;
 				float t = TIME;
-				float gx = cos(wp2.x * 3.1 + wp2.y * 1.4 + t * 1.35) * 0.055
-					+ cos(wp2.x * 6.7 - wp2.y * 4.3 - t * 2.1) * 0.025;
-				float gz = sin(wp2.y * 2.9 - wp2.x * 1.7 + t * 1.15) * 0.055
-					+ sin(wp2.y * 6.1 + wp2.x * 4.9 - t * 1.9) * 0.025;
-				vec3 nw = normalize(vec3(gx * wave_fade, 1.0, gz * wave_fade));
+				// Three swells at unrelated angles, frequencies and heights, under 1 rad/s: the
+				// first pass's two crossed pairs tiled the sea into a visible quilt. Each speed
+				// is a whole number of turns an hour (TAU / 3600 a step, about 0.7, 0.9 and
+				// 0.55 rad/s), so TIME's hourly rollover lands every swell on the same phase.
+				const vec2 D1 = vec2(0.91, 0.41);
+				const vec2 D2 = vec2(-0.29, 0.957);
+				const vec2 D3 = vec2(0.62, -0.785);
+				const float HOUR_TURN = 6.2831853 / 3600.0;
+				// Past the fade (a pixel wider than 0.45 m) the swells weigh nothing: skip them.
+				vec2 g = vec2(0.0);
+				if (wave_fade > 0.0) {
+					g = D1 * (sin(dot(wp2, D1) * 3.1 + t * (401.0 * HOUR_TURN)) * 0.05)
+						+ D2 * (sin(dot(wp2, D2) * 4.7 - t * (516.0 * HOUR_TURN)) * 0.03)
+						+ D3 * (sin(dot(wp2, D3) * 7.3 + t * (315.0 * HOUR_TURN)) * 0.015);
+				}
+				vec3 nw = normalize(vec3(g.x * wave_fade, 1.0, g.y * wave_fade));
 				float wndv = clamp(dot(nw, V), 0.0, 1.0);
 				float wf1 = 1.0 - wndv;
 				float wfres = 0.08 + 0.92 * (wf1 * wf1 * wf1 * wf1);
 				vec3 deep_sea = inside_colour * (0.35 + 0.95 * s.a);
-				vec3 sky_refl = mix(fog_colour * 1.6 + pal1 * 0.25,
-					mix(pal3, vec3(0.85, 0.92, 1.0), 0.45), 0.45);
+				// What the sea faces is the horizon's fog (dark by default), so it stays dark
+				// against the coast: the first pass reflected an invented pale sky, milky mauve.
+				vec3 sky_refl = fog_colour * 1.25;
 				vec3 water = mix(deep_sea, sky_refl, wfres * 0.72);
-				vec3 wh = normalize(L + V);
+				vec3 wh = half_dir(L, V);
 				float wnh = max(dot(nw, wh), 0.0);
 				float ws2 = wnh * wnh;
 				float ws8 = (ws2 * ws2) * (ws2 * ws2);
@@ -804,8 +824,11 @@ void fragment() {
 				n_w = normalize(mix(n_w, nw, inside));
 			}
 			float shore = smoothstep(0.0, 0.08, hc) * (1.0 - smoothstep(0.08, 0.34, hc)) * (1.0 - inside);
-			float ripple = 0.65 + 0.35 * sin(hc * 28.0 - TIME * 2.2 + s.a * 6.28);
-			col += mix(pal3, vec3(0.92, 0.97, 1.0), 0.55) * shore * ripple * 0.35;
+			if (shore > 0.0) {
+				// 516 turns an hour (about 0.9 rad/s), whole, so the hourly TIME rollover is seamless.
+				float ripple = 0.65 + 0.35 * sin(hc * 28.0 - TIME * (516.0 * 6.2831853 / 3600.0) + s.a * 6.28);
+				col += mix(pal3, vec3(0.92, 0.97, 1.0), 0.55) * shore * ripple * 0.35;
+			}
 		}
 	}
 
@@ -832,7 +855,10 @@ void fragment() {
 		}
 	}
 	if (art_style == 0 || art_style >= 5) {
-		col += hand_lantern(v_world, n_w, V, base_albedo);
+		// The hand is real, so on MIRROR's ceiling light it in world space: n_w and V are the
+		// floor's reflection there (+Y normals), which faced the lantern below away from it.
+		vec3 fl = MODEL_MATRIX[1].y < 0.0 ? vec3(1.0, -1.0, 1.0) : vec3(1.0);
+		col += hand_lantern(v_world, n_w * fl, V * fl, base_albedo);
 	}
 	col *= brightness;
 	float fog = smoothstep(fog_end * 0.55, fog_end, dist);

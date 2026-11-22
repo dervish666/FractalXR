@@ -768,7 +768,7 @@ func _shift_out() -> void:
 func update(head_xz: Vector2, delta: float = 0.0) -> void:
 	if not _ready_ok:
 		return
-	if sun_orbit and delta > 0.0 and _material != null:
+	if sun_orbit and sun_applies and delta > 0.0 and _material != null:
 		_sun_angle = fposmod(_sun_angle + delta * SUN_ORBIT_RAD_S, TAU)
 		var r := Vector2(DEFAULT_LIGHT_DIR.x, DEFAULT_LIGHT_DIR.z).length()
 		_material.set_shader_parameter(&"light_dir",
@@ -1304,9 +1304,13 @@ func set_sky(height: float) -> void:
 ## Fog's colour: the shader's default, or a STYLE's sky (main.gd _art_sky).
 const FOG_COLOUR := Color(0.02, 0.02, 0.04)
 ## V10: slowly orbiting low sun sweeping relief shadows across the fractal terrain.
-const SUN_ORBIT_RAD_S := TAU / 90.0
+## Six minutes a turn: ambient motion runs about four times slower than first instinct (90 s).
+const SUN_ORBIT_RAD_S := TAU / 360.0
 const DEFAULT_LIGHT_DIR := Vector3(0.5, 0.5, 0.35)
 var sun_orbit := false
+## Whether ground.gdshader lights by light_dir at all (main.gd _ground_sun_lights()). The orbit
+## writes it only then, and holds its angle otherwise.
+var sun_applies := true
 var _sun_angle := atan2(DEFAULT_LIGHT_DIR.z, DEFAULT_LIGHT_DIR.x)
 
 

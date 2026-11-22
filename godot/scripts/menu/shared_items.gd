@@ -52,12 +52,15 @@ static func art(m: FractalMain, vis: Callable) -> WristMenu.Item:
 		"How the world is drawn")
 
 
-## LANTERN (V9): soft point light carried by your active hand controller.
-static func lantern(m: FractalMain, vis: Callable) -> WristMenu.Item:
-	return WristMenu.Item.new("look", "LANTERN",
+## LANTERN (V9): soft point light carried by your active hand controller. GROUND files it
+## under SCENE: its LOOK > MORE page is full (menu_shot.sh fails when tiles run into the bar).
+static func lantern(m: FractalMain, vis: Callable, page := "look") -> WristMenu.Item:
+	return WristMenu.Item.new(page, "LANTERN",
 		func(): return "on" if m.hand_lantern_on else "off",
 		func(): m.hand_lantern_on = not m.hand_lantern_on,
-		false, vis).toggle(func(): return m.hand_lantern_on).minor().hinted(
+		# The NPR styles (neon, toon, pencil, circuit) draw no lantern, so the tile hides there.
+		false, func(): return vis.call() and not (m.art >= 1 and m.art <= 4)).toggle(
+		func(): return m.hand_lantern_on).minor().hinted(
 		"Casts a soft light from your hand onto nearby surfaces")
 
 

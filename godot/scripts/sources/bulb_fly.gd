@@ -143,6 +143,8 @@ var _grid0 := 192
 var want := 0
 ## Debug: draw the levels only up to this one (-1 = all).
 var cap_levels := -1
+## LANTERN's strength on a BULB flight's levels, written when it changes (-1: not yet).
+var _lantern_k := -1.0
 ## Harness: false hides the finer levels and the cuts (builds go on), so the same pose
 ## can be shot as plain SOLID; tint_levels colours each level to show the seams.
 var show_levels := true
@@ -200,6 +202,7 @@ func begin(base_solid: BulbSolid, src: BulbSource, light_state: Vector3,
 	_grid0 = base_solid.grid
 	_h0 = 2.0 * BulbSolid.half_of(src) / float(_grid0)
 	_shown[0] = true   # main.gd builds it; is_settled() checks it there
+	_lantern_k = -1.0  # update() sets it for this scale
 
 
 ## SPIRES or VAULT: a world FLY builds itself, level 0 included.
@@ -281,6 +284,22 @@ func world_sky_params() -> Dictionary:
 	}
 
 
+## Whether V5's procedural sky is behind the world (main.gd _world_sky). The fog's zenith and
+## sun glow follow that sky, so under passthrough or the flame SKY they would fade the walls
+## toward one nobody can see.
+var sky_backdrop := true
+
+
+func set_sky_backdrop(on: bool) -> void:
+	if on == sky_backdrop:
+		return
+	sky_backdrop = on
+	if not active or world == World.BULB:
+		return
+	for s in _chain():
+		_set_look(s, true)
+
+
 ## STYLE, from the menu: re-dress every level.
 func set_art(a: int) -> void:
 	art = a
@@ -317,15 +336,25 @@ func _set_look(s: BulbSolid, on: bool) -> void:
 	m.set_shader_parameter("key_colour", _cfg["key_colour"] if on else Vector3.ONE)
 	var sky: Color = sky_colour()
 	m.set_shader_parameter("fog_colour", Vector3(sky.r, sky.g, sky.b))
-	m.set_shader_parameter("fog_density", 0.0)
-	var scat := float(_cfg.get("sun_scatter", 0.0)) if (on and not STYLE_SKY.has(art)) else 0.0
+	# update() owns the density while a world is on: writing 0 here left a frame with no fog
+	# whenever a re-dress (a backdrop or STYLE change) ran after this frame's update.
+	if not on:
+		m.set_shader_parameter("fog_density", 0.0)
+	var scat := float(_cfg.get("sun_scatter", 0.0)) \
+		if (on and sky_backdrop and not STYLE_SKY.has(art)) else 0.0
 	m.set_shader_parameter("sun_scatter", scat)
+	var zen: Color = _cfg.get("zenith", sky) if scat > 0.0 else sky
+	m.set_shader_parameter("fog_zenith", Vector3(zen.r, zen.g, zen.b))
 	m.set_shader_parameter("flatten", 0.0 if on else 0.2)
 	m.set_shader_parameter("pixel_shadow", 1 if on and pixel_shadows and world == World.SPIRES else 0)
-	m.set_shader_parameter("art_style", art if on else 0)
+	# SOLID draws STYLE too (V2), so off keeps the STYLE rather than dropping to natural:
+	# end() runs inside begin(), and a preset change in FLY BULB would lose it.
+	m.set_shader_parameter("art_style", art)
 	# Neon draws its lines from the key per pixel in every world, VAULT's box key included:
 	# its jumps, confetti as colour, are the fold lines here.
-	var fam := int(_cfg.get("trap", 0))
+	# Off writes 0: end() runs inside the next begin() with the old world's _cfg still set, and
+	# SPIRES' trap stayed on the levels a BULB flight reuses (fly_shot.gd checks it).
+	var fam := int(_cfg.get("trap", 0)) if on else 0
 	if on and art == 1 and fam == 0 and _cfg.has("genome") and str(_cfg["genome"]["formula"]) == "mandelbox":
 		fam = 2
 	m.set_shader_parameter("trap_family", fam)
@@ -333,6 +362,8 @@ func _set_look(s: BulbSolid, on: bool) -> void:
 	m.set_shader_parameter("ambient", float(_cfg.get("ambient", 0.22)) if on else 0.22)
 	m.set_shader_parameter("head_light", float(_cfg.get("head_light", 0.0)) if on else 0.0)
 	m.set_shader_parameter("rim", float(_cfg.get("rim", 0.9)) if on else 0.9)
+	# LANTERN at full strength in a room-scale world; SOLID's quarter when the level goes back.
+	m.set_shader_parameter("lantern_k", 1.0 if on else 0.25)
 	if not on:
 		s.shadow_k = BulbSolid.SHADOW_K
 
@@ -447,6 +478,18 @@ func update(head_state: Vector3, s2w: float, delta: float) -> void:
 		s.request_box(_mp, cells(k), lo, cell(k), _light, BulbSolid.AO_RADIUS * N * cell(k),
 			BulbSolid.SHADOW_REACH * N * cell(k))
 	_apply_holes(chain)
+	if not own:
+		# LANTERN: SOLID's quarter while the bulb is SOLID's hand size (SOLID_ACROSS_M, 0.35 m
+		# across), full strength by four times that (1.4 m), where its walls are room scale as
+		# SPIRES' are. One value on every level, or level 0 would draw a brightness seam round
+		# the finer levels' holes.
+		var across_m := 2.0 * BulbSolid.extent_of(_src) * s2w
+		var lk := snappedf(lerpf(0.25, 1.0,
+			smoothstep(1.0, 4.0, across_m / FractalMain.SOLID_ACROSS_M)), 0.05)
+		if lk != _lantern_k:
+			_lantern_k = lk
+			for s in chain:
+				s.material().set_shader_parameter("lantern_k", lk)
 	if own:
 		# Squared fog (bulb_solid.gdshader): exp(-e^2) left at the edge of level 0.
 		var edge_m := 0.5 * side(0) * s2w
