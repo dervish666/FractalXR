@@ -82,23 +82,41 @@ All notable changes to FractalXR are documented here. Format based on
       (`FractalGround.GLOBE_REFILL_ITER`, sent as `globe_far_iter`). During a refill the far
       fill covers the whole sphere, and every pixel on the set used to run all 32. Eight draws
       the outline, and the levels replace it as they land.
+    - When the coarsest level lands the budget climbs from 8 to 32 over 2 s
+      (`GLOBE_ITER_RAMP_S`), a sixth of an iteration a frame at 72 Hz and never more than two
+      frames' worth in one tick, so a hitch cannot jump it. The shader takes the budget as a
+      float, and an orbit that escapes on the newest step blends from the unsettled exterior to
+      its own band over that step. At 64x in seahorse valley a point 1200 m out whose orbit
+      escapes at 20 used to cross its whole refill-to-settled distance (0.56) in the landing
+      frame. Its largest step is now 0.07.
     - An orbit the budget cannot settle never draws as the set's inside, so HOLLOW cannot cut it
       out of the vault. The pixel keeps the clipmap where any level holds it and otherwise draws
       as exterior at the budget's count. On MANDELBROT the main cardioid and the period-2 bulb
-      count as settled by their closed-form tests.
+      count as settled by their closed-form tests. TERRAIN draws that exterior on a whole
+      contour line at any budget and the art styles read it as distant, so it does not flash
+      each time the climbing budget crosses a whole count.
     - Where the clipmap holds the set's inside or a count past the budget, the clipmap stands
-      alone. So does it where float32 cannot place the far fill's point within a level-0 texel
-      (deep zooms, where the clipmap runs df32 or perturbed). Past the data at those zooms the
-      cap is the budget's exterior colour, one flat tone round the zenith.
+      alone. So does it where float32 cannot place the far fill's point within a pixel (deep
+      zooms, where the clipmap runs df32 or perturbed). That test now runs before the cap skips
+      the clipmap, so in the cap a rounded orbit no longer replaces valid data. At 2^22x by
+      -2.00000013 float32 rounds the point in 30 m steps, and the far fill drew the contours
+      there as broken stairs. Past the data at those zooms the cap is the budget's exterior
+      colour, one flat tone round the zenith.
     - The cap where the fade is complete reads no clipmap level unless its orbit comes back
-      unsettled, and a pixel that fails the window check reads none.
+      unsettled, and a pixel that fails the window check reads none. An unsettled pixel takes
+      the finest level that holds it, faded toward the exterior colour over the last 4 texels or
+      6 pixels inside that level's window, whichever is wider. At 64x straight up the clipmap
+      used to stop dead there, cream beside dark violet in neighbouring pixels.
     - The upper half maps a direction to the plane as H xz (1 + y) / |xz|², which keeps its
       precision to the zenith. The old H xz / max(1 - y, 1e-6) folded the last 0.08 degrees
       back toward the nadir. The plane radius stops growing at 32768 fractal units
       (`GLOBE_FAR_C`), so the zenith pixel, which has no azimuth, takes the colour round it.
   - A family or JULIA change on the globe drops every level, the coarsest included
     (`invalidate(true)`), so the far fill shows the new set until its levels land. The flat
-    floor and the bowl keep the old coarsest level while it refills in place. Relief normals
+    floor and the bowl keep the old coarsest level while it refills in place, and entering the
+    globe drops a level still holding the old set. The globe's two-stage shift would make it
+    level 6 and readable: a bowl JULIA change at 64x, then the globe before the refill ended,
+    drew the old Mandelbrot overhead and let HOLLOW cut its cardioid. Relief normals
     and their curvature go flat in the share of a pixel that comes from the far fill.
   - Relief displacement and its shading fade to flat between 20 and 50 degrees above the
     horizon, so COAST, HEIGHT and BUMP do not hang overhead. The vault is lit in the plane's own
@@ -134,8 +152,10 @@ All notable changes to FractalXR are documented here. Format based on
   The bowl matches the flat floor. The settled globe runs 1.5 to 1.7 times it, level and looking
   60 degrees up, since the ground's fragment covers the upper half where the flat floor draws
   one sky fetch. During a refill the globe ran 2.55 times flat level and 1.89 times at 60
-  degrees before the 8-iteration budget, and 1.33 and 1.48 times after. Quest frame time is
-  unmeasured.
+  degrees before the 8-iteration budget, and 1.33 and 1.48 times after. With the budget ramp,
+  the window-edge fade and the precision gate, two runs read the settled globe at 1.48 and 1.46
+  times level and 1.56 and 1.58 at 60 degrees, and the refill at 1.38 and 1.36 level and 1.50
+  and 1.48 at 60 degrees. Quest frame time is unmeasured.
 - With SPHERE off the flat floor renders as before. A flat shot before and after a bowl and globe
   round trip differs by a mean of 0.0009, the same as refilling the floor in place with nothing
   changed (0.0008), since the fill is not bit-repeatable on the set's edge.

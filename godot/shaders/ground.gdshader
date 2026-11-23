@@ -151,8 +151,10 @@ const vec2 GLOBE_RELIEF_U = vec2(1.428, 2.747);
 // GLOBE's iteration budget past the data (fragment), set by FractalGround: GLOBE_FAR_ITER (32)
 // once the coarsest level is in, where the far fill covers only the cap and the far exterior
 // escapes in under ten; GLOBE_REFILL_ITER while no level is, when it covers the whole sphere
-// and every pixel on the set would run the full budget.
-uniform int globe_far_iter = 32;
+// and every pixel on the set would run the full budget. A float: FractalGround ramps it back up
+// when the coarsest level lands, and globe_far() blends an orbit that escapes on the newest step
+// in from the budget's exterior over that step.
+uniform float globe_far_iter = 32.0;
 // GLOBE's far radius bound in fractal units: the plane radius a pixel evaluates grows toward the
 // zenith up to this and holds, so the last arcseconds round the pole are one exterior colour and
 // the zenith pixel, which has no azimuth, takes the same one. A quartic Julia's first step from
@@ -256,6 +258,25 @@ int usable_level(int level, vec2 e0, out bool ok) {
 		l++;
 	}
 	return l;
+}
+
+// How far inside what in_window() accepts at `level` the point lies, in that level's texels:
+// 0 on the edge, negative outside.
+float window_margin(int level, vec2 e0) {
+	ivec2 vt = view_texel0 >> level;
+	ivec2 rem = view_texel0 - (vt << level);
+	vec2 rel = (vec2(rem) + view_frac0 + e0) / float(1 << level);
+	vec4 c = clean_rect[level];
+	vec2 lo = rel - (c.xy + 1.5);
+	vec2 hi = (c.zw - 1.5) - rel;
+	vec2 sq = vec2(float(tex_size) * 0.5 - slack - 1.0) - abs(rel);
+	return min(min(min(lo.x, lo.y), min(hi.x, hi.y)), min(sq.x, sq.y));
+}
+
+// GLOBE: 0 to 1 over the last six pixels (fp: level-0 texels a pixel), or four texels where
+// those are wider, inside a level's window, so data read up to its edge fades out there.
+float window_fade(int level, vec2 e0, float fp) {
+	return smoothstep(0.0, max(4.0, 6.0 * fp / float(1 << level)), window_margin(level, e0));
 }
 
 // Bilinear sample of a level at a level-0 texel coordinate (already relative to the
@@ -593,8 +614,10 @@ void n_iterate(int f, inout vec2 z, inout vec2 dz, vec2 c, vec2 addC) {
 	z = sq + c;
 }
 
-// ok false: the budget ran out before the orbit settled either way.
-vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok) {
+// ok false: the budget ran out before the orbit settled either way. steps: iterations run.
+// trap_r: the smallest |z| the orbit reached, clamped to 1 (the unsettled orbit's trap), over
+// every step run (x) and over all but the last (y).
+vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok, out int steps, out vec2 trap_r) {
 	const float ESC2 = 65536.0;
 	const float LOG_ESC = 5.5451774;
 	vec2 z = z0;
@@ -604,6 +627,7 @@ vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok) {
 	float m2 = dot(z, z);
 	float sum = 0.0, sumPrev = 0.0, count = 0.0;
 	float minR2 = 1e30;
+	float minPrev = 1e30;
 	float minAxis = 1e30;
 	float deg = n_degree(near_formula);
 	int n = 0;
@@ -612,6 +636,7 @@ vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok) {
 		vec2 zp = z;
 		n_iterate(near_formula, z, dz, c, addC);
 		m2 = dot(z, z);
+		minPrev = minR2;
 		minR2 = min(minR2, m2);
 		n = i + 1;
 		if (near_tex_on > 0.5 && i > 1) {
@@ -629,10 +654,12 @@ vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok) {
 	}
 	float avg1 = count > 0.0 ? sum / count : 0.0;
 	float avg0 = count > 1.0 ? sumPrev / (count - 1.0) : avg1;
+	steps = n;
+	trap_r = clamp(sqrt(vec2(minR2, minPrev)), 0.0, 1.0);
 	if (m2 <= ESC2) {
 		// Inside only if it ran the whole max_iter, as the fill decides it.
 		ok = lim >= near_max_iter;
-		return vec4(float(near_max_iter), -40.0, 1.0, clamp(sqrt(minR2), 0.0, 1.0));
+		return vec4(float(near_max_iter), -40.0, 1.0, trap_r.x);
 	}
 	ok = true;
 	float lm = log(m2) * 0.5;
@@ -643,23 +670,34 @@ vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok) {
 	return vec4(s, log2(max(de, 1e-30)), 0.0, mix(tia, st, near_stalk));
 }
 
-// GLOBE's far fill at fractal point cp, with near_escape() at the globe's budget. state 0: it
-// escaped, and the count is the one the fill would store. 1: the set's inside, settled: by a
-// budget at max_iter as the fill decides it, or for MANDELBROT by the closed-form tests for the
-// main cardioid and the period-2 bulb (the orbit trap is the budget's, close to the fill's, since
-// an attracting orbit reaches its smallest radius early). 2: the budget ran out first, so the
-// orbit is unsettled and says nothing about inside or out.
-vec4 globe_far(vec2 cp, out int state) {
+// GLOBE's far fill at fractal point cp, with near_escape() at the globe's budget, and fp_c the
+// pixel's footprint in fractal units. Returns the settled result: an escape, with the count the
+// fill would store, or the set's inside, settled by a budget at max_iter as the fill decides it,
+// or for MANDELBROT by the closed-form tests for the main cardioid and the period-2 bulb (the
+// orbit trap is the budget's, close to the fill's, since an attracting orbit reaches its smallest
+// radius early). `unsettled` is what an orbit the budget cannot settle draws as: exterior at the
+// budget's count, half a pixel from the set, the colour the slowest escapers round it reach; it
+// is never the inside, which HOLLOW would cut out of the vault. `e` is the settled result's share:
+// 1 settled, 0 unsettled, and for an orbit that escapes on the budget's last, partial step the
+// part of that step the budget has reached, so as the budget climbs each pixel moves from the
+// unsettled colour to its escape band over one iteration rather than in one frame. The unsettled
+// orbit trap moves the same way, from its last whole step's to the partial step's.
+vec4 globe_far(vec2 cp, float fp_c, out vec4 unsettled, out float e) {
 	bool ok;
-	vec4 sf = near_julia != 0 ? near_escape(near_julia_c, cp, globe_far_iter, ok)
-		: near_escape(cp, vec2(0.0), globe_far_iter, ok);
+	int n;
+	vec2 trap_r;
+	int lim = int(ceil(globe_far_iter));
+	vec4 sf = near_julia != 0 ? near_escape(near_julia_c, cp, lim, ok, n, trap_r)
+		: near_escape(cp, vec2(0.0), lim, ok, n, trap_r);
 	if (!ok && near_formula == 0 && near_julia == 0) {
 		vec2 a = cp - vec2(0.25, 0.0);
 		float qa = dot(a, a);
 		vec2 b = cp + vec2(1.0, 0.0);
 		ok = qa * (qa + a.x) <= 0.25 * cp.y * cp.y || dot(b, b) <= 0.0625;
 	}
-	state = ok ? (sf.b > 0.5 ? 1 : 0) : 2;
+	unsettled = vec4(min(globe_far_iter, float(near_max_iter)), log2(max(fp_c, 1e-30)) - 1.0, 0.0,
+		mix(trap_r.y, trap_r.x, clamp(globe_far_iter - float(n - 1), 0.0, 1.0)));
+	e = !ok ? 0.0 : (sf.b > 0.5 ? 1.0 : clamp(globe_far_iter - float(n - 1), 0.0, 1.0));
 	// Past |c| = 2^32 the count would fall below -1; GLOBE_FAR_C stops well short.
 	sf.r = max(sf.r, -0.99);
 	return sf;
@@ -868,7 +906,12 @@ void fragment() {
 	// GLOBE: the pure cap (cap 1) reads no level unless its far orbit comes back unsettled
 	// (below), and a pixel whose window check fails reads none at all: nothing there can show.
 	// The flat floor and the bowl fetch as they always have, and fog or rim fog covers a miss.
-	bool pure_cap = globe && cap >= 1.0;
+	// Where float32 cannot place the far fill's point within this pixel (deep zooms, where the
+	// clipmap runs df32 or perturbed), the far fill iterates a rounded point, so the pixel looks
+	// the clipmap up in the cap too and the clipmap stands alone wherever it can serve (below).
+	float fp_c = fp * texel0;
+	bool far_coarse = globe && max(max(abs(near_c.x), abs(near_c.z)), 1.0) * 1.2e-7 > fp_c;
+	bool pure_cap = globe && cap >= 1.0 && !far_coarse;
 	bool in0 = false;
 	if (!pure_cap) {
 		int lu = usable_level(l0, e0, in0);
@@ -918,37 +961,59 @@ void fragment() {
 	// coarser than the data, where the budget cannot settle every orbit. An unsettled orbit
 	// never draws as the set's inside, which HOLLOW would cut out of the vault: it keeps the
 	// clipmap wherever a level can serve it (in the band, or in the pure cap inside the coarsest
-	// level's reach), and otherwise draws as exterior at the budget's count, the colour the
-	// slowest escapers round it reach.
+	// level's reach, fading out over the last pixels of that reach), and otherwise draws as
+	// globe_far()'s unsettled exterior.
+	// GLOBE: the share of this pixel that is globe_far()'s unsettled exterior. Its count is the
+	// budget, a stand-in rather than a measure, so it takes no count contour of its own (below).
+	float far_open = 0.0;
 	if (globe) {
 		data_w = valid ? 1.0 : 0.0;
 		float w_far = valid ? cap : 1.0;
 		// Where the clipmap already answers what the budget cannot (the set's inside, or a count
-		// past the budget), or where float32 cannot place the far fill's point to within a pixel
-		// (deep zooms, with the df32 or perturbed clipmap to hand), the clipmap stands alone.
-		float fp_c = fp * texel0;
-		float c_ulp = max(max(abs(near_c.x), abs(near_c.z)), 1.0) * 1.2e-7;
-		if (valid && (s.b > 0.0 || s.r >= float(globe_far_iter) || c_ulp > fp_c)) {
+		// past the budget), or where float32 cannot place the far fill's point (far_coarse), the
+		// clipmap stands alone.
+		if (valid && (s.b > 0.0 || s.r >= globe_far_iter || far_coarse)) {
 			w_far = 0.0;
 		}
 		if (w_far > 0.0) {
 			vec2 dc = (mat2(rot.xy, rot.zw) * w) / wpu;
 			vec2 cp = vec2(near_c.x + (near_c.y + dc.x), near_c.z + (near_c.w + dc.y));
-			int far_state;
-			vec4 sf = globe_far(cp, far_state);
-			if (far_state != 2) {
-				s = mix(s, sf, w_far);
-				data_w *= 1.0 - w_far;
-			} else if (!valid) {
-				bool okd = false;
-				int ld = pure_cap ? usable_level(l0, e0, okd) : l0;
-				if (okd) {
-					bool dd;
-					s = sample_level(ld, e0, dd);
+			vec4 su;
+			float e;
+			vec4 sf = globe_far(cp, fp_c, su, e);
+			if (valid) {
+				// The band: the share the budget has not settled keeps the clipmap.
+				s = mix(s, sf, w_far * e);
+				data_w *= 1.0 - w_far * e;
+			} else {
+				if (e < 1.0 && pure_cap) {
+					// The pure cap looked no level up; an unsettled orbit reads the first that
+					// serves. It fades to the unsettled exterior over the last pixels of that
+					// level's window, or of the coarsest's where that one reaches further, so the
+					// clipmap's edge is no hard step in the vault.
+					bool okd;
+					int ld = usable_level(l0, e0, okd);
+					float kept = 0.0;
+					if (okd) {
+						bool dd;
+						float fade = window_fade(ld, e0, fp);
+						if (ld < max_level) {
+							fade = max(fade, window_fade(max_level, e0, fp));
+						}
+						vec4 sd = sample_level(ld, e0, dd);
+						// The set's inside stores max_iter as its count. Blended in with the
+						// fade it drew palette colours for counts nothing has (a violet seam on
+						// the inside colour), so the inside share keeps the exterior's count until
+						// the fade is nearly whole, where the inside colour covers the palette.
+						float kr = pow(fade, 1.0 / max(1.0 - clamp(sd.b, 0.0, 1.0), 0.02));
+						su = vec4(mix(su.r, sd.r, kr), mix(su.gba, sd.gba, fade));
+						kept = fade;
+					}
+					far_open = (1.0 - e) * (1.0 - kept);
 				} else {
-					s = vec4(float(min(globe_far_iter, near_max_iter)),
-						log2(max(fp_c, 1e-30)) - 1.0, 0.0, sf.a);
+					far_open = 1.0 - e;
 				}
+				s = mix(su, sf, e);
 			}
 		}
 		valid = true;
@@ -973,8 +1038,10 @@ void fragment() {
 			vec2 dc = e0 * texel0;
 			vec2 cp = vec2(near_c.x + (near_c.y + dc.x), near_c.z + (near_c.w + dc.y));
 			bool ok;
-			vec4 r = near_julia != 0 ? near_escape(near_julia_c, cp, near_iter, ok)
-				: near_escape(cp, vec2(0.0), near_iter, ok);
+			int nn;
+			vec2 tr;
+			vec4 r = near_julia != 0 ? near_escape(near_julia_c, cp, near_iter, ok, nn, tr)
+				: near_escape(cp, vec2(0.0), near_iter, ok, nn, tr);
 			if (ok) s = mix(s, r, smoothstep(0.75, 1.25, mag));
 		}
 	}
@@ -1085,6 +1152,11 @@ void fragment() {
 		float heavy = 1.0 - smoothstep(0.0, wd * 2.0 + 0.03, f4);
 		float fade = 1.0 - smoothstep(0.12, 0.35, wd);
 		float ink = clamp(0.45 * line + 0.35 * heavy, 0.0, 0.7) * fade * (1.0 - inside);
+		// GLOBE's unsettled exterior keeps the heavy line it has at both of the budget's resting
+		// values (8 and 32 are multiples of four, and the region is one count): while the budget
+		// climbs between them its count crosses every whole number, and the whole region
+		// flashed on and off its contour.
+		ink = mix(ink, 0.7, far_open);
 		col *= 1.0 - ink;
 	}
 
@@ -1173,7 +1245,10 @@ void fragment() {
 		float de_px = exp2(g_out) / max(texel0 * fpg, 1e-30);
 		if (art_style <= 4) {
 			vec3 art_pos = on_sphere ? vec3(w_world.x, v_world.y, w_world.y) : v_world;
-			col = ground_art(s, col, v, wcount, inside, de_px, lit_art, ao_art, art_pos, dist);
+			// No count contours across GLOBE's unsettled exterior (far_open): one stand-in count
+			// fills that region, so a line there lit all of it, at the budget's whole values only.
+			col = ground_art(s, col, v, wcount + 64.0 * far_open, inside, de_px, lit_art, ao_art,
+				art_pos, dist);
 		} else {
 			// V2: physical finishes on the fractal terrain; magma heats hollows and the set boundary.
 			float edge_heat = clamp(1.0 - de_px * 0.25, 0.0, 1.0) * (1.0 - inside);

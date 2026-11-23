@@ -247,9 +247,15 @@ var _globe_cap_m := GLOBE_CAP_MIN_M
 ## edge deep in. While the coarsest level is missing (a long jump, a new family or JULIA) it
 ## covers the whole sphere, and every pixel on the set ran the full 32: the Mac read 2.55x the
 ## flat floor's frame. Eight draws the set's outline and its first bands until the level lands;
-## what it cannot settle draws as exterior at the eighth band, never as the inside.
+## what it cannot settle draws as exterior at the eighth band, never as the inside. When the
+## level lands the budget climbs back to 32 over GLOBE_ITER_RAMP_S (_tick_globe_iter()), starting
+## as the cap opens (95% in 1.05 s): a sixth of an iteration a frame at 72 Hz, so a pixel whose
+## orbit escapes on the newest step moves to its band over six frames (ground.gdshader
+## globe_far()). At 1 s it took three, and the darker unsettled colour read as a flicker.
 const GLOBE_FAR_ITER := 32
 const GLOBE_REFILL_ITER := 8
+const GLOBE_ITER_RAMP_S := 2.0
+var _globe_iter := float(GLOBE_REFILL_ITER)
 var _eye_y := 1.6
 ## The sphere's centre and the standing glass disc under it are anchored in the world. A head
 ## turn swings the eyes 8 to 10 cm round the neck and looking down drops them about 10 cm; a
@@ -281,6 +287,11 @@ var _dirty: Array = []
 ## Per level, Array[Rect2i] of texels that hold the right place but an older fill (another
 ## iteration count). Shown as they are until refilled, after all of _dirty.
 var _refresh: Array = []
+## Per level, true while its _refresh holds the set from before a family or JULIA change: the
+## flat floor and the bowl keep the old coarsest level up while it refills in place
+## (invalidate()). Entering the globe drops such a level (set_sphere()), since the globe's far
+## fill shows the new set and would fall back to the old one. Cleared when the refill empties.
+var _old_set: Array[bool] = []
 ## Per level, the part of the window the shader may read, as texels from the viewer's.
 var _clean := PackedVector4Array()
 var _budget := 150000.0
@@ -365,6 +376,7 @@ func _init() -> void:
 		_full.append(true)
 		_dirty.append([] as Array[Rect2i])
 		_refresh.append([] as Array[Rect2i])
+		_old_set.append(false)
 		_clean.append(Vector4.ZERO)
 	_material.set_shader_parameter("tex_size", n_tex)
 	_material.set_shader_parameter("num_levels", LEVELS)
@@ -783,6 +795,7 @@ func invalidate(new_set := false) -> void:
 		_have[top] = false
 	elif _have[top] and not _full[top]:
 		_refresh[top] = [_window(top)] as Array[Rect2i]
+		_old_set[top] = _old_set[top] or new_set
 	else:
 		_have[top] = false
 
@@ -828,10 +841,12 @@ func _shift_in() -> void:
 		_full[i] = _full[i - 1]
 		_dirty[i] = _dirty[i - 1]
 		_refresh[i] = _refresh[i - 1]
+		_old_set[i] = _old_set[i - 1]
 	_have[0] = false
 	_full[0] = true
 	_dirty[0] = [] as Array[Rect2i]
 	_refresh[0] = [] as Array[Rect2i]
+	_old_set[0] = false
 
 
 func _shift_out() -> void:
@@ -843,10 +858,12 @@ func _shift_out() -> void:
 		_full[i] = _full[i + 1]
 		_dirty[i] = _dirty[i + 1]
 		_refresh[i] = _refresh[i + 1]
+		_old_set[i] = _old_set[i + 1]
 	_have[LEVELS - 1] = false
 	_full[LEVELS - 1] = true
 	_dirty[LEVELS - 1] = [] as Array[Rect2i]
 	_refresh[LEVELS - 1] = [] as Array[Rect2i]
+	_old_set[LEVELS - 1] = false
 	# Halving keeps the anchor on the same point but only a multiple of ANCHOR_Q / 2, so
 	# snap it back, after the levels have moved: _set_anchor shifts level i by the new
 	# stage's texels. Done before the move, it shifted each window by half what it should,
@@ -969,8 +986,7 @@ func update(head_xz: Vector2, delta: float = 0.0, eye_y: float = 1.6) -> void:
 	_material.set_shader_parameter("clean_rect", _clean)
 	if sphere_globe:
 		_tick_globe_cap(max_level, delta)
-		_material.set_shader_parameter(&"globe_far_iter",
-			GLOBE_FAR_ITER if _clean[LEVELS - 1] != Vector4.ZERO else GLOBE_REFILL_ITER)
+		_tick_globe_iter(delta)
 	_material.set_shader_parameter("texel0", t0)
 	_material.set_shader_parameter("wpu", wpu)
 	_material.set_shader_parameter("head_xz", head_xz)
@@ -1039,6 +1055,7 @@ func _track_window(i: int, vt0: Vector2i) -> void:
 		_full[i] = true
 		_dirty[i] = [Rect2i(want, Vector2i(n_tex, n_tex))] as Array[Rect2i]
 		_refresh[i] = [] as Array[Rect2i]
+		_old_set[i] = false
 		if on_queue.is_valid(): on_queue.call(i, _dirty[i][0])
 		return
 	var d := want - _win_lo[i]
@@ -1050,6 +1067,7 @@ func _track_window(i: int, vt0: Vector2i) -> void:
 		_full[i] = true
 		_dirty[i] = [Rect2i(want, Vector2i(n_tex, n_tex))] as Array[Rect2i]
 		_refresh[i] = [] as Array[Rect2i]
+		_old_set[i] = false
 		if on_queue.is_valid(): on_queue.call(i, _dirty[i][0])
 		return
 	# Whatever is still queued from earlier moves only matters inside the new window. Past
@@ -1233,6 +1251,8 @@ func _flush() -> void:
 			_full[i] = false
 	for i in range(LEVELS - 1, -1, -1):
 		left = _spend(_refresh[i], i, left)
+		if (_refresh[i] as Array).is_empty():
+			_old_set[i] = false
 	if _cl >= 0:
 		_rd.compute_list_end()
 		_rd.capture_timestamp("ground_end")
@@ -1454,9 +1474,18 @@ func set_sphere(radius: float, horizon_r: float, fog_start: float, passthrough_o
 	var was_globe := sphere_globe
 	sphere_globe = globe and sphere_radius > 0.0
 	_stage_bias = GLOBE_STAGE_BIAS if sphere_globe else 0
+	if sphere_globe and not was_globe:
+		# A level the bowl or the flat floor kept up through a family or JULIA change still
+		# holds the old set until its refill lands, and the stage shift below would hand it to
+		# the globe as level 6, readable under the new set's far fill. Drop it first.
+		for i in LEVELS:
+			if _old_set[i]:
+				_have[i] = false
+				_old_set[i] = false
 	_sync_stage()
 	if sphere_globe and not was_globe:
 		_globe_cap_m = GLOBE_CAP_MIN_M
+		_globe_iter = float(GLOBE_REFILL_ITER)
 	if not was_on and sphere_radius > 0.0:
 		_stand_xz = _head_xz
 		_sphere_cy = _eye_y
@@ -1495,6 +1524,23 @@ func _tick_globe_cap(top: int, delta: float) -> void:
 	else:
 		_globe_cap_m += (want - _globe_cap_m) * (1.0 - exp(-delta / 0.35))
 	_material.set_shader_parameter(&"globe_cap", Vector2(GLOBE_CAP_FADE * _globe_cap_m, _globe_cap_m))
+
+
+## GLOBE's far fill budget: GLOBE_REFILL_ITER while the coarsest level is missing, then up to
+## GLOBE_FAR_ITER at a steady GLOBE_ITER_RAMP_S once it lands, while the cap opens. The shader
+## takes it as a float: an orbit that escapes on the newest step blends in from the budget's
+## exterior over that step, so no pixel changes band in one frame.
+func _tick_globe_iter(delta: float) -> void:
+	if _clean[LEVELS - 1] == Vector4.ZERO:
+		_globe_iter = float(GLOBE_REFILL_ITER)
+	elif delta <= 0.0:
+		_globe_iter = float(GLOBE_FAR_ITER)
+	else:
+		# At most two 72 Hz frames of ramp a tick: the refill's own hitch frame (or any other)
+		# would otherwise jump several bands at once.
+		_globe_iter = minf(float(GLOBE_FAR_ITER), _globe_iter
+			+ float(GLOBE_FAR_ITER - GLOBE_REFILL_ITER) * minf(delta, 1.0 / 36.0) / GLOBE_ITER_RAMP_S)
+	_material.set_shader_parameter(&"globe_far_iter", _globe_iter)
 
 
 ## How far the sphere's rim fades into MANDEL SKY's horizon colour rather than fog_colour, 0..1.

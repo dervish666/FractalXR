@@ -501,7 +501,8 @@ func _ring_diff(a: Array[Color], b: Array[Color], r0: int) -> Vector2:
 	return Vector2(worst, at)
 
 
-## Waits for the clipmap to fill, on the globe for the cap to reach GLOBE_CAP_M, and for a sky
+## Waits for the clipmap to fill, on the globe for the cap to reach GLOBE_CAP_M and the far
+## fill's budget GLOBE_FAR_ITER, and for a sky
 ## the globe hid to fade back in (FlameSky.FADE_S). Whether it got there; a timeout is kept in
 ## _settle_fails, and the sphere checks FAIL on any. Frames in _settle_frames.
 func _settle_sphere(tag := "") -> bool:
@@ -511,6 +512,7 @@ func _settle_sphere(tag := "") -> bool:
 	var busy := func() -> bool:
 		return g.pending_texels() > 0 \
 			or (g.sphere_globe and g._globe_cap_m < FractalGround.GLOBE_CAP_M * 0.995) \
+			or (g.sphere_globe and g._globe_iter < float(FractalGround.GLOBE_FAR_ITER)) \
 			or (fs.is_shown() and fs._fade < 1.0)
 	while waited < 1200 and (busy.call() or waited < 12):
 		await process_frame
@@ -569,8 +571,10 @@ func _reach_m() -> float:
 ##   relief_flat  globe: a long jump's refill held (every level dropped): no relief normal leans
 ##             (the painted-normal shader), while the settled globe's does (the control).
 ##   far_budget  globe: globe_far_iter reads GLOBE_REFILL_ITER during that held refill and
-##             GLOBE_FAR_ITER once it has settled.
+##             GLOBE_FAR_ITER once it has settled (a readback; far_handoff renders it).
 ##   overlap, hollow  globe 64x, see _overlap_probe().
+##   edge_fade, far_handoff, bowl_julia, precision  globe 64x and 2^22x: _edge_fade_check(),
+##             _budget_handoff(), _bowl_julia_entry() and _precision_probe().
 ##   ray       ray_to_plane() from a hand-like origin against the analytic hit. Bowl: a ray up at
 ##             its wall hits it and does not zoom the sky, one higher misses. Globe: down, 8.5,
 ##             31 and 70 degrees up all hit, the trigger 70 degrees up starts a glide that way,
@@ -1143,13 +1147,20 @@ func _sphere_shots() -> bool:
 			# A report: deep in, the data and the far fill part where the fill's 32 iterations
 			# cannot settle the set's edge. This also shows the forcing hook takes.
 			var deep := root.get_viewport().get_texture().get_image()
+			var deep_u := _clip_uniforms()
 			var deep_far: Image = await _far_fill_only()
 			deep_far.save_png("%s/sphere_up_globe_64x_far.png" % OUT)
+			var deep_dat: Image = await _data_only()
+			deep_dat.save_png("%s/sphere_up_globe_64x_data.png" % OUT)
+			ok = _edge_fade_check(deep, deep_dat, deep_far, deep_u) and ok
 			var f64 := 0.5 * float(h) / tan(deg_to_rad(47.5))
 			var d0 := int(f64 * tan(deg_to_rad(1.7)))
 			var d1 := int(f64 * tan(deg_to_rad(28.0)))
 			var dd := _ring_diff(_ring_means(deep, d0, d1), _ring_means(deep_far, d0, d1), d0)
 			print("MSKYSHOT sphere cap_seam 64x report diff=%.4f at %d px" % [dd.x, int(dd.y)])
+			ok = await _budget_handoff() and ok
+			ok = await _bowl_julia_entry() and ok
+			ok = await _precision_probe() and ok
 			main._go_home()
 			await _settle_sphere("globe home")
 
@@ -1460,6 +1471,423 @@ func _overlap_probe() -> bool:
 		await process_frame
 	return ok and hollow_ok
 
+
+## Escape count of z0 = (x, y) under the Julia map z^2 + (cx, cy), in 64-bit floats, the fill's
+## |z| > 256 test after each step; -1 if it stays bounded for `cap` iterations.
+func _escape64_julia(x: float, y: float, cx: float, cy: float, cap: int) -> int:
+	var zx := x
+	var zy := y
+	for i in cap:
+		var t := zx * zx - zy * zy + cx
+		zy = 2.0 * zx * zy + cy
+		zx = t
+		if zx * zx + zy * zy > 65536.0:
+			return i + 1
+	return -1
+
+
+## The material's uniforms that place a pixel in the clipmap, as FractalGround.update() last set
+## them, for _pixel_e0() and _level_margin().
+func _clip_uniforms() -> Dictionary:
+	var g: FractalGround = main.ground
+	var m: ShaderMaterial = g._material
+	return {
+		"vt0": m.get_shader_parameter(&"view_texel0") as Vector2i,
+		"vf0": m.get_shader_parameter(&"view_frac0") as Vector2,
+		"clean": m.get_shader_parameter(&"clean_rect") as PackedVector4Array,
+		"rot": m.get_shader_parameter(&"rot") as Vector4,
+		"wpu": float(m.get_shader_parameter(&"wpu")),
+		"texel0": float(m.get_shader_parameter(&"texel0")),
+		"off": m.get_shader_parameter(&"sphere_off") as Vector2,
+		"hr": float(m.get_shader_parameter(&"sphere_horizon_r")),
+		"cap": m.get_shader_parameter(&"globe_cap") as Vector2,
+		"R": float(g.n_tex) * 0.5 - float(FractalGround.SLACK) - 1.0,
+		"centre": Vector3(g._stand_xz.x, g._sphere_cy, g._stand_xz.y),
+		"radius": g.sphere_radius,
+	}
+
+
+## The level-0 texel offset e0 of plane offset w (metres from the head), as the fragment forms it.
+func _w_e0(u: Dictionary, w: Vector2) -> Vector2:
+	var rot: Vector4 = u["rot"]
+	return Vector2(rot.x * w.x + rot.z * w.y, rot.y * w.x + rot.w * w.y) \
+		/ (float(u["wpu"]) * float(u["texel0"]))
+
+
+## Pixel p's plane point on the globe, as ground.gdshader's fragment works it out from the
+## direction to the pixel from the sphere's centre: x, y its e0, z its plane radius |q|.
+func _pixel_e0(cam: Camera3D, p: Vector2, u: Dictionary) -> Vector3:
+	var o := cam.project_ray_origin(p)
+	var d := cam.project_ray_normal(p)
+	var c: Vector3 = u["centre"]
+	var oc := o - c
+	var b := oc.dot(d)
+	var r: float = u["radius"]
+	var hit := o + d * (-b + sqrt(maxf(b * b - (oc.dot(oc) - r * r), 0.0)))
+	var gd := (hit - c).normalized()
+	var hr: float = u["hr"]
+	var r_max: float = 32768.0 * float(u["wpu"])
+	var xz := Vector2(gd.x, gd.z)
+	var q := Vector2(r_max, 0.0)
+	if gd.y <= 0.0:
+		q = hr * xz / (1.0 - gd.y)
+	elif xz.length_squared() > 0.0:
+		var rxz := xz.length()
+		q = (xz / rxz) * minf(hr * (1.0 + gd.y) / rxz, r_max)
+	var e0 := _w_e0(u, q + (u["off"] as Vector2))
+	return Vector3(e0.x, e0.y, q.length())
+
+
+## ground.gdshader window_margin(): how far inside what in_window() accepts at `level` the
+## offset e0 lies, in that level's texels (negative outside).
+func _level_margin(u: Dictionary, level: int, e0: Vector2) -> float:
+	var vt0: Vector2i = u["vt0"]
+	var vt := Vector2i(vt0.x >> level, vt0.y >> level)
+	var rem := vt0 - Vector2i(vt.x << level, vt.y << level)
+	var rel := (Vector2(rem) + (u["vf0"] as Vector2) + e0) / float(1 << level)
+	var c: Vector4 = (u["clean"] as PackedVector4Array)[level]
+	var big: float = u["R"]
+	return minf(minf(minf(rel.x - (c.x + 1.5), rel.y - (c.y + 1.5)),
+		minf((c.z - 1.5) - rel.x, (c.w - 1.5) - rel.y)),
+		minf(big - absf(rel.x), big - absf(rel.y)))
+
+
+## The coarsest level's window edge in the pure cap (Codex's case: the 64x seahorse view straight
+## up, where the clipmap stopped dead against the unsettled exterior, (226,223,205) beside
+## (16,7,35)). `drawn` is that view settled, `dat` the same with the clipmap forced wherever it
+## can serve, `far` with no data at all, `u` the uniforms it was drawn with. Per pixel of the pure
+## cap, its margin inside the coarsest level's window in pixels, worked out as the shader's
+## in_window() does from those uniforms and the camera's ray. Among pixels where the clipmap and
+## the unsettled exterior differ by more than 0.1 (the fade blends the count, so its colour is not
+## a straight share of the two):
+##   rim   within a pixel of the edge: at most 10% draw the clipmap's colour (a hard edge draws
+##         it at every one), and at least 75% sit nearer the exterior's than the clipmap's;
+##   deep  more than 9 px in: at least 90% draw the clipmap's colour, so the reading still serves
+##         the data.
+## Reported: the largest drawn step between a rim pixel and a neighbour outside the window.
+func _edge_fade_check(drawn: Image, dat: Image, far: Image, u: Dictionary) -> bool:
+	var cam: Camera3D = main.xr_camera
+	var top := FractalGround.LEVELS - 1
+	var cap_y: float = (u["cap"] as Vector2).y
+	var wd := drawn.get_width()
+	var ht := drawn.get_height()
+	var fpx := 0.5 * float(ht) / tan(deg_to_rad(cam.fov * 0.5))
+	var half := int(fpx * tan(2.0 * atan(float(u["hr"]) / cap_y))) + 2
+	var x0 := maxi(1, wd / 2 - half)
+	var x1 := mini(wd - 2, wd / 2 + half)
+	var y0 := maxi(1, ht / 2 - half)
+	var y1 := mini(ht - 2, ht / 2 + half)
+	# e0 per pixel of the box and one more row and column, for the footprint.
+	var gw := x1 - x0 + 2
+	var gh := y1 - y0 + 2
+	var e: Array[Vector3] = []
+	e.resize(gw * gh)
+	for j in gh:
+		for i in gw:
+			e[j * gw + i] = _pixel_e0(cam, Vector2(x0 + i, y0 + j) + Vector2(0.5, 0.5), u)
+	# The margin in pixels; -1e9 outside the pure cap.
+	var mw := gw - 1
+	var mpx := PackedFloat32Array()
+	mpx.resize(mw * (gh - 1))
+	for j in gh - 1:
+		for i in mw:
+			var a := e[j * gw + i]
+			var ax := e[j * gw + i + 1]
+			var ay := e[(j + 1) * gw + i]
+			var e0 := Vector2(a.x, a.y)
+			var fp := maxf((Vector2(ax.x, ax.y) - e0).length(), (Vector2(ay.x, ay.y) - e0).length())
+			mpx[j * mw + i] = -1e9 if a.z < cap_y \
+				else _level_margin(u, top, e0) * float(1 << top) / maxf(fp, 1e-9)
+	var rim := 0
+	var rim_data := 0
+	var rim_near := 0
+	var deep := 0
+	var deep_data := 0
+	var cross := 0.0
+	var outside := 0
+	for j in gh - 1:
+		for i in mw:
+			var m := mpx[j * mw + i]
+			if m <= -1e8:
+				continue
+			var x := x0 + i
+			var y := y0 + j
+			if m < 0.0:
+				outside += 1
+				continue
+			var pf := far.get_pixel(x, y)
+			var span := _cdiff(dat.get_pixel(x, y), pf)
+			if span < 0.1:
+				continue
+			var pn := drawn.get_pixel(x, y)
+			var to_data := _cdiff(pn, dat.get_pixel(x, y))
+			if m < 1.0:
+				rim += 1
+				rim_data += 1 if to_data < 0.01 else 0
+				rim_near += 1 if _cdiff(pn, pf) < to_data else 0
+				for nb: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+					var ii := i + nb.x
+					var jj := j + nb.y
+					if ii < 0 or jj < 0 or ii >= mw or jj >= gh - 1:
+						continue
+					var mn := mpx[jj * mw + ii]
+					if mn < 0.0 and mn > -1e8:
+						cross = maxf(cross, _cdiff(pn, drawn.get_pixel(x + nb.x, y + nb.y)))
+			elif m > 9.0:
+				deep += 1
+				deep_data += 1 if to_data < 0.01 else 0
+	var f_rd := float(rim_data) / float(maxi(rim, 1))
+	var f_rn := float(rim_near) / float(maxi(rim, 1))
+	var f_dd := float(deep_data) / float(maxi(deep, 1))
+	var good := rim >= 10 and deep >= 10 and outside > 0 and f_rd <= 0.1 and f_rn >= 0.75 \
+		and f_dd >= 0.9
+	print("MSKYSHOT sphere edge_fade globe 64x %s rim=%d px (clipmap's colour %.2f, nearer the exterior %.2f) deep=%d px (clipmap's colour %.2f) outside=%d px, worst step across the edge %.4f" % [
+		"PASS" if good else "FAIL", rim, f_rd, f_rn, deep, f_dd, outside, cross])
+	return good
+
+
+## The far fill's budget, rendered (Codex's case): 64x into seahorse valley, settled, the plane
+## point 1200 m out at 56 degrees from +X toward +Z, past every level's window, whose 64-bit orbit
+## escapes on a step from 9 to 32. Its centre block through a 10 degree lens:
+##   settled  the far fill at 32 draws its escape band;
+##   refill   every level dropped and the fill held: the budget is 8 and the orbit unsettled, so
+##            the block must differ from settled by 0.05 at least. Hardcoding 32 in globe_far()
+##            draws the escape band here too and fails.
+##   landing  the fill released, every frame from the last without the coarsest level until the
+##            budget is back at 32, at 72 Hz frame times (Engine.time_scale scales the Mac's
+##            frame time to 1/72 s, so the ramp advances a frame as it would on the Quest): the
+##            first frame with the coarsest level, and every frame after it, change
+##            the block by under a quarter of the refill-to-settled difference, and the last
+##            matches settled.
+## The settled, refill, first and last frames are kept for Sam.
+func _budget_handoff() -> bool:
+	var g: FractalGround = main.ground
+	var mat: ShaderMaterial = g._material
+	var top := FractalGround.LEVELS - 1
+	var az := deg_to_rad(56.0)
+	var q := Vector2(cos(az), sin(az)) * 1200.0
+	var f := g.world_to_fractal64(g._stand_xz + q)
+	var n64 := _escape64(f[0], f[1], 4096)
+	var u := _clip_uniforms()
+	var e0 := _w_e0(u, q + (u["off"] as Vector2))
+	var best := -1e30
+	for l in FractalGround.LEVELS:
+		best = maxf(best, _level_margin(u, l, e0))
+	var premise := n64 >= 9 and n64 <= FAR_BUDGET and best < 0.0
+	main.xr_camera.fov = 10.0
+	_look_at(_plane_dir(q, g.sphere_horizon_r))
+	for i in 8:
+		await process_frame
+	var img := _shot("sphere_handoff_settled_globe_64x")
+	var cx := img.get_width() / 2
+	var cy := img.get_height() / 2
+	var c_set := _block_mean(img, cx, cy, 1)
+	var budget := _hold_refill()
+	for i in 6:
+		await process_frame
+	img = _shot("sphere_handoff_refill_globe_64x")
+	var c_ref := _block_mean(img, cx, cy, 1)
+	var it_ref := float(mat.get_shader_parameter(&"globe_far_iter"))
+	# The Mac's frame time with a full readback each frame, for the 72 Hz time scale.
+	var t0 := Time.get_ticks_usec()
+	for i in 6:
+		await RenderingServer.frame_post_draw
+		root.get_viewport().get_texture().get_image()
+	var dt := float(Time.get_ticks_usec() - t0) / 6.0e6
+	var ts_saved := Engine.time_scale
+	var ts := clampf((1.0 / 72.0) / maxf(dt, 1e-4), 0.02, 4.0)
+	Engine.time_scale = ts
+	g._budget = budget
+	var cols: Array[Color] = [c_ref]
+	var buds: Array[float] = [it_ref]
+	var first := -1
+	var last_img: Image = null
+	for i in 1500:
+		await RenderingServer.frame_post_draw
+		var landed := (mat.get_shader_parameter(&"clean_rect") as PackedVector4Array)[top] != Vector4.ZERO
+		var b := float(mat.get_shader_parameter(&"globe_far_iter"))
+		last_img = root.get_viewport().get_texture().get_image()
+		cols.append(_block_mean(last_img, cx, cy, 1))
+		buds.append(b)
+		if landed and first < 0:
+			first = cols.size() - 1
+			last_img.save_png("%s/sphere_handoff_first_globe_64x.png" % OUT)
+		if first >= 0 and b >= float(FAR_BUDGET) and cols.size() - 1 > first + 6:
+			break
+	Engine.time_scale = ts_saved
+	if last_img != null:
+		last_img.save_png("%s/sphere_handoff_last_globe_64x.png" % OUT)
+	var full := _cdiff(c_ref, c_set)
+	var jump := _cdiff(cols[first - 1], cols[first]) if first > 0 else 1.0
+	var worst := 0.0
+	var worst_at := 0
+	if first > 0:
+		for k in range(first, cols.size()):
+			var d := _cdiff(cols[k - 1], cols[k])
+			if d > worst:
+				worst = d
+				worst_at = k - first
+	var end_d := _cdiff(cols[cols.size() - 1], c_set)
+	var good := premise and first > 0 and full > 0.05 and jump < 0.25 * full \
+		and worst < 0.25 * full and end_d < 0.02 and is_equal_approx(it_ref, 8.0)
+	print("MSKYSHOT sphere far_handoff globe 64x %s n64=%d past every level=%s refill-settled=%.4f (budget %.1f) landing=%.4f (budget %.2f) worst=%.4f at frame %+d, %d frames to %d, last-settled=%.4f, time_scale %.3f (Mac frame %.1f ms)" % [
+		"PASS" if good else "FAIL", n64, best < 0.0, full, it_ref, jump,
+		buds[first] if first > 0 else -1.0, worst, worst_at, cols.size() - 1 - first, FAR_BUDGET,
+		end_d, ts, dt * 1000.0])
+	var series := ""
+	for k in range(maxi(first - 2, 0), mini(cols.size(), first + 40)):
+		series += " %+d:%.2f/%.3f" % [k - first, buds[k], _cdiff(cols[k], c_set)]
+	print("MSKYSHOT sphere far_handoff series (frame:budget/distance to settled)%s" % series)
+	await _settle_sphere("globe 64x handoff")
+	return good
+
+
+## Bowl to globe in the middle of a JULIA refill (Codex's case). 64x into seahorse valley in the
+## bowl, settled; the fill held; JULIA here, which on the bowl keeps the coarsest level up, still
+## the Mandelbrot, until it refills in place; then the globe with the fill still held, so no level
+## of the new set exists and the stage shift would make that old layer level 6. Nothing may be
+## readable:
+##   frame   straight up, the frame matches the globe's no-data frame;
+##   hollow  with HOLLOW on, -0.70+0.16i (126 m out) keeps its pixel. It is inside the
+##           Mandelbrot's main cardioid (the old layer's interior), and the new Julia orbit there
+##           escapes past the refill budget, so only the old layer could cut it out.
+## Premise, read back: the bowl kept that level (flagged old set, refill queued).
+func _bowl_julia_entry() -> bool:
+	var g: FractalGround = main.ground
+	var top := FractalGround.LEVELS - 1
+	main._step_ground_sphere(1 - main.ground_sphere_idx)
+	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
+	g.set_viewer_fractal(-0.7453, 0.1127)
+	g.zoom(64.0 * FractalGround.WPU_BASE / g.wpu)
+	var s_ok := await _settle_sphere("bowl 64x")
+	var saved: float = g._budget
+	g._budget = 0.0
+	g.julia_here()
+	var kept: bool = g._have[top] and g._old_set[top] and not (g._refresh[top] as Array).is_empty()
+	for i in 4:
+		await process_frame
+	main._step_ground_sphere(FractalMain.GROUND_GLOBE - main.ground_sphere_idx)
+	main.xr_camera.position = Vector3(0.0, 1.6, 0.0)
+	main.xr_camera.fov = 95.0
+	_look(90.0)
+	for i in 8:
+		await process_frame
+	var up := _shot("sphere_bowl_julia_up_globe_64x")
+	var nod: Image = await _far_fill_only()
+	var fd := _band_diff(up, nod, 0, up.get_height())
+	var readable := 0
+	for i in FractalGround.LEVELS:
+		if g._clean[i] != Vector4.ZERO:
+			readable += 1
+	var zq := g.fractal64_to_world(-0.70, 0.16) - g._stand_xz
+	var nj := _escape64_julia(-0.70, 0.16, g._jx, g._jy, 4096)
+	var nm := _escape64(-0.70, 0.16, 4096)
+	_sentinel_bg(true)
+	g.set_look(&"inside_passthrough", 1.0)
+	main.xr_camera.fov = 10.0
+	_look_at(_plane_dir(zq, g.sphere_horizon_r))
+	for i in 6:
+		await process_frame
+	var pimg := _shot("sphere_bowl_julia_hollow_globe_64x")
+	var cx := pimg.get_width() / 2
+	var cy := pimg.get_height() / 2
+	var bg: Image = await _without_ground()
+	var sent := _block_mean(bg, cx, cy, 1)
+	var hole := _cdiff(_block_mean(pimg, cx, cy, 1), sent) < 0.01
+	g.set_look(&"inside_passthrough", 0.0)
+	_sentinel_bg(false)
+	var premise := s_ok and kept and nm < 0 and nj > FractalGround.GLOBE_REFILL_ITER \
+		and sent.r > 0.5 and sent.g < 0.3
+	var good := premise and fd < 0.002 and not hole
+	print("MSKYSHOT sphere bowl_julia globe 64x %s kept_in_bowl=%s frame-nodata=%.5f readable_levels=%d hollow -0.70+0.16i (%.0f m, mandelbrot n64=%d, julia n64=%d) hole=%s" % [
+		"PASS" if good else "FAIL", kept, fd, readable, zq.length(), nm, nj, hole])
+	g.set_julia(false)
+	g._budget = saved
+	main.xr_camera.fov = 95.0
+	_look(90.0)
+	await _settle_sphere("globe after bowl julia")
+	return good
+
+
+## The precision gate (Codex's case): the globe at 2^22x by the needle's tip, the viewer 620 m
+## of plane inside -2.00000013 on the real axis and the probe on that point, in the pure cap and
+## inside the coarsest level's window. Float32 holds it only as -2.0000002384, 30 m out at this
+## zoom and far coarser than the probe's pixel, so the far fill iterates the rounded point. Once
+## the coarsest level is in (perturbed or df32) and the cap open, the fill is held, which keeps
+## the Mac light. Through a 10 degree lens, every pixel of the pure cap inside that level's
+## window must draw the clipmap (the data frame), and the far fill alone (the no-data frame) must
+## differ from it at 1% of them or more, so the probe sees the gate. The rounding moves the count
+## by a quarter at most here (the field is smooth at 30 m), so the colour of any one block hardly
+## changes; TERRAIN's contour lines move.
+func _precision_probe() -> bool:
+	var g: FractalGround = main.ground
+	var top := FractalGround.LEVELS - 1
+	g.zoom(4194304.0 * FractalGround.WPU_BASE / g.wpu)
+	var target := -2.00000013
+	g.set_viewer_fractal(target + 620.0 / g.wpu, 0.0)
+	var waited := 0
+	while waited < 3000 and (not (g._dirty[top] as Array).is_empty() or g._clean[top] == Vector4.ZERO \
+			or g._globe_cap_m < FractalGround.GLOBE_CAP_M * 0.995 \
+			or g._globe_iter < float(FractalGround.GLOBE_FAR_ITER) or waited < 12):
+		await process_frame
+		waited += 1
+	var saved: float = g._budget
+	g._budget = 0.0
+	var landed: bool = (g._dirty[top] as Array).is_empty() and g._clean[top] != Vector4.ZERO
+	var q := g.fractal64_to_world(target, 0.0) - g._stand_xz
+	var u := _clip_uniforms()
+	var margin := _level_margin(u, top, _w_e0(u, q + (u["off"] as Vector2)))
+	var f := g.world_to_fractal64(g._stand_xz + q)
+	var fx32: float = PackedFloat32Array([f[0]])[0]
+	main.xr_camera.fov = 10.0
+	_look_at(_plane_dir(q, g.sphere_horizon_r))
+	for i in 6:
+		await process_frame
+	var drawn := _shot("sphere_precision_globe_2p22x")
+	var dat: Image = await _data_only()
+	var far: Image = await _far_fill_only()
+	far.save_png("%s/sphere_precision_globe_2p22x_nodata.png" % OUT)
+	var cam: Camera3D = main.xr_camera
+	var cap_y: float = (u["cap"] as Vector2).y
+	# Every second pixel of the frame that lies in the pure cap and more than two texels inside
+	# the coarsest level's window: how many the far fill alone (nodata) and the drawn frame
+	# change by more than 0.05 against the data frame. The rounded point steps every float32
+	# spacing (30 m here), so the far fill alone draws the field in blocks and moves TERRAIN's
+	# contour lines; the gate must leave every drawn pixel on the data.
+	var n_px := 0
+	var n_far := 0
+	var n_drawn := 0
+	var worst := 0.0
+	for y in range(1, drawn.get_height() - 1, 2):
+		for x in range(1, drawn.get_width() - 1, 2):
+			var pe := _pixel_e0(cam, Vector2(x, y) + Vector2(0.5, 0.5), u)
+			if pe.z < cap_y or _level_margin(u, top, Vector2(pe.x, pe.y)) < 2.0:
+				continue
+			n_px += 1
+			var pd := dat.get_pixel(x, y)
+			if _cdiff(far.get_pixel(x, y), pd) > 0.05:
+				n_far += 1
+			var dn := _cdiff(drawn.get_pixel(x, y), pd)
+			worst = maxf(worst, dn)
+			if dn > 0.05:
+				n_drawn += 1
+	# The probe's pixel in fractal units against float32's spacing at the viewer's |c| (the
+	# shader's far_coarse test): H / (2 sin^2(theta / 2)) plane metres a radian at the zenith
+	# angle theta = 2 atan(H / r).
+	var hr: float = g.sphere_horizon_r
+	var th := 2.0 * atan(hr / q.length())
+	var px_rad := deg_to_rad(cam.fov) / float(drawn.get_height())
+	var fp_c := hr / (2.0 * pow(sin(0.5 * th), 2.0)) * px_rad / g.wpu
+	var c_ulp := maxf(absf(f[0]), 1.0) * 1.2e-7
+	var premise := landed and q.length() > cap_y and margin > 0.0 and c_ulp > fp_c \
+		and n_px >= 2000 and n_far >= maxi(50, n_px / 100)
+	var good := premise and n_drawn == 0
+	print("MSKYSHOT sphere precision globe 2^22x %s probe %.0f m (cap %.0f m, margin %.0f texels) c=%.9f float32 %.10f, spacing %s > pixel %s; of %d pixels in the cap and window, far fill alone off the data at %d, drawn off it at %d (worst %.4f), after %d frames" % [
+		"PASS" if good else "FAIL", q.length(), cap_y, margin, f[0], fx32,
+		String.num_scientific(c_ulp), String.num_scientific(fp_c), n_px, n_far, n_drawn, worst,
+		waited])
+	g._budget = saved
+	return good
 
 ## GPU ms a frame (viewport_get_measured_render_time_gpu) for SPHERE off, bowl and globe under
 ## the MANDEL sky with the default look, looking level and 60 degrees up, settled and during a
