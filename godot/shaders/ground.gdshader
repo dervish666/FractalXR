@@ -58,7 +58,7 @@ uniform vec2 sphere_off = vec2(0.0);
 // GLOBE (sphere_globe 1): the same map without the clamp at the equator, so the whole plane
 // lies on the sphere with its point at infinity on the zenith: the Riemann sphere. The radial
 // mesh's outer ring (sphere_mesh_r, fractal_ground.gd MESH_R_MAX) goes to the zenith. Past the
-// clipmap's data the fragment works the escape count itself (near_escape, GLOBE_FAR_ITER),
+// clipmap's data the fragment works the escape count itself (globe_far(), globe_far_iter),
 // crossfading from the data between plane radii globe_cap.x and .y, which FractalGround keeps
 // inside the coarsest level's reach. The globe lights the surface in the plane's own frame, so
 // the vault overhead is lit as the floor is.
@@ -148,8 +148,16 @@ mat3 sphere_frame(vec2 u) {
 // vault is the plane lit flat: one bilinear sample a pixel and no relief cross, which keeps the
 // half of the sphere that was one sky fetch cheap.
 const vec2 GLOBE_RELIEF_U = vec2(1.428, 2.747);
-// GLOBE's iteration budget past the data (fragment). The far exterior escapes in under ten.
-const int GLOBE_FAR_ITER = 32;
+// GLOBE's iteration budget past the data (fragment), set by FractalGround: GLOBE_FAR_ITER (32)
+// once the coarsest level is in, where the far fill covers only the cap and the far exterior
+// escapes in under ten; GLOBE_REFILL_ITER while no level is, when it covers the whole sphere
+// and every pixel on the set would run the full budget.
+uniform int globe_far_iter = 32;
+// GLOBE's far radius bound in fractal units: the plane radius a pixel evaluates grows toward the
+// zenith up to this and holds, so the last arcseconds round the pole are one exterior colour and
+// the zenith pixel, which has no azimuth, takes the same one. A quartic Julia's first step from
+// 2^15 is 2^60, inside float32.
+const float GLOBE_FAR_C = 32768.0;
 
 // CYCLE (main.gd, the COLOUR card): Fractint's colour cycling, the ramp sliding along the count
 // so the bands flow. A global in cycles, the same one every mode reads; 0 is the ramp as before.
@@ -635,6 +643,28 @@ vec4 near_escape(vec2 c, vec2 z0, int cap, out bool ok) {
 	return vec4(s, log2(max(de, 1e-30)), 0.0, mix(tia, st, near_stalk));
 }
 
+// GLOBE's far fill at fractal point cp, with near_escape() at the globe's budget. state 0: it
+// escaped, and the count is the one the fill would store. 1: the set's inside, settled: by a
+// budget at max_iter as the fill decides it, or for MANDELBROT by the closed-form tests for the
+// main cardioid and the period-2 bulb (the orbit trap is the budget's, close to the fill's, since
+// an attracting orbit reaches its smallest radius early). 2: the budget ran out first, so the
+// orbit is unsettled and says nothing about inside or out.
+vec4 globe_far(vec2 cp, out int state) {
+	bool ok;
+	vec4 sf = near_julia != 0 ? near_escape(near_julia_c, cp, globe_far_iter, ok)
+		: near_escape(cp, vec2(0.0), globe_far_iter, ok);
+	if (!ok && near_formula == 0 && near_julia == 0) {
+		vec2 a = cp - vec2(0.25, 0.0);
+		float qa = dot(a, a);
+		vec2 b = cp + vec2(1.0, 0.0);
+		ok = qa * (qa + a.x) <= 0.25 * cp.y * cp.y || dot(b, b) <= 0.0625;
+	}
+	state = ok ? (sf.b > 0.5 ? 1 : 0) : 2;
+	// Past |c| = 2^32 the count would fall below -1; GLOBE_FAR_C stops well short.
+	sf.r = max(sf.r, -0.99);
+	return sf;
+}
+
 // STYLE on the ground. styles.gdshaderinc's art_colour draws an object by its folds and a
 // world-space pattern, and a flat floor has neither: pencil came out blank paper, circuit a
 // PCB texture that ignored the set, and neon and toon turned the filaments to mush. Here
@@ -779,11 +809,25 @@ void fragment() {
 	vec2 q = v_plane;
 	// GLOBE: the plane point from this pixel's direction from the centre, exact everywhere. The
 	// triangles round the zenith span plane radii out to infinity, which an interpolated plane
-	// coordinate cannot carry. `cap` is the fade into globe_far_colour() past the data.
+	// coordinate cannot carry. `cap` is the fade into the far fill past the data.
 	float cap = 0.0;
 	if (globe) {
 		vec3 gd = normalize(v_world - (MODEL_MATRIX * vec4(0.0, sphere_centre_y, 0.0, 1.0)).xyz);
-		q = sphere_horizon_r * gd.xz / max(1.0 - gd.y, 1e-6);
+		// The lower half as H xz / (1 - y). The upper half as the same value written
+		// H xz (1 + y) / |xz|^2, which keeps its precision to the zenith, where 1 - y cancels to
+		// nothing (and max(1 - y, 1e-6) folded the last 0.08 degrees back to the nadir). The
+		// radius is bounded at GLOBE_FAR_C and only grows toward the zenith; the zenith pixel,
+		// which has no azimuth, takes the bound along +x, the colour round it already.
+		float rxz2 = dot(gd.xz, gd.xz);
+		float r_max = GLOBE_FAR_C * wpu;
+		if (gd.y <= 0.0) {
+			q = sphere_horizon_r * gd.xz / (1.0 - gd.y);
+		} else if (rxz2 > 0.0) {
+			float rxz = sqrt(rxz2);
+			q = (gd.xz / rxz) * min(sphere_horizon_r * (1.0 + gd.y) / rxz, r_max);
+		} else {
+			q = vec2(r_max, 0.0);
+		}
 		cap = smoothstep(globe_cap.x, globe_cap.y, length(q));
 	}
 	vec2 w = on_sphere ? (q + sphere_off) : (v_world.xz - head_xz);
@@ -791,10 +835,9 @@ void fragment() {
 	// (v_world.xz - head_xz) + head_xz is not bit-exact in float32.
 	vec2 w_world = on_sphere ? (w + head_xz) : v_world.xz;
 	// Offset from the viewer in level-0 texels. Small numbers by construction, except in the
-	// globe's cap, where the plane runs to infinity: there the samples are taken under the
-	// viewer instead (e0q), which no texel index can overflow, and the cap's colour covers them.
+	// globe's cap, where the plane runs out to GLOBE_FAR_C: every texel fetch there is behind a
+	// window check, which is float arithmetic and no index is formed until it passes.
 	vec2 e0 = (mat2(rot.xy, rot.zw) * w) / (wpu * texel0);
-	vec2 e0q = cap < 1.0 ? e0 : vec2(0.0);
 	float dist = length(w);
 	// GLOBE's relief tapers out up the vault (GLOBE_RELIEF_U); where it is gone, no relief cross.
 	float t_rel = globe ? 1.0 - smoothstep(GLOBE_RELIEF_U.x, GLOBE_RELIEF_U.y,
@@ -822,26 +865,33 @@ void fragment() {
 	// window or another scale in those slots. Pass over it to the next coarser level that is
 	// filled, without a blend: a patch a level blurrier until the fill lands, never one of
 	// somewhere else. Same for l1, which then drops out of the blend.
-	bool in0;
-	int lu = usable_level(l0, e0q, in0);
-	if (lu != l0) k = 0.0;
-	l0 = lu;
+	// GLOBE: the pure cap (cap 1) reads no level unless its far orbit comes back unsettled
+	// (below), and a pixel whose window check fails reads none at all: nothing there can show.
+	// The flat floor and the bowl fetch as they always have, and fog or rim fog covers a miss.
+	bool pure_cap = globe && cap >= 1.0;
+	bool in0 = false;
+	if (!pure_cap) {
+		int lu = usable_level(l0, e0, in0);
+		if (lu != l0) k = 0.0;
+		l0 = lu;
+	}
 	int l1 = min(l0 + 1, max_level);
-	bool in1 = l1 != l0 && in_window(l1, e0q);
+	bool in1 = !pure_cap && l1 != l0 && in_window(l1, e0);
 	if (!in1) k = 0.0;
+	bool fetch = !globe || in0;
 	// Relief needs a 12-texel cross at l0 that contains this sample: fetch it once, up front.
 	bool relief_on = relief_mode != 0 || bump_strength > 0.0;
-	bool relief_fetch = relief_on && t_rel > 0.0;
+	bool relief_fetch = relief_on && t_rel > 0.0 && fetch;
 	float hx0 = 0.0;
 	float hx1 = 0.0;
 	float hz0 = 0.0;
 	float hz1 = 0.0;
-	vec4 sa;
+	vec4 sa = vec4(0.0);
 	if (relief_fetch) {
-		relief_heights(l0, e0q, hx0, hx1, hz0, hz1, sa);
-	} else {
+		relief_heights(l0, e0, hx0, hx1, hz0, hz1, sa);
+	} else if (fetch) {
 		bool d0;
-		sa = sample_level(l0, e0q, d0);
+		sa = sample_level(l0, e0, d0);
 	}
 	// When blending normals to l1 (kn > 0), fetch l1's relief block once and reuse its centre
 	// as sb instead of calling sample_level(l1) and then re-fetching the same 4 texels later.
@@ -850,31 +900,56 @@ void fragment() {
 	float a0 = 0.0, a1 = 0.0, b0 = 0.0, b1 = 0.0;
 	vec4 sb = sa;
 	if (need_n1) {
-		relief_heights(l1, e0q, a0, a1, b0, b1, sb);
+		relief_heights(l1, e0, a0, a1, b0, b1, sb);
 	} else if (k > 0.0) {
 		bool d1;
-		sb = sample_level(l1, e0q, d1);
+		sb = sample_level(l1, e0, d1);
 	}
 	vec4 s = mix(sa, sb, k);
 	bool valid = in0;
+	// GLOBE: the share of this pixel's sample that is the clipmap's, which is the share its
+	// relief normal may have. Nothing from the clipmap, no relief: a flat normal.
+	float data_w = 1.0;
 
-	// GLOBE past the data: the escape count worked here, with GLOBE_FAR_ITER iterations at
-	// most, crossfaded in over the cap's band. The neighbourhood of infinity is always the far
-	// exterior, where every family escapes in a handful of iterations, so near the zenith this
-	// is the same count, distance and texture the fill would have stored. Deep in, the band
-	// also crosses the set at scales coarser than the data, and what the budget cannot settle
-	// draws as the set's inside: the set's large shapes at a low iteration count.
+	// GLOBE past the data: the escape count worked here (globe_far()), crossfaded in over the
+	// cap's band. The neighbourhood of infinity is always the far exterior, where every family
+	// escapes in a handful of iterations, so near the zenith this is the same count, distance and
+	// texture the fill would have stored. Deep in, the band and the cap cross the set at scales
+	// coarser than the data, where the budget cannot settle every orbit. An unsettled orbit
+	// never draws as the set's inside, which HOLLOW would cut out of the vault: it keeps the
+	// clipmap wherever a level can serve it (in the band, or in the pure cap inside the coarsest
+	// level's reach), and otherwise draws as exterior at the budget's count, the colour the
+	// slowest escapers round it reach.
 	if (globe) {
+		data_w = valid ? 1.0 : 0.0;
 		float w_far = valid ? cap : 1.0;
+		// Where the clipmap already answers what the budget cannot (the set's inside, or a count
+		// past the budget), or where float32 cannot place the far fill's point to within a pixel
+		// (deep zooms, with the df32 or perturbed clipmap to hand), the clipmap stands alone.
+		float fp_c = fp * texel0;
+		float c_ulp = max(max(abs(near_c.x), abs(near_c.z)), 1.0) * 1.2e-7;
+		if (valid && (s.b > 0.0 || s.r >= float(globe_far_iter) || c_ulp > fp_c)) {
+			w_far = 0.0;
+		}
 		if (w_far > 0.0) {
 			vec2 dc = (mat2(rot.xy, rot.zw) * w) / wpu;
 			vec2 cp = vec2(near_c.x + (near_c.y + dc.x), near_c.z + (near_c.w + dc.y));
-			bool ok_far;
-			vec4 sf = near_julia != 0 ? near_escape(near_julia_c, cp, GLOBE_FAR_ITER, ok_far)
-				: near_escape(cp, vec2(0.0), GLOBE_FAR_ITER, ok_far);
-			// Past |c| = 2^32 the count would fall below -1; the zenith pixel stops well short.
-			sf.r = max(sf.r, -0.99);
-			s = mix(s, sf, w_far);
+			int far_state;
+			vec4 sf = globe_far(cp, far_state);
+			if (far_state != 2) {
+				s = mix(s, sf, w_far);
+				data_w *= 1.0 - w_far;
+			} else if (!valid) {
+				bool okd = false;
+				int ld = pure_cap ? usable_level(l0, e0, okd) : l0;
+				if (okd) {
+					bool dd;
+					s = sample_level(ld, e0, dd);
+				} else {
+					s = vec4(float(min(globe_far_iter, near_max_iter)),
+						log2(max(fp_c, 1e-30)) - 1.0, 0.0, sf.a);
+				}
+			}
 		}
 		valid = true;
 	}
@@ -969,8 +1044,8 @@ void fragment() {
 				lap = mix(lap, lap1, kn);
 			}
 			if (globe) {
-				n = normalize(mix(vec3(0.0, 1.0, 0.0), n, t_rel));
-				lap *= t_rel;
+				n = normalize(mix(vec3(0.0, 1.0, 0.0), n, t_rel * data_w));
+				lap *= t_rel * data_w;
 			}
 		}
 		vec3 n_l = n;

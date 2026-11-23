@@ -73,12 +73,33 @@ All notable changes to FractalXR are documented here. Format based on
     coarsest level reaches 700 to 1400 m of plane, 3.6 to 7.3 degrees from the zenith.
     `relief_unit` keeps HEIGHT and RIDGES the same in metres and `iter_floor()` goes by the
     zoom's own stage, so the floor looks as it does in the bowl.
-  - Past the data the fragment works the escape count itself, with `near_escape()` and at most
-    32 iterations, crossfaded in between 360 and 600 m of plane radius (14 to 8.6 degrees from
-    the zenith). That edge follows the coarsest finished level's reach, so while new levels fill
-    it closes in rather than showing a hole. At home the region is the far exterior, which
-    escapes in under ten iterations and matches the stored data to a mean of 0.0003. Deep in, it
-    draws the set's large shapes at 32 iterations.
+  - Past the data the fragment works the escape count itself (`globe_far()` over
+    `near_escape()`), crossfaded in between 360 and 600 m of plane radius (14 to 8.6 degrees
+    from the zenith). That edge follows the coarsest finished level's reach, so while new levels
+    fill it closes in rather than showing a hole. At home the region is the far exterior, which
+    escapes in under ten iterations and matches the stored data to a mean of 0.0003.
+    - The budget is 32 iterations once the coarsest level is in and 8 while it is missing
+      (`FractalGround.GLOBE_REFILL_ITER`, sent as `globe_far_iter`). During a refill the far
+      fill covers the whole sphere, and every pixel on the set used to run all 32. Eight draws
+      the outline, and the levels replace it as they land.
+    - An orbit the budget cannot settle never draws as the set's inside, so HOLLOW cannot cut it
+      out of the vault. The pixel keeps the clipmap where any level holds it and otherwise draws
+      as exterior at the budget's count. On MANDELBROT the main cardioid and the period-2 bulb
+      count as settled by their closed-form tests.
+    - Where the clipmap holds the set's inside or a count past the budget, the clipmap stands
+      alone. So does it where float32 cannot place the far fill's point within a level-0 texel
+      (deep zooms, where the clipmap runs df32 or perturbed). Past the data at those zooms the
+      cap is the budget's exterior colour, one flat tone round the zenith.
+    - The cap where the fade is complete reads no clipmap level unless its orbit comes back
+      unsettled, and a pixel that fails the window check reads none.
+    - The upper half maps a direction to the plane as H xz (1 + y) / |xz|², which keeps its
+      precision to the zenith. The old H xz / max(1 - y, 1e-6) folded the last 0.08 degrees
+      back toward the nadir. The plane radius stops growing at 32768 fractal units
+      (`GLOBE_FAR_C`), so the zenith pixel, which has no azimuth, takes the colour round it.
+  - A family or JULIA change on the globe drops every level, the coarsest included
+    (`invalidate(true)`), so the far fill shows the new set until its levels land. The flat
+    floor and the bowl keep the old coarsest level while it refills in place. Relief normals
+    and their curvature go flat in the share of a pixel that comes from the far fill.
   - Relief displacement and its shading fade to flat between 20 and 50 degrees above the
     horizon, so COAST, HEIGHT and BUMP do not hang overhead. The vault is lit in the plane's own
     frame, as the floor is, so the sun falls the same way on both halves.
@@ -102,14 +123,19 @@ All notable changes to FractalXR are documented here. Format based on
 - Trigger glides aim by ray-sphere intersection (`FractalGround.ray_to_plane()`). In the bowl a
   ray that hits the wall glides there instead of zooming the sky. On the globe every ray hits
   the floor, overhead included, and glides that way under the usual limits (6 m of surface at
-  1.5 m/s). Grab and stick movement scale by plane metres per surface metre at the nadir (11.25
+  1.5 m/s). Above the horizon the hit uses the shader's reciprocal form, so a ray 0.0001 rad
+  off the zenith lands 900 km out on its own bearing. A ray at the zenith itself has no bearing
+  and returns no hit, so its trigger does nothing. Grab and stick movement scale by plane metres per surface metre at the nadir (11.25
   on both), so the floor stays under the hand, and the WALK vignette scales by the optic flow
   (0.8). Stick zoom, grip zoom and smooth turn keep their tunnel. NEAR, MIRROR, BEACONS, TOUR
   and ORBIT turn off and hide their tiles, and the right stick click no longer toggles the
   hidden orbit.
 - Cost on the Mac, measured as frame time at 2x render scale because Mac GPU timestamps read 0.
-  The bowl matches the flat floor and the globe runs 1.45 to 1.5 times it, level and looking 60
-  degrees up. Quest frame time is unmeasured.
+  The bowl matches the flat floor. The settled globe runs 1.5 to 1.7 times it, level and looking
+  60 degrees up, since the ground's fragment covers the upper half where the flat floor draws
+  one sky fetch. During a refill the globe ran 2.55 times flat level and 1.89 times at 60
+  degrees before the 8-iteration budget, and 1.33 and 1.48 times after. Quest frame time is
+  unmeasured.
 - With SPHERE off the flat floor renders as before. A flat shot before and after a bowl and globe
   round trip differs by a mean of 0.0009, the same as refilling the floor in place with nothing
   changed (0.0008), since the fill is not bit-repeatable on the set's edge.

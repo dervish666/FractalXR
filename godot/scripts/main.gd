@@ -1440,7 +1440,7 @@ func _sky_zoom(delta: float) -> void:
 			continue
 		# In sphere mode a hand held below eye height can hit the bowl wall with an upward ray;
 		# let _ground_teleport own those rays instead of zooming the sky behind the wall. On the
-		# globe every ray is a floor hit (and there is no sky to zoom).
+		# globe every ray but one at the zenith itself is a floor hit, and there is no sky to zoom.
 		if ground_sphere_idx > 0 and ground.ray_to_plane(o, d) != null:
 			continue
 		var squeeze := hands[i].get_float("trigger") if xr != null else 1.0

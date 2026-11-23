@@ -242,6 +242,14 @@ const GLOBE_CAP_M := 600.0
 const GLOBE_CAP_FADE := 0.6
 const GLOBE_CAP_MIN_M := 1.0
 var _globe_cap_m := GLOBE_CAP_MIN_M
+## The far fill's iteration budget (ground.gdshader globe_far_iter). Settled, the fill covers
+## only the cap, where the far exterior escapes in under ten and 32 leaves room for the set's
+## edge deep in. While the coarsest level is missing (a long jump, a new family or JULIA) it
+## covers the whole sphere, and every pixel on the set ran the full 32: the Mac read 2.55x the
+## flat floor's frame. Eight draws the set's outline and its first bands until the level lands;
+## what it cannot settle draws as exterior at the eighth band, never as the inside.
+const GLOBE_FAR_ITER := 32
+const GLOBE_REFILL_ITER := 8
 var _eye_y := 1.6
 ## The sphere's centre and the standing glass disc under it are anchored in the world. A head
 ## turn swings the eyes 8 to 10 cm round the neck and looking down drops them about 10 cm; a
@@ -670,7 +678,7 @@ func set_julia(on: bool) -> void:
 	if on == julia:
 		return
 	julia = on
-	invalidate()
+	invalidate(true)
 
 
 ## Every tile in every level is wrong the moment this changes, so it is a full rebuild. A new
@@ -680,7 +688,7 @@ func set_formula(i: int) -> void:
 	if n == formula:
 		return
 	formula = n
-	invalidate()
+	invalidate(true)
 	home()
 
 
@@ -693,7 +701,7 @@ func julia_here() -> void:
 	_jx = viewer_fx()
 	_jy = viewer_fy()
 	julia = true
-	invalidate()
+	invalidate(true)
 
 
 func set_max_iter(n: int) -> void:
@@ -764,11 +772,16 @@ func set_texture_on(on: bool) -> void:
 ## that belongs where it is drawn. With nothing to keep (a new texture, or a level still
 ## being built) the coarsest is rebuilt too and the floor fogs over until it lands, rather
 ## than drawing whatever the slots held before.
-func invalidate() -> void:
+## `new_set`: a different set (family, JULIA, the Julia point). The globe drops its coarsest
+## level as well, since its far fill shows the new set from the first frame and the cap's band
+## would blend the two; it draws the far fill alone until the level lands.
+func invalidate(new_set := false) -> void:
 	for i in LEVELS - 1:
 		_have[i] = false
 	var top := LEVELS - 1
-	if _have[top] and not _full[top]:
+	if new_set and sphere_globe:
+		_have[top] = false
+	elif _have[top] and not _full[top]:
 		_refresh[top] = [_window(top)] as Array[Rect2i]
 	else:
 		_have[top] = false
@@ -956,6 +969,8 @@ func update(head_xz: Vector2, delta: float = 0.0, eye_y: float = 1.6) -> void:
 	_material.set_shader_parameter("clean_rect", _clean)
 	if sphere_globe:
 		_tick_globe_cap(max_level, delta)
+		_material.set_shader_parameter(&"globe_far_iter",
+			GLOBE_FAR_ITER if _clean[LEVELS - 1] != Vector4.ZERO else GLOBE_REFILL_ITER)
 	_material.set_shader_parameter("texel0", t0)
 	_material.set_shader_parameter("wpu", wpu)
 	_material.set_shader_parameter("head_xz", head_xz)
@@ -1514,7 +1529,7 @@ func sphere_flow_scale() -> float:
 ## centred at (_stand_xz.x, _sphere_cy, _stand_xz.y) and maps the hit back to the plane by
 ## stereographic projection from the zenith. In the bowl a hit on the upper half is no hit; on
 ## the globe every ray from inside hits the floor, up to plane radii in the thousands of
-## metres near the zenith (glide_to() caps the trip).
+## kilometres near the zenith (glide_to() caps the trip), except one at the zenith itself.
 func ray_to_plane(o: Vector3, dir: Vector3) -> Variant:
 	if dir.length_squared() < 1e-8:
 		return null
@@ -1537,7 +1552,17 @@ func ray_to_plane(o: Vector3, dir: Vector3) -> Variant:
 	var p := o + d * t
 	var s := (p - c) / sphere_radius
 	if sphere_globe:
-		return _stand_xz + Vector2(s.x, s.z) / maxf(1.0 - s.y, 1e-6) * sphere_horizon_r
+		# As ground.gdshader: xz / (1 - y) below the equator, xz (1 + y) / |xz|^2 above it, where
+		# 1 - y cancels toward the zenith and its old 1e-6 floor shrank the radius back to the
+		# stand. A hit within a microradian of the zenith is the point at infinity: there is no
+		# azimuth to glide along, so it is no hit and the trigger does nothing.
+		var sxz := Vector2(s.x, s.z)
+		var l := sxz.length()
+		if s.y > 0.0 and l < 1e-6:
+			return null
+		if s.y <= 0.0:
+			return _stand_xz + sxz / (1.0 - s.y) * sphere_horizon_r
+		return _stand_xz + sxz / l * ((1.0 + s.y) / l * sphere_horizon_r)
 	if s.y > 0.0:
 		return null
 	var u := Vector2(s.x, s.z) / maxf(1.0 - s.y, 1e-3)
