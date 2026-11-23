@@ -162,8 +162,14 @@ const LITTER_FAR := 14.0
 ## hero with sticky holders and limits beds to the hero plus up to 4 inner trees >= 1.05 m tall.
 ## Every tree you plant gets a bed on top of those, in GROVE and AVENUE alike: ranked first, by
 ## distance from your eye, each adding a bed to the LOD 1 floor, tiered at 7.8/9.0 m and cut at
-## 14.2/15.2 m like an avenue bed, with no height floor and no cap but PLANT_MAX. An inner grove
-## bed within UNDERGROWTH_GROVE_SPACING of one gives way. WALK sows over every planted tree.
+## 14.2/15.2 m like an avenue bed, with no height floor and no cap but PLANT_MAX. One past
+## UNDERGROWTH_FOLD_M, where the shaders have folded its bed away, stays off the floor until it
+## comes back inside UNDERGROWTH_FOLD_IN, and keeps a bed through the deadband only from headroom
+## left after every sown bed. A fresh planted bed takes LOD 1 without the hysteresis margin when a
+## sown holder could still keep that headroom, and every planted bed that shows gets its LOD 1
+## before any gets LOD 0, where one already drawing LOD 0 ranks one more sticky bonus ahead. An
+## inner grove bed within UNDERGROWTH_GROVE_SPACING of one (on the world floor, times the larger tree's
+## world scale) gives way. WALK sows over every planted tree.
 const UNDERGROWTH_NEAR := 16
 const UNDERGROWTH_GROVE_MAX := 4
 const UNDERGROWTH_GROVE_MIN_H := 1.05
@@ -171,6 +177,13 @@ const UNDERGROWTH_GROVE_SPACING := 0.72
 const UNDERGROWTH_FAR := 15.0
 const UNDERGROWTH_FAR_IN := 14.2
 const UNDERGROWTH_FAR_OUT := 15.2
+## Where undergrowth_fade (tree.gdshader, tree_leaf.gdshader) reaches 0: a bed this far from the
+## eye draws no pixel.
+const UNDERGROWTH_FOLD_M := 14.0
+## A folded planted bed counts as showing again, for the floor and the front of the queue, only
+## inside this. A ring of planted trees near 14.0 m would otherwise move every bed on and off the
+## floor, and tree detail with it, as your head bobs.
+const UNDERGROWTH_FOLD_IN := 13.5
 const UNDERGROWTH_LOD0_IN := 7.8
 const UNDERGROWTH_LOD0_OUT := 9.0
 const UNDERGROWTH_STICKY_M := 1.2
@@ -210,6 +223,8 @@ var litter_drawn := 0             # trees carrying fallen leaves at the last LOD
 var undergrowth_drawn := 0        # trees carrying fractal undergrowth at the last LOD pass
 var drawn_undergrowth_stems := 0
 var drawn_undergrowth_leaves := 0
+var ug_headroom := 0              # what step 4 of the last LOD pass had to spend on beds
+var ug_floor := 0                 # what the LOD 1 floor reserved before trees took detail, last pass
 var gpu_ms := 0.0
 var count_idx := 0
 ## Shapes computed so far, and the compute time on the worker (the harness reads these).
@@ -265,6 +280,8 @@ var _sow_row := 0
 var _sow_row_end := 0
 var _sow_selected := ""
 var _wave_near := INF
+## Planted trees whose beds counted as showing at the last LOD pass (UNDERGROWTH_FOLD_IN).
+var _ug_showing := {}
 # V6: avenue distance fog; V7: wind-carried drifting petals/spores/fireflies.
 const MOTE_COUNT := 640
 var _fog_density := 0.0
@@ -1300,6 +1317,15 @@ func apply_lod(cam: Vector3) -> void:
 
 
 func _lod_items(cam: Vector3) -> void:
+	# Fold history follows the eye alone, for every planted tree, so toggling UNDERGROWTH, REGROW
+	# or a tree briefly leaving the candidate list cannot reset it. Freed trees drop out here.
+	var showing := {}
+	for t in _trees:
+		if t.hand_planted:
+			var fold := UNDERGROWTH_FOLD_M if _ug_showing.has(t) else UNDERGROWTH_FOLD_IN
+			if cam.distance_to(t.global_position) < fold:
+				showing[t] = true
+	_ug_showing = showing
 	var items: Array = []
 	for t in _trees:
 		if not t.built or t.far or t.grow_t <= 0.0:
@@ -1329,11 +1355,20 @@ func _lod_items(cam: Vector3) -> void:
 	undergrowth_drawn = 0
 	drawn_undergrowth_stems = 0
 	drawn_undergrowth_leaves = 0
+	ug_headroom = 0
+	ug_floor = 0
 	var is_grove := layout == Layout.GROVE
 	var max_beds := UNDERGROWTH_GROVE_MAX if is_grove else UNDERGROWTH_NEAR
 	var ug_cands: Array = []
+	var sown_cands: Array = []
 	var planted_cands: Array = []
+	# Planted beds past UNDERGROWTH_FOLD_M: inside the cut, drawn as nothing.
+	var planted_folded: Array = []
+	# GROVE spacing. Sown beds are kept in the grove's frame, planted beds on the world floor with
+	# the tree's world scale.
 	var chosen_spots: Array[Vector2] = []
+	var planted_w: Array[Vector2] = []
+	var planted_s: Array[float] = []
 	var ug_reserved := {}
 	var ug_floor_spent := 0
 	# Beds counted against max_beds: every bed but a hand-planted tree's, which has PLANT_MAX.
@@ -1346,33 +1381,41 @@ func _lod_items(cam: Vector3) -> void:
 		# 1. Partition eligible beds and account for ineligible trees that are still easing out
 		# (withering grove holders, trees past FAR_OUT) so revoked beds stay drawn and counted
 		# until presence reaches 0. A tree you planted is ranked by its distance from your eye in
-		# every layout, inside the far cut, with no height floor and no grove cap.
+		# every layout, inside the far cut, with no height floor and no grove cap. Entries are
+		# [rank, distance, tree, grove-local floor spot, world floor spot].
 		for it in items:
 			var t: FractalTree = it[1]
-			var lp := to_local(t.global_position) if is_grove else Vector3.ZERO
+			var gp := t.global_position
+			var lp := to_local(gp) if is_grove else Vector3.ZERO
 			var spot := Vector2(lp.x, lp.z)
+			var wspot := Vector2(gp.x, gp.z)
 			var eligible := false
 			if t.grow_rate > 0.0:
 				if t.hand_planted:
-					var pd := cam.distance_to(t.global_position)
+					var pd := cam.distance_to(gp)
 					var p_cut := UNDERGROWTH_FAR_OUT if t.undergrowth_lod >= 0 else UNDERGROWTH_FAR_IN
 					if pd < p_cut:
 						var p_rank := pd - (UNDERGROWTH_STICKY_M if t.undergrowth_lod >= 0 else 0.0)
-						planted_cands.append([p_rank, pd, t, spot])
+						# The 14.2/15.2 m deadband still holds a folded bed, but off the floor and
+						# behind every bed the shaders draw. Showing again takes UNDERGROWTH_FOLD_IN.
+						if _ug_showing.has(t):
+							planted_cands.append([p_rank, pd, t, spot, wspot])
+						else:
+							planted_folded.append([p_rank, pd, t, spot, wspot])
 						eligible = true
 				elif is_grove:
 					if t.height_m >= UNDERGROWTH_GROVE_MIN_H:
 						var r_hero := spot.length()
 						# Sticky bonus keeps living grove holders from losing their slot to a nearer sprout.
 						var rank := r_hero - (UNDERGROWTH_STICKY_M if t.undergrowth_lod >= 0 else 0.0)
-						ug_cands.append([rank, r_hero, t, spot])
+						ug_cands.append([rank, r_hero, t, spot, wspot])
 						eligible = true
 				else:
-					var d := cam.distance_to(t.global_position)
+					var d := cam.distance_to(gp)
 					var far_cut := UNDERGROWTH_FAR_OUT if t.undergrowth_lod >= 0 else UNDERGROWTH_FAR_IN
 					if d < far_cut:
 						var rank := d - (UNDERGROWTH_STICKY_M if t.undergrowth_lod >= 0 else 0.0)
-						ug_cands.append([rank, d, t, Vector2.ZERO])
+						ug_cands.append([rank, d, t, Vector2.ZERO, wspot])
 						eligible = true
 			if not eligible:
 				t.set_undergrowth_lod(-1)
@@ -1387,7 +1430,11 @@ func _lod_items(cam: Vector3) -> void:
 					if not t.hand_planted:
 						capped += 1
 					if is_grove:
-						chosen_spots.append(spot)
+						if t.hand_planted:
+							planted_w.append(wspot)
+							planted_s.append(_world_scale(t))
+						else:
+							chosen_spots.append(spot)
 					var fe := TreeUndergrowth.entry(t.seed_value, t.undergrowth_drawn_lod)
 					drawn_undergrowth_stems += int(fe["n_s"])
 					if _leaves_on:
@@ -1398,15 +1445,19 @@ func _lod_items(cam: Vector3) -> void:
 			return (a[2] as FractalTree).seed_value < (b[2] as FractalTree).seed_value
 		ug_cands.sort_custom(by_rank)
 		planted_cands.sort_custom(by_rank)
+		planted_folded.sort_custom(by_rank)
 		# The trees you planted come first at every stage below: the floor, then LOD 0 and extra
 		# beds from headroom. You planted them where you are looking, so they are near and large on
 		# screen, there are at most PLANT_MAX, and the hero's own bed (outside the budget) keeps
-		# the grove from ever going bare when the inner trees give way.
+		# the grove from ever going bare when the inner trees give way. A folded one draws nothing,
+		# so it never stands on the floor, which tree detail pays for, and comes after every sown
+		# bed for headroom.
 		var n_planted := planted_cands.size()
 		var planted_c1 := 0
 		for uc in planted_cands:
 			planted_c1 += (uc[2] as FractalTree).undergrowth_cost(1)
-		ug_cands = planted_cands + ug_cands
+		sown_cands = ug_cands
+		ug_cands = planted_cands + sown_cands
 
 		# 2. Reserve a LOD 1 floor for the nearest trees right after every tree's coarsest form,
 		# before trees take their extra detail, so COUNT 500 and throttled budgets keep a near
@@ -1428,15 +1479,8 @@ func _lod_items(cam: Vector3) -> void:
 					break
 				# Spacing holds between sown beds and against planted ones, never among planted:
 				# a tree planted beside an inner grove tree keeps its bed and the inner one gives way.
-				if is_grove:
-					var spot: Vector2 = uc[3]
-					var crowded := false
-					for p in chosen_spots:
-						if spot.distance_to(p) < UNDERGROWTH_GROVE_SPACING:
-							crowded = true
-							break
-					if crowded:
-						continue
+				if is_grove and _ug_crowded(uc, chosen_spots, planted_w, planted_s):
+					continue
 			var c1 := t.undergrowth_cost(1)
 			if c1 > 0 and floor_used + c1 <= floor_cap and c1 <= left:
 				ug_reserved[t] = c1
@@ -1449,7 +1493,12 @@ func _lod_items(cam: Vector3) -> void:
 				if not t.hand_planted:
 					capped += 1
 				if is_grove:
-					chosen_spots.append(uc[3])
+					if t.hand_planted:
+						planted_w.append(uc[4])
+						planted_s.append(_world_scale(t))
+					else:
+						chosen_spots.append(uc[3])
+		ug_floor = floor_used
 
 	# 3. Trees take their extra detail from remaining headroom, largest on screen first.
 	for it in items:
@@ -1468,7 +1517,63 @@ func _lod_items(cam: Vector3) -> void:
 	# up to max_beds and UNDERGROWTH_BUDGET_MAX.
 	if undergrowth_on:
 		var ug_extra := mini(maxi(left, 0), maxi(0, UNDERGROWTH_BUDGET_MAX - ug_floor_spent))
-		for uc in ug_cands:
+		ug_headroom = ug_extra
+		# 4a. Every planted bed that shows gets its LOD 1 first, in sticky rank (the floor already
+		# holds some). A fresh one that can pay its own LOD 1 cost takes it without the hysteresis
+		# margin when a sown holder could still keep that headroom. Below about 6360 the floor
+		# rounds to no beds, and the margin alone let a held sown bed keep a slot the planted tree
+		# beside it could never win. "Could still" is asked again for each planted bed, against the
+		# cap and the spacing as they stand, so one that crowded the holder out ends the waiver.
+		var p_lod := {}
+		for uc in planted_cands:
+			var t: FractalTree = uc[2]
+			var ug_lod := -1
+			if ug_reserved.has(t):
+				ug_lod = 1
+			elif ug_extra > 0:
+				var c := t.undergrowth_cost(1)
+				var need := c if t.undergrowth_lod >= 0 else c + UNDERGROWTH_BUDGET_HYST
+				if need > ug_extra and c <= ug_extra and _ug_sown_keeps(sown_cands, ug_reserved,
+						ug_extra, capped < max_beds, is_grove, chosen_spots, planted_w, planted_s):
+					need = c
+				if c > 0 and need <= ug_extra:
+					ug_lod = 1
+					ug_extra -= c
+					left -= c
+					visible_cost += c
+					undergrowth_drawn += 1
+					if is_grove:
+						planted_w.append(uc[4])
+						planted_s.append(_world_scale(t))
+			p_lod[t] = ug_lod
+		# 4b. Then LOD 0 inside 7.8/9.0 m. Here alone a bed already drawing LOD 0 ranks one more
+		# sticky bonus ahead, so a lean does not swap two planted beds straddling the last upgrade
+		# (the old holder would draw LOD 0 through its 0.8 s ease down while the new one grew it).
+		# The bonus never decides who keeps a bed at all.
+		var planted4 := planted_cands.duplicate()
+		planted4.sort_custom(func(a: Array, b: Array) -> bool:
+			var ra := float(a[0]) - (UNDERGROWTH_STICKY_M if (a[2] as FractalTree).undergrowth_lod == 0 else 0.0)
+			var rb := float(b[0]) - (UNDERGROWTH_STICKY_M if (b[2] as FractalTree).undergrowth_lod == 0 else 0.0)
+			if absf(ra - rb) > 1e-4:
+				return ra < rb
+			return (a[2] as FractalTree).seed_value < (b[2] as FractalTree).seed_value)
+		for uc in planted4:
+			var t: FractalTree = uc[2]
+			var cur_lod := t.undergrowth_lod
+			var lod0_cut := UNDERGROWTH_LOD0_OUT if cur_lod == 0 else UNDERGROWTH_LOD0_IN
+			if int(p_lod[t]) != 1 or float(uc[1]) >= lod0_cut or ug_extra <= 0:
+				continue
+			var delta_c := maxi(0, t.undergrowth_cost(0) - t.undergrowth_cost(1))
+			var need := delta_c if cur_lod == 0 else delta_c + UNDERGROWTH_BUDGET_HYST
+			if need <= ug_extra:
+				p_lod[t] = 0
+				ug_extra -= delta_c
+				left -= delta_c
+				visible_cost += delta_c
+		for uc in planted_cands:
+			_ug_commit(uc[2], int(p_lod[uc[2]]))
+		# 4c. Sown beds, then folded planted beds with what is left.
+		for uc in sown_cands + planted_folded:
 			var d: float = uc[1]
 			var t: FractalTree = uc[2]
 			var cur_lod := t.undergrowth_lod
@@ -1490,13 +1595,8 @@ func _lod_items(cam: Vector3) -> void:
 						left -= delta_c
 						visible_cost += delta_c
 			elif (planted or capped < max_beds) and ug_extra > 0:
-				var crowded := false
-				if is_grove and not planted:
-					var spot: Vector2 = uc[3]
-					for p in chosen_spots:
-						if spot.distance_to(p) < UNDERGROWTH_GROVE_SPACING:
-							crowded = true
-							break
+				var crowded := is_grove and not planted \
+					and _ug_crowded(uc, chosen_spots, planted_w, planted_s)
 				if not crowded:
 					var c := t.undergrowth_cost(want_ug)
 					var hold_tier := cur_lod >= 0 and cur_lod <= want_ug
@@ -1515,25 +1615,13 @@ func _lod_items(cam: Vector3) -> void:
 						if not planted:
 							capped += 1
 						if is_grove:
-							chosen_spots.append(uc[3])
-			t.set_undergrowth_lod(ug_lod)
-			# Count the tier the bed draws, not the one it was granted: a bed easing down still
-			# draws LOD 0 until its LOD 0-only plants fold away, and a revoked bed draws until its
-			# presence reaches 0. The difference is visible_cost over the grant for about 1.3 s at most;
-			# tree detail is never cut to pay for it.
-			var dl := t.undergrowth_drawn_lod
-			if dl >= 0:
-				var over := t.undergrowth_cost(dl) - t.undergrowth_cost(ug_lod)
-				if over > 0:
-					visible_cost += over
-				if ug_lod < 0:
-					undergrowth_drawn += 1
-					if not planted:
-						capped += 1
-				var e := TreeUndergrowth.entry(t.seed_value, dl)
-				drawn_undergrowth_stems += int(e["n_s"])
-				if _leaves_on:
-					drawn_undergrowth_leaves += int(e["n_l"])
+							if planted:
+								planted_w.append(uc[4])
+								planted_s.append(_world_scale(t))
+							else:
+								chosen_spots.append(uc[3])
+			if _ug_commit(t, ug_lod) and not planted:
+				capped += 1
 	# FLOOR's fallen leaves: the largest on screen first, so the nearest LITTER_NEAR within reach.
 	if litter_on():
 		var n := 0
@@ -1544,6 +1632,68 @@ func _lod_items(cam: Vector3) -> void:
 			if near:
 				n += 1
 		litter_drawn = n
+
+
+## A sown grove bed (a candidate entry) is crowded by a chosen sown bed within
+## UNDERGROWTH_GROVE_SPACING in the grove's frame, or by a planted bed within that spacing times
+## the larger tree's world scale on the world floor. A tree planted on the floor is world-sized
+## until grab scales the grove it stands in, so neither frame alone holds for both. A planted
+## tree 0.5 m from a 0.25x grove reads 2 m off in the grove's frame, and one planted before the
+## grove shrank would crowd out the whole tabletop by world metres. With both trees at the
+## grove's scale this is the grove's own rule.
+func _ug_crowded(uc: Array, sown: Array[Vector2], pw: Array[Vector2], ps: Array[float]) -> bool:
+	var spot: Vector2 = uc[3]
+	for p in sown:
+		if spot.distance_to(p) < UNDERGROWTH_GROVE_SPACING:
+			return true
+	var wspot: Vector2 = uc[4]
+	var s := _world_scale(uc[2])
+	for k in pw.size():
+		if wspot.distance_to(pw[k]) < UNDERGROWTH_GROVE_SPACING * maxf(s, ps[k]):
+			return true
+	return false
+
+
+## Request tier `ug_lod` and count the tier the bed draws, not the one it was granted. A bed easing
+## down still draws LOD 0 until its LOD 0-only plants fold away, and a revoked bed draws until its
+## presence reaches 0. The difference is visible_cost over the grant for about 1.3 s at most; tree
+## detail is never cut to pay for it. True for a revoked bed that still draws.
+func _ug_commit(t: FractalTree, ug_lod: int) -> bool:
+	t.set_undergrowth_lod(ug_lod)
+	var dl := t.undergrowth_drawn_lod
+	if dl < 0:
+		return false
+	var over := t.undergrowth_cost(dl) - t.undergrowth_cost(ug_lod)
+	if over > 0:
+		visible_cost += over
+	if ug_lod < 0:
+		undergrowth_drawn += 1
+	var e := TreeUndergrowth.entry(t.seed_value, dl)
+	drawn_undergrowth_stems += int(e["n_s"])
+	if _leaves_on:
+		drawn_undergrowth_leaves += int(e["n_l"])
+	return ug_lod < 0
+
+
+## Whether a sown bed holding a slot off the floor could still keep LOD 1 out of `extra`, being
+## under the cap and, in GROVE, not crowded by the beds chosen so far.
+func _ug_sown_keeps(sown: Array, reserved: Dictionary, extra: int, under_cap: bool, is_grove: bool,
+		chosen: Array[Vector2], pw: Array[Vector2], ps: Array[float]) -> bool:
+	if not under_cap:
+		return false
+	for uc in sown:
+		var st: FractalTree = uc[2]
+		if st.undergrowth_lod < 0 or reserved.has(st) or st.undergrowth_cost(1) > extra:
+			continue
+		if is_grove and _ug_crowded(uc, chosen, pw, ps):
+			continue
+		return true
+	return false
+
+
+## A tree's size in the world, its own scale times the grove's or avenue's.
+static func _world_scale(t: FractalTree) -> float:
+	return t.global_transform.basis.get_scale().y
 
 
 ## One grove tree at a time withers back into the ground and a seedling of another
