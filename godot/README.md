@@ -494,6 +494,7 @@ Every script in `tools/` sources `env.sh`. "Exit 0" assumes no `SCRIPT ERROR`, p
 |---|---|---|
 | `selftest.sh` | The compute chain on this machine's GPU: steps every preset, writes `.spike-out/selftest.png`. | `SELFTEST PASS`: no NaN, no escaping cloud, no collapse to a point, no flat-in-z genome, frame looks like a live chaos game. |
 | `parse_all.sh` | Parses every `.gd` under `scripts/` and `tools/`, plus a deliberately broken control. | `PARSEALL PASS`: zero errors, at least one file parsed, and the control failed as it must. |
+| `trailer.sh` | The store trailer, rendered offline through the real app from editable `data/trailer.json`: spline camera moves, keyed tracks and timed app events per shot, ffmpeg transitions (plus a flash cut and a light leak built in `trailer.py`), title card and fades. Flame shots average several subframes per frame (`samples`), which takes the grain out of the chaos game at 1440p. Writes an H.264 MP4 with AAC (silent, or `--music <file>` normalised to -14 LUFS and faded), per-shot filmstrips and a contact sheet under `.spike-out/trailer/`. `--strips` simulates every frame but saves six PNGs per shot for judging motion. | `TRAILER PASS`: every shot settled and rendered, no script or shader errors, every clip and the cut have the expected size and decoded frame count, H.264/AAC streams and duration validated with ffprobe, 30 to 120 seconds, all five modes. Watch the cut before publishing. |
 | `shader_check.sh` | Compiles the `.gdshader` files you pass (`tools/shader_check.sh shaders/a.gdshader ...`), headless. | One `SHADERCHECK <path> params=N` line per shader with `N` above 0. A shader with `params=0` or a `SHADER ERROR` did not compile. |
 | `de_check.sh` | The five bulb distance estimates: the marcher's shader copy against the CPU port (`BulbSource.de`), plus a hollow finder. | `DECHECK` line with a small `max_err` and `control=FAIL` (the wrong-parameter control must fail). Run after touching any of the three copies. |
 | `rooms.sh` | Regenerates `data/rooms.json`: each bulb's measured extent and best enclosed room. Headless, a few minutes. | `ROOMS PASS bulbs=N`. Run after `node tools/export-presets.mjs`. |
@@ -566,6 +567,137 @@ Candidate renders come from the web build: `npm run art` in the repo root, then
 `--xr-mode off` is load-bearing on the Mac and is baked into `tools/env.sh`. Without
 it the OpenXR loader hunts for a runtime that isn't there and hangs the process for
 minutes. That cost an hour; don't remove it.
+
+### Offline store trailer
+
+```bash
+bash godot/tools/selftest.sh
+bash godot/tools/parse_all.sh
+bash godot/tools/trailer.sh
+```
+
+`trailer.sh` calls `trailer.py`, which starts one Godot per shot running `trailer.gd` against
+`main.tscn` with XR off. The script steps the app at a fixed 1/fps, reads each frame back from
+the root viewport and streams it raw over a local TCP socket to ffmpeg, which encodes the clip
+(CRF 12 intermediate). Frames drawn only so the GROUND clipmap or the forest builds can catch up
+are never recorded, so a fast zoom stays sharp. Movie Maker is not used: it records every drawn
+frame. ffmpeg then cuts the clips together in one filter graph (transitions, grade, title card,
+fades) and encodes the master with libx264 `-preset slow -crf 18` under a 16 Mb/s ceiling
+(`--maxrate`; uncapped, the grain in the flame shots ran past 70 Mb/s), BT.709, plus stereo AAC.
+A shot with `samples` K renders K subframes per recorded frame and ffmpeg averages them (`tmix`)
+before the clip is encoded. A settled flame is frozen in the app, so every subframe would be the
+same picture; a sampled FLAME shot therefore steps the whole cloud once more per subframe with no
+reseeding, and each subframe is a fresh draw from the attractor. At 1440p the galaxy shot's
+high-pass noise fell from 43 to 13 code values with 8 subframes and every particle the texture
+holds; it costs about K times the render time, so only the flames use it.
+With `--music <file>` the audio is that track, delayed by `music.offset`, normalised to
+`music.lufs` (default -14 LUFS, true peak -1.5 dB) by two-pass `loudnorm`, padded or trimmed to
+the picture and faded out over the last `music.fade_out` seconds (default 2). Without it the
+track is silent.
+
+The default cut is 15 shots, 57.5 seconds at 2560x1440, 60 fps, timed to
+`.spike-out/music/take1.mp3`, and the flames lead it: eight of the fifteen shots and about 33
+seconds are FLAME (morphs through several presets, theme shifts on beats, a fly into Luna's core,
+GALAXY growing round the camera, an Ember finale under the title). The other modes get one or
+two shots each: the GROUND infinite zoom, two bulbs (the Classic push-in and a short Quaternion
+orbit), the tree garden, and the IFS room dive and Octaflake. The garden is TREE's `grove`
+layout scaled 1.4 times, a slow orbit under the Nautilus flame sky that ends low, looking up the
+central tree; the avenue shot was dropped for it. That track measures 120 BPM with its kick
+0.035 s past each half second (onsets in the low band, checked against the waveform); the 0.465 s
+offset puts every kick on a half-second multiple of the cut. Its sections, in cut time: quiet
+intro to the drop at 16.5 s (the zoom from the garden into the first flame lands), a one-beat
+break from 32.0 s (the `dip` into the IFS dive holds black to 32.25 s), re-entry at 32.5 s (the dive starts),
+full energy until the release at 48.5 s (the flash into the finale), then the outro decaying
+under the title. Between the drop and the release a transition lands every two to four seconds
+and the transitions vary (zoom-through, flame-to-flame crossfades over a morph, light leak,
+flash, dip to black, iris, wipe), and every flash peak, crossfade midpoint, cut and theme change
+sits on a beat. Every duration and transition is a multiple of a quarter second; when retiming to a new track,
+work out its beat grid first and keep cut points on it. Output goes to
+`.spike-out/trailer/`: `FractalXR-trailer.mp4`, `contact-sheet.jpg` (the cut every two
+seconds), `filmstrips.jpg` and `filmstrips/<id>.jpg` (six frames across each clip), the clips,
+logs, `render-shots.json`, `filter-graph.txt`, `render-report.json` and `ffprobe.json`.
+
+```bash
+# Judge motion fast: every frame simulated, six PNGs per shot saved, no encode.
+bash godot/tools/trailer.sh --strips --resolution 960x540 --fps 30 --output godot/.spike-out/trailer/strips
+# A quick full preview of the cut.
+bash godot/tools/trailer.sh --resolution 960x540 --fps 30 --preset veryfast --output godot/.spike-out/trailer/preview
+# After editing one shot: rerender only the clips whose JSON changed, then recut.
+bash godot/tools/trailer.sh --reuse
+# The release cut, with music.
+bash godot/tools/trailer.sh --reuse --music godot/.spike-out/music/take1.mp3
+# Clips and filmstrips of named shots only, no cut.
+bash godot/tools/trailer.sh --only 02-bulb-push,15-finale --output godot/.spike-out/trailer/review
+```
+
+`--shots` selects another cut file. `--reuse` keys each clip on its JSON, resolution and fps,
+so only changed shots render again. Movie dimensions come from an exclusive temporary
+`godot/override.cfg` (the root viewport takes the project size, not the window), removed after
+each shot; run one trailer job at a time per checkout.
+
+#### `data/trailer.json`
+
+Top level: `transition` (the default, `{"type": "fade", "seconds": 0.5}`), `finish`
+(`fade_in` and `fade_out` seconds, `grade` as an ffmpeg filter string), and `title_card`
+(`text`, `line`, `hold` seconds before the end it starts fading in, `fade`, `y` as the text
+block's centre in frame heights, `size` in points at 1440p, `shade` for the dark pool behind
+it). `music` holds the `--music` settings (`offset` seconds of delay, `lufs`, `fade_out`) and,
+for the record only, the beat map the cut was timed to (`bpm`, `first_beat` in the source file,
+`drop`, `break`, `release` in cut time). `shots` is the cut, in order.
+
+Every shot has `id`, `mode`, a named `preset`, `duration` (seconds, including the overlap with
+its neighbours) and `camera`. Coordinates are metres, Y up. Before setup the head stands at
+(0, 1.6, 0) facing -z, so subjects land at fixed places: flame centre (0, 1.45, -2.6), BULB
+solid (0, 1.45, -0.7) about 0.35 m across, IFS (0, 1.42, -0.6) 0.32 m across or centred on the
+head at room size, tree trunk and avenue starting ahead along -z.
+
+- `camera.keys`: `{t, pos, look, fov, roll, still}` in seconds. Position, aim, FOV and roll
+  follow a cubic Hermite spline with Catmull-Rom tangents, so speed is continuous through every
+  key. `still: true` passes a key at rest (a hold inside a move). `camera.ease: [in, out]`
+  scales the end speeds: 1 starts or stops at rest, 0 enters or leaves moving, which suits a
+  shot that crossfades.
+- `camera.orbit`: `centre`, `radius`, `height`, `angle` (degrees), optional `fov`, `roll` and
+  `look_offset`, each a value or `[start, end]`, eased by `camera.ease`.
+- `transition` into this shot: `cut`, or an ffmpeg xfade name (`fade`, `fadewhite`,
+  `fadeblack`, `dissolve`, `zoomin`, `circleopen`, `radial`, `hblur`, `smoothleft` and others
+  listed in `trailer.py`) with `seconds`, or one of two built in `trailer.py` as xfade custom
+  expressions: `flash` (a hard cut at the midpoint under a white bloom that peaks there),
+  `leak` (a crossfade under a warm light leak that sweeps across the frame) and `dip` (to black
+  by the midpoint, black until three quarters, the next shot fully in at the end). Use `dip`, not
+  ffmpeg's `fadeblack`, when the black has to land on a beat: measured over one second,
+  `fadeblack` is black only from 0.15 to 0.35 s in. A transition's visual peak is its midpoint,
+  so a 0.5 s one starting on a quarter second peaks on a beat.
+- `tracks`: keyed values as `[[t, v], ...]` or `{"keys": ..., "ease": [in, out]}`:
+  `colour_cycle` (the palette scroll global), `sim_speed` (multiplies the app clock: EVOLVE,
+  DIVE, morphs, wind), `ground_zoom` (octaves from the start, about the point under the camera),
+  `ground_hue`, `ifs_depth`, `bulb_clock`, `subject_pos`, `subject_rot`, `subject_scale`, and `subject_turn` (degrees, a spin about the
+  subject's own centre on top of wherever the mode placed it; the SOLID bulb's light turns with
+  it). A fast `colour_cycle` plus `theme` events about a second apart is how the bulb shots
+  keep their colour moving.
+- `events`, each `{"at": seconds, "do": ...}`: `theme` (`theme`, `seconds`: the app's theme
+  cross-fade), `flame_morph` (`preset`, `seconds` rounded to the app's MORPH steps), `ifs_morph`
+  (`preset`), `dive` (IFS DIVE held from then on), `galaxy` (`seconds`: GALAXY's grow), `cycle`
+  (`rung` of COLOUR CYCLE).
+- `post`: an ffmpeg filter string run on this clip before the cut, such as `hqdn3d=1.5:1.5:5:5`
+  for a light denoise. Editing `post` or `transition` reuses the rendered clip.
+- `samples` (1 to 16) and `shutter` (share of the frame interval the subframes span, default
+  0.5): see the subframe averaging above. 4 for a flame seen from outside, 8 for GALAXY.
+- `sky`: a baked flame sky from `art/skies/` (`Ember`, `Nautilus`, `Geode`) hung behind the
+  shot, as SKY PICK does in the app.
+- Shared options: `fov`, `theme` (index into `data/presets.json` themes, -1 for the preset's
+  own), `seed`, `msaa` (4x on the root viewport), `near`, `far`, `warmup_frames`, `warmup_dt`,
+  `hold` (unrecorded seconds after settling, default 0.6), `subject`.
+- FLAME: `point_style` (POINT index), `bright` (BRIGHT index), `particles` (PARTICLE index),
+  `particle_share` (a share of the whole 2048x2048 particle texture, past the PARTICLE ladder's
+  top of 0.6), `flame_echoes`, `galaxy_start`. BULB: `surface` (SURFACE index; 4 to 6 are SOLID), `breath`,
+  `inside`, `march_steps`. GROUND: `ground_centre` and `ground_wpu` (required), `relief`,
+  `height`, `ground_sky` (mirrored ceiling rung), `hue`, `iterations`, `render_hq`,
+  `ground_turn`. TREE: `layout` (`hero`, `grove` or `avenue`), `count` (COUNT index), `mix`,
+  `floor`, `bark`, `wind`. `grove` is the garden: the hero trunk at (0, 0, -5.5) with
+  `Forest.STEPS[count].grove` trees in a disc round it, tall inside and sapling-high at the rim
+  (0.75 to 1.6 m out at COUNT 0, about 2.5 m at COUNT 2). A TREE `subject` with
+  `position: [0, 0, -5.5]` and a `scale` grows the hero and its garden together. IFS: `detail`, `evolve`, `echoes` (ECHOES index, 5 is off and the default here), `family`,
+  `room`, `dive`.
 
 ## History
 
