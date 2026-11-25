@@ -21,7 +21,7 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 		# the other adds a generation. Both rebuild; the palette does not.
 		WristMenu.Item.new("make", "LEVELS",
 			# Short: a slider's value shares its row with the label. The title names the levels.
-			# While MOTION breathes, the live rebuild stops at the preset's drag rung, so a top
+			# While EVOLVE breathes, the live rebuild stops at the preset's drag rung, so a top
 			# rung would show nothing new. The value then says what is built and why, in place of
 			# the copies: "3 · breathing" beside a slider at 4. Anything longer is cut off.
 			func():
@@ -87,11 +87,11 @@ static func build(m: FractalMain) -> Array[WristMenu.Item]:
 			false, vis).toggle(func(): return m.ifs_echoes.family).hinted(
 			"Copies stand where the shape's own rules put them"),
 
-		# The sculpture's own MOTION: breathing. The cloud's MOTION never shows here.
-		WristMenu.Item.new("look", "MOTION",
-			func(): return "breathing" if m.ifs.ambient else "off",
+		# EVOLVE changes the maps. It never turns or translates the viewer's world.
+		WristMenu.Item.new("look", "EVOLVE",
+			func(): return "breathing + twist" if m.ifs.ambient else "off",
 			func(): m._toggle_ifs_motion(),
-			false, vis).toggle(func(): return m.ifs.ambient).hinted("Slow breathing movement"),
+			false, vis).toggle(func(): return m.ifs.ambient).hinted("Slow breathing, twisting and spreading of the copies"),
 		WristMenu.Item.new("look", "ROOM",
 			func(): return "on" if m.ifs_room else "off",
 			func(): m._set_ifs_room(not m.ifs_room),

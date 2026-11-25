@@ -1192,9 +1192,9 @@ func _float_check(main) -> Array[String]:
 	for k in 3:
 		await process_frame
 	await _tap_key(KEY_M)
-	for k in 200:
-		if m._fly_t >= 1.0:
-			break
+	# The animation uses seconds. At >500 fps, 200 frames can end before its 0.4 s.
+	var deadline := Time.get_ticks_msec() + 3000
+	while m._fly_t < 1.0 and Time.get_ticks_msec() < deadline:
 		await process_frame
 	if not m.is_pinned() or m.get_parent() != main.xr_origin:
 		bad.append("menu key did not float the panel (pinned=%s)" % m.is_pinned())
@@ -1226,9 +1226,8 @@ func _float_check(main) -> Array[String]:
 		bad.append("float moved while the head did: %.4f m, basis %.4f" % [drift, turned])
 	print("MENUSHOT float held through 300 frames: drift=%.6f m basis=%.6f" % [drift, turned])
 	await _tap_key(KEY_M)
-	for k in 200:
-		if m._fly_t >= 1.0 and m.get_parent() == main.left_hand:
-			break
+	deadline = Time.get_ticks_msec() + 3000
+	while (m._fly_t < 1.0 or m.get_parent() != main.left_hand) and Time.get_ticks_msec() < deadline:
 		await process_frame
 	if m.is_pinned() or m.get_parent() != main.left_hand \
 			or not m.transform.is_equal_approx(m._worn_local):

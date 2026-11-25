@@ -4,9 +4,10 @@ config_version=5
 
 config/name="FractalXR"
 config/description="Fractal flames and Mandelbulbs you can grab, scale and fly through, native on Quest."
-run/main_scene="res://main.tscn"
+run/main_scene="res://boot.tscn"
 config/features=PackedStringArray("4.7", "Mobile")
 config/icon="res://icon.svg"
+boot_splash/image="res://art/icon_512.png"
 
 [debug]
 

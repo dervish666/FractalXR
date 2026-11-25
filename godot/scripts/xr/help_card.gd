@@ -140,12 +140,8 @@ func _build_layer() -> bool:
 	var xri := XRServer.find_interface("OpenXR")
 	if xri == null or not xri.is_initialized():
 		return false
-	_layer = OpenXRCompositionLayerQuad.new()
-	_layer.quad_size = PANEL_METRES
-	_layer.layer_viewport = _vp
-	_layer.alpha_blend = true
-	_layer.sort_order = 3        # above both wrist menu planes, which sit at 1 and 2
-	add_child(_layer)
+	# World-locked even though the camera supplies the placement pose.
+	_layer = WorldQuad.attach(self, _head.get_parent() as XROrigin3D, _vp, PANEL_METRES, 3)
 	return true
 
 
@@ -284,7 +280,7 @@ class ControlsCard extends Control:
 			face = PackedStringArray(["A · B: previous,", "next shape"])
 			left_grip = PackedStringArray(["Hold to move", "the sculpture"])
 			right_grip = PackedStringArray(["Both grips:", "scale it"])
-			mode_note = "SHAPES morphs it; EDIT puts the handles on; MOTION breathes; ECHOES fills the room"
+			mode_note = "SHAPES picks a sculpture; EDIT shows handles; EVOLVE moves copies; ECHOES fills the room"
 		# A third trigger line (WALK, DIVE) would sit on the stick's first line, so the block
 		# rises by half a line for each line past two; there is room under the subtitle.
 		var trig_y := 292.0 - 0.5 * (LABEL_SIZE + 8) * maxf(0.0, left_trigger.size() - 2)

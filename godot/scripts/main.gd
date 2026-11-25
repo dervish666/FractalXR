@@ -330,14 +330,12 @@ const IFS_ROOM_CLEAR := 0.36
 ## Tabletop framing. The IFS is real geometry in construction units, so its scale comes from
 ## its own published bounds rather than from the particle cloud's measured extent, which
 ## describes a flame that is not being drawn.
-## 0.6 m across with its centre 0.8 m out puts the near face about half a metre from the
-## eyes: close enough to reach into, far enough to focus on. The first values tried put the
-## centre at 0.55 m, which left the near face 0.25 m away and filled the whole view.
-const IFS_WIDTH_M := 0.6          # how wide the sculpture arrives, in metres
-const IFS_DISTANCE := 0.8         # to the centre, along the viewer's forward axis
-const IFS_DROP := 0.28            # below the eye line, like something set down on a table
-## Recursion rungs. 3 is the default: 585 frames and ~84k triangles, the rung IFS-1
-## captured. 4 is 4,681 frames and is the rung worth measuring on the headset.
+## A 32 cm sculpture at 60 cm is hand-sized and within reach. Its near face stays
+## over 40 cm from the eyes, even before the slight downward placement.
+const IFS_WIDTH_M := 0.32
+const IFS_DISTANCE := 0.60
+const IFS_DROP := 0.18
+## Recursion rungs. Each preset supplies its own opening and live-rebuild rung.
 const IFS_DETAIL := [1, 2, 3, 4]
 ## Only the fallback now. Each preset carries the rung it opens at, because the branching
 ## factor differs between them and the same rung is not the same number of frames.
@@ -440,6 +438,8 @@ var spin := true
 var exposure_idx := 0      # measured on-device as the best-looking end of the range
 var iter_idx := 2          # 4 iterations
 
+var boot_managed := false
+var startup_first_focus_msec := -1
 var _setup_done := false
 ## Set by _fail: the HUD label is showing the failure and nothing may overwrite it.
 var _failed := false
@@ -695,6 +695,25 @@ const BULB_EXPOSURE_IDX := 0      # points are already bright, so do not push th
 
 
 func _ready() -> void:
+	print("[startup] ready begin ticks_msec=%d" % Time.get_ticks_msec())
+	set_process(false)
+	_init_xr()
+	# Direct-scene harnesses keep their own loading view. Boot keeps its view alive
+	# through this scene's constructors, content setup and first content draw.
+	hud.visible = not boot_managed
+	hud.text = "Loading FractalXR..."
+	hud.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hud.position = Vector3(0.0, 0.0, -1.3)
+	RenderingServer.frame_post_draw.connect(_on_loading_frame, CONNECT_ONE_SHOT)
+
+
+func _on_loading_frame() -> void:
+	print("[startup] first loading frame ticks_msec=%d" % Time.get_ticks_msec())
+	# frame_post_draw can run on the render thread. Build nodes on the main thread.
+	call_deferred("_start_content")
+
+
+func _start_content() -> void:
 	add_child(cloud)
 	cloud.add_child(march)
 	cloud.add_child(solid)
@@ -727,14 +746,13 @@ func _ready() -> void:
 	flame_echoes.setup(cloud)
 	flame_sky.setup(_env())
 
+	print("[startup] nodes attached ticks_msec=%d" % Time.get_ticks_msec())
 	if not library.load_all():
-		# XR first: without it the headset stays on the loading screen and the message on the
-		# camera never shows. Then stop, because nothing past this point was built.
-		_init_xr()
 		_fail("presets: %s" % library.load_error)
 		set_process(false)
 		return
 
+	print("[startup] presets loaded ticks_msec=%d" % Time.get_ticks_msec())
 	# flam3 can only run on an HDR colour buffer with the STORAGE bit, which Forward
 	# Mobile does not have (README, phase 3), so on the Quest the effect self-disables
 	# and the Environment's own ACES curve plus glow (main.tscn) is the look that ships.
@@ -744,7 +762,6 @@ func _ready() -> void:
 		comp.compositor_effects = [tonemap]
 		$WorldEnvironment.compositor = comp
 
-	_init_xr()
 	if xr != null:
 		resume_on = true
 	_eye_res = _current_eye_res()
@@ -757,13 +774,16 @@ func _ready() -> void:
 	help.setup(xr_camera)
 	_help_pending = not _help_seen()
 
+	print("[startup] menu built ticks_msec=%d" % Time.get_ticks_msec())
 	RenderingServer.call_on_render_thread(_setup_gpu)
 
 
 func _setup_gpu() -> void:
+	print("[startup] gpu begin ticks_msec=%d" % Time.get_ticks_msec())
 	var ok := cloud.setup(TEX_SIZE)
 	if ok and not ground.setup():
 		push_error("[ground] %s" % ground.get_error())
+	print("[startup] gpu end ticks_msec=%d" % Time.get_ticks_msec())
 	call_deferred("_on_gpu_ready", ok)
 
 
@@ -779,6 +799,10 @@ func _on_gpu_ready(ok: bool) -> void:
 	_setup_done = true
 	print("[fractal] ready: %d presets, %d particles" % [library.count(), cloud.get_count()])
 	_apply_resume(r)
+	if not _failed:
+		hud.visible = false
+	set_process(true)
+	print("[startup] content ready ticks_msec=%d" % Time.get_ticks_msec())
 
 
 func _load_preset(i: int) -> bool:
@@ -812,9 +836,6 @@ func _build_menu() -> void:
 	menu.rotation_degrees = Vector3(-62.0, 0.0, 0.0)
 	left_hand.add_child(menu)
 	menu.setup(xr_camera, right_hand, left_hand, xr_origin)
-	# The floating readout is retired: it was a debug tool that sat in the view whether
-	# or not it was wanted. Status now lives on the wrist with everything else.
-	hud.visible = false
 
 
 func _apply_tone(preset: Dictionary) -> void:
@@ -1049,7 +1070,7 @@ func _reset_ifs_shape() -> void:
 	ifs_edit.refresh()
 
 
-## The five sculptures. A preset is a new rule and often a new seed frame, so it arrives with
+## The sculpture gallery. A preset is a new rule and often a new seed frame, so it arrives with
 ## the mirrors back at the origin, the depth back at 1x and nothing left to undo, at whatever
 ## rung that preset says lands in the comfortable range for its branching factor.
 func _cycle_ifs_preset(d: int) -> void:
@@ -1094,10 +1115,8 @@ func _set_ifs_dive(on: bool) -> void:
 	ifs.set_clip(ifs_room or ifs_dive.on)
 
 
-## Room size: the construction origin, the clearest point of every preset (a grid search found
-## none clearer), at the eyes, and the lowest beam on the floor, so the scale is the eye height
-## over how far the shape reaches below its centre, kept inside IFS_ROOM_M. Never so small that
-## a beam starts inside the clip sphere: CROSS seated needs that (tools/ifs_check.sh).
+## Room size centres the sculpture on the eyes and caps its width at four metres.
+## Dense centred families can meet the eye position; the room shader clips those beams.
 func _ifs_room_scale(eye_h: float) -> float:
 	var span := maxf(ifs.bounds.size.x, ifs.bounds.size.y)
 	if span < 1e-3:
@@ -2283,15 +2302,11 @@ func _fail(msg: String) -> void:
 func _init_xr() -> void:
 	xr = XRServer.find_interface("OpenXR") as OpenXRInterface
 	if xr != null:
-		xr.session_visible.connect(_on_session_unfocused)
-		xr.session_stopping.connect(_on_session_unfocused)
-		xr.session_loss_pending.connect(_on_session_unfocused)
-		xr.session_focussed.connect(_on_session_focussed)
+		_bind_xr_session(xr)
 	if xr == null or not xr.is_initialized():
 		_status = "OpenXR unavailable. Running flat, no stereo."
 		xr = null
 		return
-	_xr_focused = false
 	get_viewport().use_xr = true
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 	if xr.is_foveation_supported():
@@ -2311,6 +2326,8 @@ func _init_xr() -> void:
 	# again on session_begun; whichever call finds the rate wins.
 	_request_refresh_rate()
 	xr.session_begun.connect(_request_refresh_rate)
+	# Boot may already have a running session. Apply its current blend immediately.
+	_set_passthrough(xr.environment_blend_mode == XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND)
 	# A system recenter moves the origin; the cloud should follow the viewer, not the
 	# spot the old origin was.
 	xr.pose_recentered.connect(_recenter)
@@ -2320,6 +2337,21 @@ func _init_xr() -> void:
 	xr.render_target_size_multiplier = RENDER_STEPS[render_idx]
 	print("[fractal] OpenXR up. refresh=%.1f target=%s views=%d" % [
 		xr.get_display_refresh_rate(), str(xr.get_render_target_size()), xr.get_view_count()])
+
+
+## Connect before reading state so focus during boot cannot be missed. Object also
+## permits a deterministic session source in the desktop regression.
+func _bind_xr_session(interface: Object) -> void:
+	interface.session_visible.connect(_on_session_unfocused)
+	interface.session_stopping.connect(_on_session_unfocused)
+	interface.session_loss_pending.connect(_on_session_unfocused)
+	interface.session_focussed.connect(_on_session_focussed)
+	if not interface.is_initialized():
+		return  # Desktop still connects signals for the direct-scene harnesses.
+	if interface.get_session_state() == OpenXRInterface.SESSION_STATE_FOCUSED:
+		_on_session_focussed()
+	else:
+		_on_session_unfocused()
 
 
 func _on_session_unfocused() -> void:
@@ -2347,7 +2379,7 @@ func _on_session_focussed() -> void:
 	_xr_focused = true
 	_xr_focus_seen = true
 	if _first_focus_msec < 0:
-		_first_focus_msec = Time.get_ticks_msec()
+		_first_focus_msec = startup_first_focus_msec if startup_first_focus_msec >= 0 else Time.get_ticks_msec()
 		print("[startup] first session_focussed ticks_msec=%d" % _first_focus_msec)
 
 
@@ -2506,6 +2538,8 @@ func _set_passthrough(on: bool) -> void:
 
 
 func _recenter() -> void:
+	if not cloud.is_inside_tree():
+		return  # The runtime can recenter while the loading view is still up.
 	_leave_galaxy(false)
 	var t := _home_transform()
 	if tree_mode:

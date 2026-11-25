@@ -285,6 +285,34 @@ the review's changes: `docs/visual-roadmap.md`.
   outside texels inside round one deep minibrot, eating its decorations.
 - Quitting during a beacon scan no longer aborts.
 
+### Startup, 2026-11-13
+
+- A tiny boot scene draws a world-locked loading label and rotating quad before requesting
+  the main scene in the background. It keeps the loading view through content setup and a
+  draw with the destination camera, then frees itself without restarting OpenXR.
+- Main reads the current XR focus and environment blend at handover, requests the refresh
+  rate immediately as well as on session start, and retains the first-focus timestamp.
+  Direct main-scene harnesses retain their own loading path.
+- Meta's OS splash remains enabled in the APK. The owner currently sees no icon in sideloaded
+  debug launches. Quest launch timing and compositor handover still need a fresh-install check.
+- Mobile skips an unused flam3 compute-pipeline compile before the first loading frame.
+- Wrist-menu and help composition layers attach through the XR origin to avoid Godot 4.7.2's
+  global-transform reads before tree entry. Panels retain their world poses and visibility.
+- Debug and release exports require the OS splash metadata and the exact PNG asset in the APK.
+
+### IFS sculptures, 2026-11-13
+
+- Beam ends now meet shared vertex nodes. On the cube, tetrahedron, octahedron and pyramid
+  frames, five-sided tubes replace square beams, with smooth normals and filtered procedural
+  bands. The sculptural seeds (MONOLITH to CRYSTAL) keep their flat-faced blocks. Mirrored
+  copies draw both sides.
+- Eight new sculptures: a Sierpinski tetrahedron, square pyramid, octahedron flake, Menger frame
+  sponge, Jerusalem cube, 3D Vicsek, Cantor dust and Mosely snowflake. With the seven from V1 to
+  V12 the gallery holds 20, the new eight after them so a saved sculpture reopens as itself.
+  Mirror masks avoid duplicate copies on symmetry planes. Every shape keeps editing and DIVE.
+- EVOLVE controls slow contraction breathing, twisting and radial drift. It pauses for edits and
+  DIVE. Sculptures open 32 cm wide, centred 60 cm away. The gallery atlas has been rebaked.
+
 ### Store readiness, 2026-11-13
 
 - System dash and session shutdown hide pointers, release grabs and stop locomotion. Snap turn

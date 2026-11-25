@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode unshaded, cull_back, fog_disabled, shadows_disabled, skip_vertex_transform;
+render_mode unshaded, cull_disabled, fog_disabled, shadows_disabled, skip_vertex_transform;
 
 // The IFS sculpture's frames: one instanced seed polyhedron per node of the assembly.
 // Two things move here so the script never rewrites the instance buffer for either of them,
@@ -11,6 +11,7 @@ render_mode unshaded, cull_back, fog_disabled, shadows_disabled, skip_vertex_tra
 // space, the one per-instance slot left once INSTANCE_CUSTOM is full. It is packed into
 // [0, 1] rather than written raw because an instance colour is a colour to the renderer and
 // may be stored normalised. The axis shade therefore rides in UV.x instead of vertex colour.
+// UV.y carries the seed fade group and UV2.x the position along the beam.
 
 uniform sampler2D ramp : filter_linear, repeat_enable;
 uniform float anim_t = 0.0;        // seconds, from FractalIFS.tick
@@ -65,7 +66,7 @@ uniform vec3 light_dir = vec3(0.45, 0.82, 0.35);
 uniform float sheen = 0.72;
 uniform float gloss = 0.55;
 uniform float rim_gain = 0.52;
-// Off unless MOTION is on (fractal_ifs.gd tick), and slow: one swell about every 20 s.
+// Off unless EVOLVE is on (fractal_ifs.gd tick), and slow: one swell about every 20 s.
 uniform float pulse_gain = 0.0;
 
 #define ART_GLOBAL
@@ -83,6 +84,8 @@ varying vec2 v_meta;
 varying vec3 v_world;
 varying vec3 v_wnorm;
 varying flat vec3 v_light;
+// Position along the beam, 0 to 1 (UV2.x), for the low-contrast axial bands.
+varying float v_along;
 
 void vertex() {
 	float level = INSTANCE_CUSTOM.x;
@@ -110,6 +113,7 @@ void vertex() {
 	v_pos = local_v;
 	v_n = NORMAL;
 	v_axis = UV.x;
+	v_along = UV2.x;
 	v_meta = vec2(level, radius);
 	float swell = 0.0;
 	vec3 w = (MODEL_MATRIX * vec4(local_v, 1.0)).xyz;
@@ -212,6 +216,10 @@ void fragment() {
 			col += mix(hi_col, vec3(1.0), 0.25) * fres * rim_gain * depth_ao;
 			col += mix(base, vec3(1.0), 0.35) * pulse;
 		}
+		// Low-contrast bands along each beam, derivative-filtered so fine levels fade to flat
+		// before they shimmer. Stepped by level so neighbouring generations do not line up.
+		float phase = v_along * 12.0 + v_meta.x * 2.0;
+		col *= 1.0 - 0.045 * cos(phase * 6.2831853) / (1.0 + 4.0 * fwidth(phase));
 		col += hand_lantern(v_world, wn, wview, base);
 		ALBEDO = col * echo_k * brightness;
 	}

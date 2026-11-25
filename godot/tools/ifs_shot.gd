@@ -188,6 +188,7 @@ func _shoot(case: Dictionary) -> void:
 
 
 func _place(view: String) -> void:
+	_ifs.set_clip(view == "centre")
 	if view == "centre":
 		_cam.fov = CENTRE_FOV
 		_cam.position = Vector3.ZERO

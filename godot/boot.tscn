@@ -1,0 +1,43 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/boot.gd" id="1"]
+
+[sub_resource type="Environment" id="Environment"]
+background_mode = 1
+background_color = Color(0, 0, 0, 1)
+ambient_light_source = 0
+reflected_light_source = 0
+
+[sub_resource type="StandardMaterial3D" id="IndicatorMaterial"]
+shading_mode = 0
+albedo_color = Color(0.55, 0.9, 1, 1)
+
+[sub_resource type="QuadMesh" id="IndicatorMesh"]
+material = SubResource("IndicatorMaterial")
+size = Vector2(0.035, 0.035)
+
+[node name="Boot" type="Node3D"]
+script = ExtResource("1")
+
+[node name="XROrigin3D" type="XROrigin3D" parent="."]
+
+[node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
+current = true
+near = 0.05
+far = 200.0
+environment = SubResource("Environment")
+
+[node name="Loading" type="Node3D" parent="XROrigin3D"]
+position = Vector3(0, 1.6, -1.3)
+
+[node name="Label" type="Label3D" parent="XROrigin3D/Loading"]
+pixel_size = 0.0008
+font_size = 40
+outline_size = 0
+modulate = Color(0.7, 0.95, 1, 1)
+text = "Loading FractalXR"
+
+[node name="Indicator" type="MeshInstance3D" parent="XROrigin3D/Loading"]
+position = Vector3(0, -0.065, 0)
+mesh = SubResource("IndicatorMesh")
+cast_shadow = 0

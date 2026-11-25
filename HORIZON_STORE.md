@@ -48,7 +48,48 @@ permission, and then the install screen asks for something.
   suppress `[perf]`. Use `godot/tools/soak.sh 2700 > soak.csv` on a **debug build only** for
   the per-stage breakdown. Debug measurements do not replace the release soak.
   ([Performance.1](https://developers.meta.com/horizon/resources/vrc-quest-performance-1/))
-- **Performance.3**: head-tracked graphics within 4 seconds of launch.
+- **Performance.3** allows head-tracked graphics within 4 seconds **or a loading indicator in
+  VR** ([Performance.3](https://developers.meta.com/vr/resources/vrc-quest-performance-3/)).
+  The installed OpenXR Vendors 5.1.0 plugin exports Meta's OS splash through
+  `meta_xr_features/instant_splash_screen=true`. It copies `application/boot_splash/image`
+  (`godot/art/icon_512.png`, existing 512x512 mono PNG) into `assets/vr_splash.png` and adds
+  application metadata `com.oculus.ossplash=true` and type `mono`. No manifest-template
+  override is needed. Every export checks both the manifest and the exact packaged image.
+  **13 November headset result:** the owner sees no OS splash in the sideloaded debug build,
+  despite a correct manifest and PNG. Published sources do not establish a store-only
+  restriction. See [the investigation](godot/SPLASH_RESEARCH.md) for fetched sources, the
+  removed unused Mobile pipeline compile, and the boot-scene investigation. The OS-splash
+  failure remains unresolved.
+  Meta's [native splash guide](https://developers.meta.com/vr/documentation/native/android/mobile-splash/)
+  (updated 2026-10-09) requires PNG and the case-sensitive asset name, with no fixed mono
+  resolution. Aspect ratio determines displayed size; resolution determines sharpness.
+  For stereo, each half must be no more than 2.3 times as wide as tall.
+  The system splash stays in front of the initial view rather than following head movement.
+  `boot.tscn` is now the application entry. It draws a world-locked loading label and one
+  rotating unshaded quad before requesting `main.tscn` on a resource-loader thread. It retains
+  the loading geometry through main setup and a draw with main's camera. Main reuses the
+  engine's OpenXR interface, reads current focus and blend state, and requests 72 Hz without
+  waiting for a session-start signal that may already have fired. The first boot frame,
+  main phases, first focus and handover keep their `[startup]` timestamps in release logs.
+  See [boot implementation and Mac evidence](godot/BOOT_SCENE.md).
+  **Headset gate remains open.** Fresh-install the debug candidate, wear the headset and
+  launch from Library > Unknown Sources. Start a wall-clock recording at launch selection.
+  By 4 seconds, require a visible loading indicator or tracked content, with margin as the
+  target. The cyan "Loading FractalXR" text and gently rotating square must remain fixed in
+  the room as you turn or translate your head. A missing Meta logo is still possible.
+  Content must replace loading without a black frame, head-pose reset or origin jump. On a
+  fresh install, the controls card must appear after focus and tracked placement. Quit fully
+  and repeat from Unknown Sources for a warm launch; the dismissed card must stay dismissed.
+  Open the system dash during loading and again after content appears. Rendering must
+  continue; menu, help and pointers must hide, grips and locomotion must stop, and input must
+  stay ignored until focus returns. Repeat with power/sleep and headset removal. On return,
+  loading must finish, the view must remain stable, and interrupted help must return.
+  For a saved room-mode launch, passthrough must resume on the first focused content frames
+  without another focus cycle, and the runtime must report the requested 72 Hz.
+  Repeat these checks on the next release-signed APK before submission. Engine `ticks_msec`
+  and Mac renders do not measure launch-intent latency or prove what the Quest compositor
+  displayed. v0.10.0/code 3 measured 8955 ms engine time to first focus on a fresh install and 2224/2479 ms warm, plus about 2.5 to 3 s before
+  engine start. Do not claim compliance until the device pass.
 - **Functional.2 and Input.4**: open the system menu in the middle of a grab, press the power
   button, take the headset off. The app must keep rendering, pause, draw no menu or pointer, and
   ignore input until focus comes back.

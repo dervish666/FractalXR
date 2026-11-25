@@ -10,9 +10,8 @@ class_name Flam3Tonemap
 ##
 ## This requires an HDR colour buffer with the STORAGE bit. The project ships on Forward
 ## Mobile, which has no such buffer (README, phase 3: Forward+ costs ~80ms of draw on the
-## Quest), so on the headset this pass self-disables after one format check and main.gd
-## does not even install the Compositor there. It stays for Forward+ on the desktop and
-## for the day Mobile grows an HDR option.
+## Quest), so Mobile skips pipeline creation and main.gd does not install the Compositor.
+## It stays for Forward+ on the desktop and for the day Mobile grows an HDR option.
 ##
 ##   Forward Mobile  format 63 = A2B10G10R10_UNORM, storage=false  -> impossible
 ##   Forward+        format 96 = R16G16B16A16_SFLOAT, storage=true -> works
@@ -56,6 +55,11 @@ var pass_us := 0.0
 func _init() -> void:
 	effect_callback_type = EFFECT_CALLBACK_TYPE_POST_TRANSPARENT
 	access_resolved_color = true
+	# main.gd constructs this before _ready, even when it never attaches the effect.
+	# Avoid compiling an unused compute pipeline before the first loading frame.
+	if RenderingServer.get_current_rendering_method() == "mobile":
+		enabled = false
+		return
 	RenderingServer.call_on_render_thread(_build)
 
 

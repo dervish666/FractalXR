@@ -53,6 +53,15 @@ func _init() -> void:
 	var t0 := Time.get_ticks_msec()
 	while Time.get_ticks_msec() - t0 < 5000:
 		await process_frame
+	# The finish thresholds were set on a 0.6 m sculpture 0.85 m from the eye. IFS now arrives
+	# 0.32 m wide (main.gd IFS_WIDTH_M), so step in along the line to it until it spans the same
+	# angle: compared on thin lines alone, two finishes differ by less than on surfaces.
+	var at: Vector3 = main.ifs.global_position
+	var eye: Vector3 = main.xr_camera.global_position
+	var want := FractalMain.IFS_WIDTH_M / (0.6 / 0.8485)
+	main.xr_camera.global_position = at + (eye - at).normalized() * want
+	for i in 4:
+		await process_frame
 	await _styles("ifs")
 	print("STYLESHOT %s" % ("PASS" if ok else "FAIL"))
 	quit(0 if ok else 1)
