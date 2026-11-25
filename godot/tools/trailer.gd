@@ -15,6 +15,8 @@ extends SceneTree
 ##   raw RGBA frames. (FileAccess cannot open a FIFO, and a socket needs no disk.)
 ##   kind "strip": the whole shot is simulated, and STRIP_N evenly spaced frames are saved as
 ##   PNGs under <output>/strips/, for judging motion without encoding.
+##   kind "still": the whole shot is simulated and its last frame is saved as <output>/<id>.png
+##   (tools/store_shots.sh, the store screenshots).
 ##
 ## A shot with "samples": K renders K subframes for every recorded frame, spread across
 ## "shutter" (a share of the frame interval, default 0.5) and centred on the frame's time, with
@@ -144,7 +146,9 @@ func _run() -> void:
 	if size != want:
 		_die("rendering at %s, not the requested %s" % [size, want])
 		return
-	if kind == "movie":
+	if kind == "still":
+		pass
+	elif kind == "movie":
 		sink = StreamPeerTCP.new()
 		if sink.connect_to_host("127.0.0.1", int(args[5])) != OK:
 			_die("cannot connect to the encoder on port %s" % args[5])
@@ -202,6 +206,11 @@ func _run() -> void:
 					return
 			if k < samples - 1:
 				await process_frame
+		if kind == "still" and frame == frames - 1:
+			var still := out.path_join(String(shot["id"]) + ".png")
+			if img.save_png(still) != OK:
+				_die("cannot save %s" % still)
+				return
 		if kind == "strip" and strip_at.has(frame):
 			var path := out.path_join("strips/%s_%d.png" % [shot["id"], strip_at[frame]])
 			if img.save_png(path) != OK:
@@ -304,6 +313,8 @@ func _configure() -> bool:
 				main.ground_sky_idx = int(shot.get("ground_sky", 0))
 				main.ground_hue = float(shot.get("hue", 0.0))
 				main._apply_ground_look()
+				# BEACONS, the wrist menu's minibrot pillars (on by default).
+				main.guide.enabled = bool(shot.get("beacons", true))
 				if shot.has("iterations"):
 					main.ground.auto_iter = false
 					main.ground.set_max_iter(int(shot["iterations"]))
@@ -316,6 +327,9 @@ func _configure() -> bool:
 				main.ground.set_viewer_fractal(float(centre[0]), float(centre[1]))
 				if shot.has("ground_turn"):
 					main.ground.rotate_about_head(deg_to_rad(float(shot["ground_turn"])))
+				if shot.has("sphere"):
+					# SPHERE (main.gd GROUND_SPHERE): 0 off, 1 bowl, 2 globe.
+					main._step_ground_sphere(int(shot["sphere"]) - main.ground_sphere_idx)
 	if idx < 0:
 		_die("unknown %s preset '%s'" % [shot["mode"], name])
 		return false
@@ -332,6 +346,9 @@ func _configure() -> bool:
 		main.sky_on = true
 		main.sky_bulb_on = true
 	_apply_subject(0.0)
+	if shot.has("art"):
+		# STYLE (main.gd ART_NAMES): 0 natural, 1..4 drawn styles, 5..12 physical finishes.
+		main._set_art(int(shot["art"]))
 	main.theme_idx = int(shot.get("theme", -1))
 	main._apply_palette()
 	if shot.has("cycle"):
@@ -361,9 +378,34 @@ func _flame_index(name: String) -> int:
 
 func _settled(first: bool) -> bool:
 	if main.ground_mode:
-		return main.ground.progress() > 0.999
+		var g: FractalGround = main.ground
+		if g.progress() <= 0.999:
+			return false
+		# The rest needs the clock to run, so only the warm-up waits for it (a settle tick
+		# inside the shot advances nothing). As mandel_sky_shot's _settle_sphere: every texel
+		# filled, and on the globe the cap's reach and the far fill's iteration budget in.
+		if first:
+			if g.pending_texels() > 0:
+				return false
+			if g.sphere_globe and (g._globe_cap_m < FractalGround.GLOBE_CAP_M * 0.995
+					or g._globe_iter < float(FractalGround.GLOBE_FAR_ITER)):
+				return false
+		return true
 	if main.tree_mode:
-		return main.forest.shapes_pending() == 0
+		if main.forest.shapes_pending() != 0:
+			return false
+		# As undergrowth_shot's _settle_ug: every bed granted, eased in and drawn at its tier,
+		# every revoked one gone. Warm-up only, for the same reason as the ground.
+		if first:
+			for t in main.forest.trees():
+				if t.undergrowth_lod >= 0 and (t.undergrowth_presence < 0.999
+						or t.undergrowth_drawn_lod != t.undergrowth_lod
+						or (t.undergrowth_lod == 0 and t.undergrowth_lod0 < 0.999)):
+					return false
+				if t.undergrowth_lod < 0 and (t.undergrowth_drawn_lod >= 0
+						or t.undergrowth_presence > 0.001):
+					return false
+		return true
 	if main.ifs_mode:
 		return true
 	if not first:

@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import time
 
@@ -205,6 +206,11 @@ def render_shot(base, snapshot, index, shot, args, out, kind):
     if "TRAILERSHOT PASS" not in text or re.search(r"SCRIPT ERROR|SHADER ERROR|Parse Error|TRAILERSHOT FAIL", text):
         raise RuntimeError(f"Godot failed on {name}, see {logpath}")
     frames = frames_of(shot["duration"], args.fps)
+    if kind == "still":
+        still = out / f"{name}.png"
+        size = png_size(still) if still.exists() else None
+        if size != (width, height):
+            raise RuntimeError(f"{name}: still is {size}, not {width}x{height}")
     if kind == "movie":
         if encoder.returncode != 0:
             raise RuntimeError(f"ffmpeg failed on {name}, see {out / (name + '.ffmpeg.log')}")
@@ -218,6 +224,26 @@ def render_shot(base, snapshot, index, shot, args, out, kind):
     settle = re.search(r"settle_frames=(\d+)", text)
     return dict(id=name, mode=shot["mode"], preset=shot["preset"], frames=frames,
                 duration=frames / args.fps, settle_frames=int(settle.group(1)) if settle else 0)
+
+
+def png_size(path):
+    """Width and height from the PNG header, so a still is checked without an image library."""
+    with open(path, "rb") as f:
+        head = f.read(24)
+    if head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return struct.unpack(">II", head[16:24])
+
+
+def still_sheet(out, manifest, name):
+    """Every still, labelled with its id, mode and preset, three across."""
+    montage = ["montage", "-font", "/System/Library/Fonts/Supplemental/Arial.ttf",
+               "-background", "#101018", "-fill", "white", "-pointsize", "18"]
+    for entry in manifest:
+        montage += ["-label", f"{entry['id']}  {entry['mode']} / {entry['preset']}",
+                    str(out / f"{entry['id']}.png")]
+    montage += ["-geometry", "640x360+6+6", "-tile", "3x", str(out / name)]
+    run(montage)
 
 
 def strip_sheet(out, manifest, name):
@@ -414,6 +440,8 @@ def main():
     parser.add_argument("--only", help="comma-separated shot ids; renders those clips and filmstrips, no cut")
     parser.add_argument("--strips", action="store_true",
                         help="simulate every frame but save only six PNGs per shot, for judging motion fast")
+    parser.add_argument("--stills", action="store_true",
+                        help="save each shot's last frame as <id>.png and a contact sheet, sheet.png (store screenshots)")
     parser.add_argument("--reuse", action="store_true", help="keep existing clips that match the snapshot")
     parser.add_argument("--music", type=Path,
                         help="audio track for the cut, loudness-normalised and faded; silent AAC without it")
@@ -431,7 +459,7 @@ def main():
     selected = set(args.only.split(",")) if args.only else {s["id"] for s in shots}
     if selected - {s["id"] for s in shots}:
         parser.error("--only contains an unknown shot id")
-    full = not args.only and not args.strips
+    full = not args.only and not args.strips and not args.stills
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     # Snapshot: an edit to the JSON during a render cannot change later shots of this run.
@@ -445,7 +473,7 @@ def main():
         run(base + ["--headless", "--import"], stdout=log, stderr=subprocess.STDOUT, timeout=300)
     start = time.monotonic()
     manifest = []
-    kind = "strip" if args.strips else "movie"
+    kind = "still" if args.stills else "strip" if args.strips else "movie"
     for i, shot in enumerate(shots):
         if shot["id"] not in selected:
             continue
@@ -479,7 +507,9 @@ def main():
         entry["wall_seconds"] = round(time.monotonic() - t0, 2)
         manifest.append(entry)
     report = dict(resolution=args.resolution, fps=args.fps, shots=manifest)
-    if args.strips:
+    if args.stills:
+        still_sheet(out, manifest, "sheet.png")
+    elif args.strips:
         strip_sheet(out, manifest, "strips.jpg")
     else:
         clip_filmstrips(out, manifest, args.fps)

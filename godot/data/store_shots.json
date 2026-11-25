@@ -1,0 +1,20 @@
+{
+	"_about": "Store screenshots for tools/store_shots.sh. Same shot format as trailer.json (tools/trailer.gd reads both); each shot's last frame is the still. Settings are the app's own ladder values: particles is a PARTICLE_STEPS index, point_style a POINT_STEPS index, bright a BRIGHT_STEPS index, theme a palette index (-1 the preset's own), art a STYLE index (5 to 12 the finishes), sphere a SPHERE index (2 globe), beacons false turns BEACONS off.",
+	"transition": {"type": "cut", "seconds": 0},
+	"shots": [
+		{"id": "flame-vortex", "mode": "FLAME", "preset": "Vortex", "duration": 0.2, "fov": 55, "particles": 3, "point_style": 3, "bright": 4, "camera": {"keys": [{"t": 0, "pos": [0.55, 1.62, -1.35], "look": [-0.15, 1.45, -2.6]}]}},
+		{"id": "flame-orchid", "mode": "FLAME", "preset": "Orchid", "duration": 0.2, "fov": 55, "particles": 3, "point_style": 3, "bright": 4, "camera": {"keys": [{"t": 0, "pos": [-0.15, 1.5, -0.7], "look": [0.35, 1.42, -2.6]}]}},
+		{"id": "flame-ember", "mode": "FLAME", "preset": "Ember", "duration": 0.2, "fov": 55, "particles": 3, "point_style": 3, "bright": 4, "camera": {"keys": [{"t": 0, "pos": [0.4, 1.7, -1.2], "look": [-0.1, 1.42, -2.6]}]}},
+		{"id": "bulb-classic-chrome", "mode": "BULB", "preset": "Classic", "duration": 0.2, "fov": 52, "surface": 6, "art": 8, "camera": {"keys": [{"t": 0, "pos": [0.146, 1.533, -0.326], "look": [0.06, 1.45, -0.72]}]}},
+		{"id": "bulb-mandelbox-jade", "mode": "BULB", "preset": "Mandelbox", "duration": 0.2, "fov": 52, "surface": 6, "art": 7, "camera": {"keys": [{"t": 0, "pos": [-0.426, 1.624, -0.046], "look": [-0.041, 1.43, -0.726]}]}, "theme": 7},
+		{"id": "ground-flat", "mode": "GROUND", "preset": "mandelbrot", "duration": 0.2, "fov": 60, "ground_centre": [-0.55, 0.62], "ground_wpu": 30, "relief": 0, "height": 0, "camera": {"keys": [{"t": 0, "pos": [0, 1.6, 0], "look": [0, 0.95, -3]}]}, "sky": "Nautilus", "beacons": false},
+		{"id": "ground-seahorse", "mode": "GROUND", "preset": "mandelbrot", "duration": 0.2, "fov": 60, "ground_centre": [-0.7453, 0.1127], "ground_wpu": 240, "relief": 0, "height": 0, "camera": {"keys": [{"t": 0, "pos": [0, 1.6, 0], "look": [0, 0.95, -3]}]}, "sky": "Nautilus", "beacons": false},
+		{"id": "ground-globe", "mode": "GROUND", "preset": "mandelbrot", "duration": 0.2, "fov": 70, "ground_centre": [-0.55, 0.62], "ground_wpu": 30, "relief": 0, "height": 0, "sphere": 2, "camera": {"keys": [{"t": 0, "pos": [0, 1.6, 0], "look": [0.2, 1.81, -1]}]}, "beacons": false},
+		{"id": "ground-globe-valley", "mode": "GROUND", "preset": "mandelbrot", "duration": 0.2, "fov": 70, "ground_centre": [-0.75, 0.1], "ground_wpu": 120, "relief": 0, "height": 0, "sphere": 2, "camera": {"keys": [{"t": 0, "pos": [0, 1.6, 0], "look": [0.25, 2.18, -1]}]}, "beacons": false},
+		{"id": "tree-grove", "mode": "TREE", "preset": "oak", "duration": 0.2, "fov": 65, "layout": "grove", "count": 2, "floor": 1, "bark": 2, "wind": 0.3, "sky": "Nautilus", "warmup_frames": 400, "warmup_dt": 0.1, "camera": {"keys": [{"t": 0, "pos": [0.6, 1.6, 0.15], "look": [-0.1, 1.55, -2.2]}]}, "theme": 19, "mix": false},
+		{"id": "tree-sakura", "mode": "TREE", "preset": "sakura", "duration": 0.2, "fov": 65, "layout": "grove", "count": 2, "floor": 1, "bark": 2, "wind": 0.3, "sky": "Nautilus", "warmup_frames": 400, "warmup_dt": 0.1, "camera": {"keys": [{"t": 0, "pos": [-0.6, 1.6, 0.15], "look": [0.1, 1.55, -2.2]}]}, "theme": -1, "mix": false},
+		{"id": "ifs-gasket", "mode": "IFS", "preset": "GASKET", "duration": 0.2, "fov": 50, "camera": {"keys": [{"t": 0, "pos": [0.16, 1.56, -0.2], "look": [0.05, 1.42, -0.6]}]}},
+		{"id": "ifs-cathedral", "mode": "IFS", "preset": "CATHEDRAL", "duration": 0.2, "fov": 50, "art": 8, "camera": {"keys": [{"t": 0, "pos": [-0.16, 1.55, -0.2], "look": [-0.04, 1.42, -0.6]}]}},
+		{"id": "ifs-room-menger", "mode": "IFS", "preset": "MENGER", "duration": 0.2, "fov": 70, "theme": 2, "room": true, "camera": {"keys": [{"t": 0, "pos": [0, 1.6, 0], "look": [0.3, 1.95, -1]}]}}
+	]
+}
