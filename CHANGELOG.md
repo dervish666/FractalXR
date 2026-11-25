@@ -5,6 +5,20 @@ All notable changes to FractalXR are documented here. Format based on
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-25
+
+The first SideQuest Early Access build, release-signed with a new key (`fractalxr`, made
+2026-11-25). Installs signed with the debug key, such as v0.10.0-preview.1, have to be
+uninstalled once. Everything since 0.9.0 is below, newest first. The headline changes:
+
+- TREE grows fractal undergrowth (bushes, ferns, sedge, fungi and moss) at the trees' feet, and
+  a tree you plant grows its own bed with it.
+- GROUND's SPHERE tile bends the floor into a bowl round you, or a globe with infinity overhead.
+- Four physical finishes (opal, verdigris, frost, velvet) join STYLE, for 12 styles in all.
+- IFS has 20 sculptures, with five-sided tubes and shared joints on the frame shapes.
+- The pinned wrist menu docks a card's controls on a panel beside it.
+- A tracked boot scene draws before the main scene loads (launch timing is untested on the Quest).
+
 ### Wrist menu dock and undock, 2026-11-22
 
 - With the menu pinned, an open card shows DOCK left and DOCK right beside BACK. DOCK moves that card's controls onto a panel of their own beside the main one (same size, 12 mm gap, folded 24 degrees toward you) and returns the main panel to its cards. The docked panel has UNDOCK on its inner edge. One card per side.

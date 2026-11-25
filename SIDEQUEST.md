@@ -16,7 +16,9 @@ Identity is permanent once published. It is already set:
 | Permissions | OpenXR only. `INTERNET` is off, so the install screen asks for nothing |
 | Icons | `godot/art/icon_192.png`, `icon_fg_432.png`, `icon_bg_432.png` |
 
-**Release signing.** Every APK before this one was debug-signed. Once, ever:
+**Release signing.** Every APK before 0.10.0 was debug-signed. The release keystore was made on
+2026-11-25; its password lives in Sam's vault secrets and in `~/.keys/fractalxr-release.pass`.
+For a new machine, restore both from the vault. Making one from scratch happens once, ever:
 
 ```bash
 godot/tools/keystore.sh                 # writes ~/.keys/fractalxr-release.keystore
@@ -79,7 +81,8 @@ computed live on the headset, not played back from a video, so more detail appea
 bring it closer.
 
 Squeeze a grip to move and turn it. Squeeze both grips and pull your hands apart to scale it
-up and pass through the middle. Turn your left wrist toward your face for the menu.
+up and pass through the middle. Turn your left wrist toward your face for the menu, or pin it
+in the air and dock a panel of controls beside it.
 
 **Five modes**
 
@@ -87,15 +90,19 @@ up and pass through the middle. Turn your left wrist toward your face for the me
 - **BULB.** 21 forms (Mandelbulbs, Mandelboxes, quaternion Julia sets) that open hand-sized,
   drawn as soft splats, contour lines, a solid sculpture or a marched surface.
 - **GROUND.** A fractal floor that runs to the horizon. Eight families, each with its Julia
-  twin. Walk with the left stick, or point and pull a trigger to glide there.
-- **TREE.** 13 species that grow from the base and sway. Point at the floor and pull the right
-  trigger to plant one, or lay out an avenue of about 500.
-- **IFS.** A sculpture of mirrored frames. Turn on EDIT, hold a trigger on a handle and drag to
-  reshape it.
+  twin. Walk with the left stick, or point and pull a trigger to glide there. Bend it into a
+  bowl round you, or wrap the whole plane into a globe with infinity straight overhead.
+- **TREE.** 13 species that grow from the base and sway, with fractal ferns, bushes, sedge and
+  mushrooms round their roots. Point at the floor and pull the right trigger to plant a tree,
+  and its undergrowth grows up with it. Or lay out an avenue of about 500.
+- **IFS.** 20 sculptures of mirrored frames. Turn on EDIT, hold a trigger on a handle and drag
+  to reshape one.
 
 **Also**
 
 - 26 colour themes, and CYCLE to keep them moving
+- 12 art styles on top of the natural look: neon, toon, pencil, circuit, and eight finishes
+  such as chrome, jade, opal and frost
 - Passthrough, so the fractal hangs in your room
 - No account, no permission prompts, no internet
 
